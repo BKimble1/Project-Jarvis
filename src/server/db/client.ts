@@ -33,6 +33,16 @@ async function createHandle(config: AppConfig): Promise<DatabaseHandle> {
     const { drizzle } = await import('drizzle-orm/pglite');
     const client = pgliteDataDir ? new PGlite(pgliteDataDir) : new PGlite();
     const db = drizzle(client, { schema }) as unknown as Database;
+
+    /*
+     * The embedded database is created per process, so migrating it from a separate CLI
+     * invocation would leave the running server with an empty schema. Migrating here makes the
+     * first `npm run dev` work with no setup at all. The runner is idempotent, and this branch
+     * is unreachable in production because `buildConfig` refuses the pglite driver there.
+     */
+    const { runMigrations } = await import('./migrate');
+    await runMigrations(db);
+
     return { db, driver, close: async () => client.close() };
   }
 

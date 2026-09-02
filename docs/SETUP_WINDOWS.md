@@ -57,14 +57,14 @@ GITHUB_OAUTH_CLIENT_SECRET=<from your OAuth app>
 Set the OAuth callback URL to `http://localhost:3000/api/auth/callback`
 (see [AUTHENTICATION.md](AUTHENTICATION.md)).
 
-## 4. Migrate and run
+## 4. Run
 
 ```powershell
-npm run db:migrate
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000. The embedded PostgreSQL migrates itself on first use, so there is no
+separate database step; `npm run db:migrate` is only needed for a hosted database.
 
 ## 5. Verify
 
@@ -123,11 +123,8 @@ npm run dev
 
 Reset with `Remove-Item Env:JARVIS_DEMO_MODE`.
 
-**Persisting the local database.** Add to `.env.local`:
-
-```
-PGLITE_DATA_DIR=.jarvis-data/dev
-```
+**Where the local database lives.** Development keeps it in `.jarvis-data/dev` so it survives
+restarts. Override with `PGLITE_DATA_DIR` in `.env.local` if you want it elsewhere.
 
 **Ports.** If 3000 is taken:
 

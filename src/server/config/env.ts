@@ -261,7 +261,14 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
     database: {
       driver,
       url: env.DATABASE_URL ?? null,
-      pgliteDataDir: env.PGLITE_DATA_DIR ?? null,
+      /*
+       * PGlite is in-memory unless given a directory. Development defaults to one so a restart
+       * does not silently discard everything the owner entered; tests keep the in-memory default
+       * so each run starts clean.
+       */
+      pgliteDataDir:
+        env.PGLITE_DATA_DIR ??
+        (driver === 'pglite' && env.NODE_ENV === 'development' ? '.jarvis-data/dev' : null),
     },
     ai: { enabled: aiEnabled, apiKey: aiKey, model: env.JARVIS_AI_MODEL },
     cronSecret,

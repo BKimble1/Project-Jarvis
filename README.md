@@ -50,12 +50,14 @@ that is enforced and verified rather than merely promised.
 
 ```bash
 npm install
-npm run db:migrate        # applies drizzle/*.sql to an embedded PostgreSQL (PGlite)
 npm run dev               # http://localhost:3000
 ```
 
-With no credentials configured, Jarvis runs against an embedded database and the deterministic
-narrator. To see it populated, turn on the clearly-labelled demo data:
+That is the whole setup. With no credentials configured, Jarvis runs on an embedded PostgreSQL
+(PGlite) that migrates itself on first use and persists in `.jarvis-data/dev`, and uses the
+deterministic narrator. `npm run db:migrate` is only needed for a hosted database.
+
+To see it populated, turn on the clearly-labelled demo data:
 
 ```bash
 JARVIS_DEMO_MODE=true npm run db:seed:demo

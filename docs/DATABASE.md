@@ -27,6 +27,10 @@ npm run db:generate     # after editing schema.ts — writes drizzle/NNNN_name.s
 npm run db:migrate      # applies anything pending, using the configured driver
 ```
 
+The embedded PGlite database migrates itself when the server first opens it — it is created per
+process, so migrating it from a separate CLI invocation would leave the running server with an
+empty schema. Hosted databases are shared, so they are migrated explicitly by the command above.
+
 Commit the schema change and the generated SQL together. Netlify runs `npm run db:migrate` as part
 of the build command, before `next build`.
 

@@ -58,14 +58,17 @@ To enable AI narration (entirely optional):
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## 3. Migrate and run
+## 3. Run
 
 ```bash
-npm run db:migrate
 npm run dev
 ```
 
 Open http://localhost:3000.
+
+The embedded PostgreSQL migrates itself the first time the server touches it, so there is no
+separate setup step. `npm run db:migrate` is only needed when `DATABASE_URL` points at a hosted
+database.
 
 ## 4. Demo data (optional)
 
@@ -84,15 +87,16 @@ app makes demo mode impossible to mistake for real data.
 Demo data is only seeded into an empty database, and demo mode never activates by itself in
 production.
 
-## 5. Persisting the local database between restarts
+## 5. Where the local database lives
 
-By default PGlite is in-memory, so each restart begins empty. To keep data:
+Development stores the embedded database in `.jarvis-data/dev`, so it survives restarts.
+`.jarvis-data/` is git-ignored. Point it elsewhere, or make it in-memory for a throwaway session:
 
 ```bash
-PGLITE_DATA_DIR=.jarvis-data/dev
+PGLITE_DATA_DIR=.jarvis-data/scratch
 ```
 
-`.jarvis-data/` is git-ignored.
+Deleting the directory resets everything; the next start migrates a fresh database.
 
 ## 6. Verify
 
