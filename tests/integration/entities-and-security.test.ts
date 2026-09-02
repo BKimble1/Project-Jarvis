@@ -828,27 +828,49 @@ describe('status query router', () => {
     ]);
   });
 
-  it('refuses to execute work, says so, and changes nothing', async () => {
+  /**
+   * Asking a question never starts work.
+   *
+   * Before Prompt 2 this answer said Jarvis could not execute anything. It now recognises the
+   * request as a mission and shows what it understood — but the guarantee underneath is the same
+   * one, and is the part worth testing: answering creates no mission, no run and no side effect.
+   * The owner starts it from the preview, deliberately, or not at all.
+   */
+  it('reads work as a mission, previews it, and creates nothing', async () => {
     await createProject(harness, { name: 'Aurora', type: 'software' });
 
-    const answer = await harness.services.router.answer('Build a new feature');
+    const answer = await harness.services.router.answer('Build a new feature for Aurora');
 
     expect(answer.intent).toBe('execution_request');
-    expect(answer.title).toBe('Jarvis cannot run that yet');
-    expect(answer.notice).toBe('Project execution is not part of this phase. Nothing was run.');
-    expect(answer.summary).toContain('Prompt 2');
-    expect(sectionItems(answer, 'What you can do now').map((item) => item.text)).toEqual([
-      'Record it as a next action on a project so it is not lost.',
-      'Ask "where are we?" or "what needs me?" for the current picture.',
-    ]);
+    expect(answer.title).toBe('This looks like a mission');
+    expect(answer.summary).toContain('Nothing has started.');
+    expect(answer.missionPreview?.projectName).toBe('Aurora');
+    expect(answer.missionPreview?.canStart).toBe(true);
+    expect(sectionItems(answer, 'What Jarvis understood').map((item) => item.text)).toContain(
+      'Risk: Moderate risk',
+    );
 
     /* Nothing was created, nothing was synchronised, and no provider call was made. */
     const listed = await harness.services.projects.list();
     expect(listed.total).toBe(1);
     expect(names(listed)).toEqual(['Aurora']);
+    expect((await harness.services.missionRepo.list()).total).toBe(0);
     expect(await harness.services.activity.listRecent()).toHaveLength(0);
     expect(await harness.services.runs.listRecent()).toHaveLength(0);
     expect(harness.provider.calls).toBe(0);
+  });
+
+  it('refuses a prohibited request outright rather than previewing it', async () => {
+    await createProject(harness, { name: 'Aurora', type: 'software' });
+
+    const answer = await harness.services.router.answer('Force push the fix to main');
+
+    expect(answer.intent).toBe('prohibited_request');
+    expect(answer.title).toBe('Jarvis will not do that');
+    expect(answer.summary).toContain('Force pushing rewrites history');
+    expect(answer.notice).toBe('No mission was created.');
+    expect(answer.missionPreview).toBeNull();
+    expect((await harness.services.missionRepo.list()).total).toBe(0);
   });
 
   it('records every question in history, newest first', async () => {

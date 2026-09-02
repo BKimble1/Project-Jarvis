@@ -7,3 +7,5 @@ test-results
 drizzle/**/*.sql
 package-lock.json
 .jarvis-data
+drizzle/
+.env.example

@@ -5,17 +5,28 @@
 Jarvis knows what projects you have, what has actually happened on them, what is blocked, and
 what deserves your attention next — and it can prove every claim it makes.
 
+Since Phase 2 it can also **take one approved mission from plain language to a verified draft
+pull request** — planning first, and stopping wherever you want to be asked.
+
 Open it on your phone or your computer and ask:
 
 - “Where are we?”
 - “Where are we on CoreCredit?”
 - “What changed?”
 - “What needs me?”
-- “Which projects are blocked?”
-- “What should I focus on?”
+- “What is running?”
+- “Which plans need approval?”
+
+…or tell it what to do:
+
+- “Add invoice scanning to OffRent.”
+- “Investigate why this repository does not compile.”
+- “Research whether this app idea already exists.”
+- “Pause the OffRent mission.”
 
 Every answer is traceable. Jarvis never invents progress, never fabricates a completion
-percentage, and says **Unknown** when the evidence does not support a claim.
+percentage, and says **Unknown** when the evidence does not support a claim. Nothing runs until
+you approve a specific version of a specific plan, and nothing is ever merged.
 
 ---
 
@@ -105,13 +116,41 @@ Playwright step. Nothing is weakened to make the gate pass; see [docs/TESTING.md
 
 ---
 
+## Mission Control (Phase 2)
+
+Jarvis can now act, under a deliberately narrow set of permissions.
+
+| Capability               | Detail                                                                                                                                                                           |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Universal mission intake | Type what you want done. Jarvis shows what it understood — project, type, risk and why — before anything is created.                                                             |
+| Clarification            | Only questions that change the work get asked, at most three at a time. "Let Jarvis decide" is recorded as an **assumption**, never as your decision.                            |
+| Read-only planning       | A worker clones the repository with every mutating tool denied, reads it, and produces a versioned plan with scope, risks, tests, verification commands and acceptance criteria. |
+| Plan approval            | You approve one specific version. Editing the plan revokes the approval. A worker re-checks it at claim time.                                                                    |
+| One Claude worker        | A separate long-lived process running the official Claude Agent SDK. Closing this page does not stop it.                                                                         |
+| Live monitoring          | Pause, resume, message and stop, with the whole timeline. A message that widens the approved scope pauses for a revised plan instead of quietly doing it.                        |
+| Draft pull requests      | A `jarvis/<mission-id>` branch, real verification results, and a **draft** PR. Jarvis never merges.                                                                              |
+| Research missions        | A sourced report attached to the project, with no branch and no code change.                                                                                                     |
+
+**What it will never do:** push to a default branch, force push, merge, publish a release, deploy,
+upload a build, change repository settings or secrets, or approve its own plan. These are
+capability limits in the worker, not instructions to a model — see
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [docs/MISSION_RULES.md](docs/MISSION_RULES.md).
+
+Setting up a worker: [docs/WORKER.md](docs/WORKER.md).
+
 ## Known limitations
 
 Stated plainly, because a tool built around not overstating what it knows should not overstate
 what it is.
 
-- **No writes, anywhere.** Jarvis cannot push, branch, comment or open a pull request. That is the
-  point of this phase, not an omission — see [SECURITY.md](docs/SECURITY.md).
+- **Writes are limited to a branch and a draft pull request.** Jarvis cannot merge, deploy,
+  publish, or change repository settings — and the _synchronisation_ path is still read-only by
+  construction. See [SECURITY.md](docs/SECURITY.md) and [THREAT_MODEL.md](docs/THREAT_MODEL.md).
+- **One mission at a time, and it needs a worker.** Without a connected worker Jarvis can still
+  plan — from its own project record, labelled **Inferred** and saying plainly that nothing was
+  inspected — but it cannot execute. Multiple agents arrive in Phase 3.
+- **Risk classification is pattern-based.** It is a first filter, not the last line of defence:
+  the capability limits are. It can be wrong in both directions, which is why you approve the plan.
 - **GitHub is the only connected source.** App Store Connect, Netlify, Linear and the rest are not
   integrated, so claims like "waiting for Apple review" stay **Manual** until they are.
 - **Synchronisation is pull-based.** There are no webhooks: evidence can lag by up to the

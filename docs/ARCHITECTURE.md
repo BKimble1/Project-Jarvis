@@ -131,16 +131,37 @@ set of migrations, so local, test and production schemas cannot drift:
 
 ## Extension points for later phases
 
+### Phase 2: Mission Control
+
+Phase 2 attached at exactly the seams Phase 1 left. Its own architecture note is
+[MISSION_CONTROL.md](MISSION_CONTROL.md); the short version:
+
+- **The control plane is this application.** It owns missions, plans, approvals, commands, events
+  and the mission queue. It never runs an agent — a serverless request is over in seconds.
+- **The worker is a separate long-lived process** at `src/worker/**`, in the same repository so
+  both sides compile against the same domain contract, and behind an ESLint rule that lets it
+  import `@/domain` and nothing else.
+- **They talk over HTTP with the worker polling**, because a serverless control plane cannot hold
+  a socket open and cannot dial out to a worker behind a home router.
+- **`AgentRuntime`** is the seam the Claude Agent SDK sits behind, so mission logic never imports
+  it and every automated test drives the real flow against a deterministic fake.
+- **`GitHubDelivery`** is a four-method interface — push the mission branch, open a draft PR,
+  update that PR's body, read checks. The absence of a fifth method _is_ the security property.
+
+### Still open for later phases
+
 The model is already shaped for what comes next, without implementing any of it:
 
-- `projects.id` is the join target for future `missions`, `tasks`, `agent_sessions`, `agent_runs`,
-  `artifacts`, `approvals`, `playbooks` and `costs` tables.
+- `projects.id` is the join target for `missions` (Phase 2) and for future `tasks`, `playbooks`
+  and `costs` tables.
+- `mission_runs.attempt` and `workers.max_concurrency` already model several attempts and several
+  workers; Phase 2 simply refuses to use them.
 - `SOURCE_KINDS` and `EVIDENCE_KINDS` are `text` columns with TypeScript unions, so adding App
   Store Connect or Netlify as a provider is an additive migration.
 - `SourceProvider` is the seam a new integration implements; nothing above it is GitHub-aware.
 - `BriefingNarrator` is the seam for a different or better narrator.
-- `StatusQueryRouter` already recognises execution requests and answers them with an explicit
-  “this arrives in Prompt 2”, which is where mission dispatch will attach.
+- `StatusQueryRouter` recognises execution requests and now answers them with a mission preview;
+  Mission Control is an optional dependency of it, so the status half still works alone.
 - `ActivityLogService` is the audit spine that agent runs will write into.
 
 Nothing in this phase creates a write-capable GitHub client, so adding one later is a deliberate,

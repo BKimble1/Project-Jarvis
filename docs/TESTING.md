@@ -14,11 +14,11 @@ Nothing is skipped or weakened to make the gate pass. If a check fails, the phas
 
 ## Layers
 
-| Layer       | Runner                         | Runs against                                                                                            | Location             | Tests |
-| ----------- | ------------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------- | ----- |
-| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                 | `tests/unit/`        | 351   |
-| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL                                   | `tests/integration/` | 63    |
-| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport | `tests/e2e/`         | 28    |
+| Layer       | Runner                         | Runs against                                                                                                            | Location             | Tests |
+| ----------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------- | ----- |
+| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                                 | `tests/unit/`        | 555   |
+| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL, plus the real worker against a local git sandbox | `tests/integration/` | 114   |
+| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport                 | `tests/e2e/`         | 44    |
 
 Individually:
 
@@ -37,6 +37,46 @@ schema, the real indexes and the real SQL — not a hand-written approximation.
 
 `tests/helpers/services.ts` wires the complete service graph with only the network replaced: a
 `FakeSourceProvider` that can be scripted to return successful, partial or failed snapshots.
+
+## Mission Control
+
+Three things about the mission tests are worth stating, because they are what makes them worth
+having rather than reassuring.
+
+**The worker tests drive the real worker.** `tests/integration/worker-runner.test.ts` runs the
+actual `MissionRunner` — the real policy, the real git wrapper, the real verification runner —
+against a **real git repository**: a bare repo created under the OS temp directory per test and
+deleted afterwards. Cloning, branching, committing and pushing all really happen. Only the model
+(a scripted runtime) and GitHub's API (a recording fake) are replaced.
+
+So when the force-push test passes, it passes because `assertPushAllowed` refused the argument
+vector — not because a mock agreed to.
+
+**No test touches a repository that exists anywhere else.** Every sandbox is local and
+throwaway. The end-to-end smoke test additionally starts the worker with
+`JARVIS_WORKER_SANDBOX_REPOS` pointing the mission's repository at a local bare repo, so it has
+neither a URL nor a credential for anything real.
+
+**The HTTP tests import the shipping handlers.** `tests/integration/mission-http.test.ts` drives
+the same route modules Next.js deploys, with real `Request` objects, so the owner guard, the
+same-origin check, the worker bearer check and the idempotency replay are the deployed ones.
+
+### The end-to-end smoke test
+
+`tests/e2e/missions.spec.ts` runs a **real worker process** (`scripts/worker.ts`, the same entry
+point a deployment uses) and takes one mission from plain language to a draft pull request. It
+asserts what actually happened, not what was reported:
+
+- a `jarvis/<mission-id>-…` branch exists on the remote;
+- the default branch's contents are byte-for-byte unchanged;
+- exactly one pull request was opened, and it is a draft;
+- no merge, release, deploy or settings call was ever attempted;
+- Jarvis shows it as "ready for your review, not merged".
+
+Two servers support it: `scripts/mock-github.mts` (read-only, and still 405s **every** write —
+that refusal is a Phase 1 guarantee) and `scripts/mock-github-write.mts` on its own port, which
+implements only the four operations `GitHubDelivery` can perform and rejects a non-draft pull
+request outright.
 
 ## What end-to-end tests run against
 

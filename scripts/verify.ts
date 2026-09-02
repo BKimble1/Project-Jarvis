@@ -6,6 +6,10 @@
  * production build and the end-to-end smoke suite, in that order, and fails on the first
  * problem. Nothing is skipped to make the output look better.
  *
+ * The end-to-end step includes the Mission Control smoke test, which runs a real worker process
+ * against a local sandbox repository created by `scripts/e2e-sandbox.mts`. No test in this gate
+ * touches a repository that exists anywhere else.
+ *
  * Pass `--skip-e2e` when browsers are unavailable (the step is otherwise always run).
  */
 import { spawn } from 'node:child_process';

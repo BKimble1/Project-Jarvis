@@ -70,6 +70,24 @@ mandatory.
   rejected the credential”_, the affected projects are marked **Sync failing**, and the last
   verified data stays on screen — clearly labelled as last-known-good, never presented as current.
 
+## The worker's write credential is a different token
+
+Everything above is about `GITHUB_READ_TOKEN`, which the Jarvis web app uses to _read_. Since
+Phase 2 there is a second, separate credential — `JARVIS_WORKER_GITHUB_TOKEN` — which lives only
+on the worker machine and can write.
+
+Keep them apart, deliberately:
+
+|             | `GITHUB_READ_TOKEN`                         | `JARVIS_WORKER_GITHUB_TOKEN`                                                      |
+| ----------- | ------------------------------------------- | --------------------------------------------------------------------------------- |
+| Lives on    | The Netlify deployment                      | The worker machine only                                                           |
+| Permissions | Read-only, several categories               | **Contents: read and write**, **Pull requests: read and write**, and nothing else |
+| Used for    | Synchronising evidence                      | Pushing the mission branch, opening the draft PR                                  |
+| Enforced by | `assertReadOnlyRequest` refuses any non-GET | `assertPushAllowed` and a four-method delivery interface                          |
+
+Widening the read token is never the answer to a worker permission problem. If the worker cannot
+push, the fix is on the worker's own token. Full setup: [WORKER.md](WORKER.md).
+
 ## Organisation repositories
 
 For repositories owned by an organisation, an owner may need to approve fine-grained token access

@@ -97,3 +97,56 @@ expired sessions and OAuth states.
 Use your provider's backups — Neon offers point-in-time restore; Supabase and RDS have scheduled
 backups. Settings → _Export everything as JSON_ produces a portable copy of projects, evidence,
 snapshots, sync history and activity, and deliberately contains no sessions or credentials.
+
+## Backing up Jarvis-owned data
+
+Two things are worth keeping, and they are different.
+
+**The export** (Settings → Export everything as JSON, or `GET /api/export`) is the portable one.
+It carries projects, sub-entities, evidence, snapshots, synchronisation history, activity and —
+since Phase 2 — missions, plans, approvals, runs, events, verifications and artifacts.
+
+It deliberately carries **no credentials**: no sessions, no OAuth state, no configuration, and no
+worker rows (a worker's token hash is not part of the type that reaches the export, so it cannot
+leak by accident). Worker identity appears as a _name_ on each run, which is what makes the
+history readable without exporting a secret.
+
+```bash
+curl -H "Cookie: jarvis_session=…" https://your-jarvis/api/export > jarvis-$(date +%F).json
+```
+
+**The database dump** is the complete one, for restoring the instance rather than reading it:
+
+```bash
+pg_dump "$DATABASE_URL" --no-owner --format=custom > jarvis-$(date +%F).dump
+pg_restore --clean --no-owner --dbname "$DATABASE_URL" jarvis-2026-01-01.dump
+```
+
+A dump _does_ contain session rows and worker token hashes. Treat it as a secret, and rotate the
+worker tokens after restoring one somewhere new.
+
+Mission **workspaces** are not in either: they live on the worker's disk. That is deliberate — a
+preserved workspace is the evidence of an interrupted mission, and it belongs where the work
+happened. See [WORKER.md](WORKER.md).
+
+## Rotating credentials
+
+| Credential                          | How                                       | What breaks                                                                                      |
+| ----------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `SESSION_SECRET`                    | Replace and redeploy                      | Every session signs out. Nothing else.                                                           |
+| `GITHUB_READ_TOKEN`                 | Replace and redeploy                      | Synchronisation fails until replaced; existing evidence is kept and marked stale, never deleted. |
+| `GITHUB_OAUTH_CLIENT_SECRET`        | Rotate in GitHub, replace, redeploy       | Sign-in until replaced.                                                                          |
+| `ANTHROPIC_API_KEY` (control plane) | Replace and redeploy                      | Narration falls back to the deterministic narrator. Nothing is lost.                             |
+| `ANTHROPIC_API_KEY` (worker)        | Replace and restart the worker            | A mission in flight fails honestly, workspace preserved.                                         |
+| `JARVIS_WORKER_GITHUB_TOKEN`        | Rotate in GitHub, replace, restart        | A mission mid-delivery fails with `github_auth_error`; its branch and commits survive.           |
+| Worker token                        | Workers → Rotate token                    | The old token stops working immediately. Update the worker's environment and restart it.         |
+| `CRON_SECRET`                       | Replace in both Netlify and the scheduler | Scheduled synchronisation until both match.                                                      |
+
+## Turning AI narration off
+
+Set `JARVIS_AI_ENABLED=false`, or simply leave `ANTHROPIC_API_KEY` unset. Jarvis uses its
+deterministic narrator and stays fully functional — narration only rewords conclusions the
+deterministic engine already reached, so nothing is lost but phrasing.
+
+This is separate from the **worker's** Anthropic key, which is what runs missions. Turning off
+narration does not stop missions; unsetting the worker's key does, visibly, on the workers page.

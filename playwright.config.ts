@@ -12,6 +12,12 @@ import { defineConfig, devices } from '@playwright/test';
  */
 const PORT = Number(process.env.E2E_PORT ?? 3123);
 const MOCK_PORT = Number(process.env.E2E_MOCK_GITHUB_PORT ?? 3124);
+/*
+ * A second, separate mock for the worker's *write* path. The read-only mock above refuses every
+ * write method with a 405, and that refusal is a property the Prompt 1 suite depends on; adding
+ * pull-request endpoints to it would quietly remove the guarantee.
+ */
+const MOCK_WRITE_PORT = Number(process.env.E2E_MOCK_GITHUB_WRITE_PORT ?? 3125);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 const appEnv = {
@@ -29,6 +35,7 @@ const appEnv = {
   JARVIS_TEST_AUTH_SECRET: 'e2e-test-auth-secret-value-0001',
   CRON_SECRET: 'e2e-cron-secret-value-0001',
   JARVIS_AI_ENABLED: 'false',
+  JARVIS_MISSION_CONCURRENCY: '1',
   LOG_LEVEL: 'warn',
   NEXT_TELEMETRY_DISABLED: '1',
 };
@@ -74,7 +81,17 @@ export default defineConfig({
       stderr: 'pipe',
     },
     {
-      command: 'npx tsx scripts/e2e-prepare.mts && npx next dev --port ' + PORT,
+      command: 'npx tsx scripts/mock-github-write.mts',
+      port: MOCK_WRITE_PORT,
+      reuseExistingServer: false,
+      env: { MOCK_GITHUB_WRITE_PORT: String(MOCK_WRITE_PORT) },
+      stdout: 'ignore',
+      stderr: 'pipe',
+    },
+    {
+      command:
+        'npx tsx scripts/e2e-prepare.mts && npx tsx scripts/e2e-sandbox.mts && npx next dev --port ' +
+        PORT,
       port: PORT,
       /*
        * Never reuse a server this run did not start. The end-to-end database is file-backed and

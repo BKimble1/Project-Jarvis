@@ -45,7 +45,19 @@ export interface JarvisErrorOptions {
   readonly retryable?: boolean;
 }
 
+/**
+ * A brand, checked instead of `instanceof`.
+ *
+ * Next.js can compile the same module more than once — the server bundle and the route-handler
+ * runtime are separate compilations — which gives `JarvisError` two class identities and makes
+ * `instanceof` quietly false. The symptom is the worst possible one: a correct 409 rendered as an
+ * opaque 500. A brand travels with the object, so identity survives.
+ */
+const JARVIS_ERROR_BRAND = '__jarvisError';
+
 export class JarvisError extends Error {
+  /** @internal */
+  readonly [JARVIS_ERROR_BRAND] = true as const;
   readonly code: JarvisErrorCode;
   readonly httpStatus: number;
   readonly details: Readonly<Record<string, unknown>>;
@@ -111,7 +123,14 @@ export class LockedError extends JarvisError {
 }
 
 export function isJarvisError(value: unknown): value is JarvisError {
-  return value instanceof JarvisError;
+  if (value instanceof JarvisError) return true;
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<string, unknown>)[JARVIS_ERROR_BRAND] === true &&
+    typeof (value as Record<string, unknown>).code === 'string' &&
+    typeof (value as Record<string, unknown>).httpStatus === 'number'
+  );
 }
 
 export interface ErrorResponseBody {

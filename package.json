@@ -2,7 +2,7 @@
   "name": "project-jarvis",
   "version": "0.1.0",
   "private": true,
-  "description": "Jarvis — a private, single-user project registry and evidence-based portfolio status brain.",
+  "description": "Jarvis \u2014 a private, single-user project registry and evidence-based portfolio status brain.",
   "type": "module",
   "engines": {
     "node": ">=20.11.0"
@@ -25,7 +25,9 @@
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
     "verify": "tsx scripts/verify.ts",
-    "verify:ci": "tsx scripts/verify.ts --skip-e2e"
+    "verify:ci": "tsx scripts/verify.ts --skip-e2e",
+    "worker": "tsx scripts/worker.ts",
+    "worker:health": "tsx scripts/worker-health.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
@@ -81,5 +83,8 @@
     "tsx": "^4.23.13",
     "typescript": "5.9",
     "vitest": "^4.1.11"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.258"
   }
 }

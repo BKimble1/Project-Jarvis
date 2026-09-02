@@ -5,16 +5,46 @@ import type { ProjectAssessment } from '@/domain/status';
 import type { BriefingService } from '@/server/services/briefing-service';
 import { groupAttention } from '@/server/services/attention-service';
 import type { ProjectRepository, QueryHistoryRepository } from '@/server/repositories/types';
+import type { MissionRepository, WorkerRepository } from '@/server/repositories/mission-types';
+import { classifyIntake, extractProjectHint } from '@/domain/mission-intake';
 import { parseQuery, resolveProjectName, type QueryIntent } from './parser';
+import {
+  answerExecutionRequest,
+  answerFinishedToday,
+  answerMissionCommand,
+  answerMissionDetail,
+  answerMissionsFailed,
+  answerMissionsNeedingMe,
+  answerMissionsRunning,
+  answerPlansAwaitingApproval,
+  answerPullRequestsReady,
+  type MissionAnswerContext,
+} from './mission-answers';
 
 /**
- * The Jarvis status command bar.
+ * The Jarvis command bar.
  *
- * Phase 1 answers questions about state. It cannot execute work, and it says so plainly rather
- * than implying otherwise — mission execution arrives in Prompt 2.
+ * It answers questions about state, and — since Prompt 2 — recognises a request that is actually
+ * *work* and shows what it understood so the owner can start a mission from it. Answering a
+ * question never creates anything: the mission is created by the owner confirming the preview.
+ *
+ * Mission data is an optional dependency so the status half of the router keeps working (and
+ * keeps being testable) without Mission Control wired in.
  */
 
 export type { AnswerItem, AnswerSection, QueryAnswer };
+
+/** Intents that need Mission Control wired in to answer at all. */
+const MISSION_INTENTS: readonly QueryIntent[] = [
+  'missions_running',
+  'missions_needing_me',
+  'plans_awaiting_approval',
+  'pull_requests_ready',
+  'missions_failed',
+  'missions_finished_today',
+  'mission_detail',
+  'mission_command',
+];
 
 export class StatusQueryRouter {
   constructor(
@@ -22,6 +52,9 @@ export class StatusQueryRouter {
       projects: ProjectRepository;
       briefings: BriefingService;
       history?: QueryHistoryRepository;
+      missions?: MissionRepository;
+      workers?: WorkerRepository;
+      clock?: () => Date;
     },
   ) {}
 
@@ -51,7 +84,14 @@ export class StatusQueryRouter {
       }
     }
 
-    const answer = await this.route(parsed.intent, parsed.raw, projects, scoped, disambiguation);
+    const answer = await this.route(
+      parsed.intent,
+      parsed.raw,
+      projects,
+      scoped,
+      disambiguation,
+      parsed.projectQuery,
+    );
 
     await this.deps.history?.record({
       queryText: rawQuery,
@@ -62,12 +102,50 @@ export class StatusQueryRouter {
     return answer;
   }
 
+  /**
+   * Mission data for the answer layer.
+   *
+   * Returns `null` when Mission Control is not wired in, which is what lets the status half of
+   * the router be constructed and tested on its own.
+   */
+  private async missionContext(projects: readonly Project[]): Promise<MissionAnswerContext | null> {
+    if (!this.deps.missions) return null;
+    const [missions, workers] = await Promise.all([
+      this.deps.missions.listOpen(),
+      this.deps.workers?.list() ?? Promise.resolve([]),
+    ]);
+    return { missions, workers, projects, now: this.deps.clock?.() ?? new Date() };
+  }
+
+  /**
+   * Mission Control is not available in this configuration.
+   *
+   * Stated honestly rather than answered vaguely: the question was understood, the data simply is
+   * not there to answer it.
+   */
+  private missionsUnavailableAnswer(intent: QueryIntent, scoped: Project | null): QueryAnswer {
+    return {
+      intent,
+      title: 'Mission Control is not available here',
+      summary:
+        'This Jarvis instance is running without Mission Control, so it cannot answer questions about missions or start one.',
+      summaryProvenance: 'verified',
+      sections: [],
+      projectIds: scoped ? [scoped.id] : [],
+      disambiguation: null,
+      notice: 'Nothing was started.',
+      href: scoped ? `/projects/${scoped.id}` : null,
+      missionPreview: null,
+    };
+  }
+
   private async route(
     intent: QueryIntent,
     raw: string,
     projects: readonly Project[],
     scoped: Project | null,
     disambiguation: QueryAnswer['disambiguation'],
+    projectQuery: string | null,
   ): Promise<QueryAnswer> {
     if (disambiguation && disambiguation.length > 0) {
       return {
@@ -83,33 +161,48 @@ export class StatusQueryRouter {
       };
     }
 
-    if (intent === 'execution_request') {
-      return {
-        intent,
-        title: 'Jarvis cannot run that yet',
-        summary:
-          'This version of Jarvis tracks and explains project status. Running work — launching Claude Code, editing repositories, opening pull requests — arrives in Prompt 2.',
-        summaryProvenance: 'verified',
-        sections: [
-          {
-            label: 'What you can do now',
-            items: [
-              {
-                text: 'Record it as a next action on a project so it is not lost.',
-                provenance: 'verified',
-              },
-              {
-                text: 'Ask "where are we?" or "what needs me?" for the current picture.',
-                provenance: 'verified',
-              },
-            ],
-          },
-        ],
-        projectIds: scoped ? [scoped.id] : [],
-        disambiguation: null,
-        notice: 'Project execution is not part of this phase. Nothing was run.',
-        href: scoped ? `/projects/${scoped.id}` : null,
-      };
+    /*
+     * A mission-control phrase, a request that reads as work, or something prohibited. All three
+     * are answered without changing anything: the owner confirms on the mission screen.
+     */
+    const intake = classifyIntake(raw);
+    if (intent === 'execution_request' || intake.kind === 'prohibited') {
+      const context = await this.missionContext(projects);
+      if (!context) return this.missionsUnavailableAnswer(intent, scoped);
+      return answerExecutionRequest(
+        context,
+        raw,
+        scoped,
+        projectQuery ?? extractProjectHint(raw.toLowerCase()),
+      );
+    }
+    if (intake.kind === 'mission_command') {
+      const context = await this.missionContext(projects);
+      if (!context) return this.missionsUnavailableAnswer('mission_command', scoped);
+      return answerMissionCommand(context, raw);
+    }
+
+    if (MISSION_INTENTS.includes(intent)) {
+      const context = await this.missionContext(projects);
+      if (!context) return this.missionsUnavailableAnswer(intent, scoped);
+      switch (intent) {
+        case 'missions_running':
+          return answerMissionsRunning(context);
+        case 'missions_needing_me':
+          return answerMissionsNeedingMe(context);
+        case 'plans_awaiting_approval':
+          return answerPlansAwaitingApproval(context);
+        case 'pull_requests_ready':
+          return answerPullRequestsReady(context);
+        case 'missions_failed':
+          return answerMissionsFailed(context);
+        case 'missions_finished_today':
+          return answerFinishedToday(context);
+        case 'mission_detail':
+          return answerMissionDetail(context, projectQuery);
+        default:
+          break;
+      }
     }
 
     switch (intent) {

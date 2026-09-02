@@ -39,6 +39,36 @@ interface Rule {
 
 /* Order matters: the most specific patterns are tried first. */
 const RULES: readonly Rule[] = [
+  /*
+   * Mission Control questions come first. Several of them ("what failed", "what is running")
+   * would otherwise be read as a bare project name by the fallthrough at the bottom.
+   */
+  {
+    intent: 'missions_running',
+    test: /^(?:what(?:'s| is)?\s+running|what(?:'s| is)?\s+(?:claude|jarvis)\s+doing|what are you (?:working on|doing))\b/,
+  },
+  {
+    intent: 'missions_needing_me',
+    test: /\bwhich missions?\s+(?:need|require)\s+(?:me|my attention|approval)\b|\bmissions?\s+waiting\s+(?:on|for)\s+me\b/,
+  },
+  {
+    intent: 'plans_awaiting_approval',
+    test: /\bwhich plans?\s+(?:need|require|are waiting for)\s+(?:approval|approving|me)\b|\bplans?\s+awaiting approval\b/,
+  },
+  {
+    intent: 'pull_requests_ready',
+    test: /\bwhich (?:pull requests?|prs?)\s+(?:are\s+)?(?:ready|need review|await)\b|\b(?:pull requests?|prs?)\s+ready (?:for review)?\b/,
+  },
+  {
+    intent: 'missions_failed',
+    test: /^what (?:failed|went wrong|broke)\b|\bwhich missions? failed\b/,
+  },
+  {
+    intent: 'missions_finished_today',
+    test: /\bwhat did (?:jarvis|you)\s+(?:finish|complete|do|get done)\b/,
+  },
+  { intent: 'mission_detail', test: /\b(?:show|open|view)\b.*\bmission\b.*/, scoped: true },
+  { intent: 'mission_detail', test: /\bmission\b.*\b(?:on|for|about)\s+.+/, scoped: true },
   {
     intent: 'project_changes',
     test: /^what(?:'s| has| is)? ?(?:changed|new|happened)\b.*\b(?:on|for|with|about|in)\s+.+/,

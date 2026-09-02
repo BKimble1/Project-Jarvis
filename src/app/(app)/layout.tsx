@@ -15,7 +15,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const services = await getServices();
 
   const projects = await services.projects.listAllForAssessment(false);
-  const attentionCount = projects.filter((project) => project.needsAttention).length;
+
+  /*
+   * The badge counts everything the "What needs me" page will show: projects the status engine
+   * flagged, plus missions waiting on an owner decision. A mission stopped dead waiting for
+   * permission has to reach the badge, or the one thing that is genuinely blocked stays invisible.
+   */
+  const blockedMissions = await services.missionRepo.list({ needsOwner: true, limit: 100 });
+  const attentionCount =
+    projects.filter((project) => project.needsAttention).length + blockedMissions.total;
 
   return (
     <AppShell

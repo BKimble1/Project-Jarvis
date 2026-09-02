@@ -129,15 +129,23 @@ test.describe('a project without a repository', () => {
     /* Scoped means scoped: the other project must not leak into this answer. */
     await expect(ask).not.toContainText(other);
 
+    const missionsBefore = (
+      (await (await page.request.get('/api/missions')).json()) as { total: number }
+    ).total;
+
     await field.fill('build a new feature');
     await ask.getByRole('button', { name: 'Ask' }).click();
 
+    /*
+     * Work asked for in the answer box is read as a mission and previewed — and previewing is all
+     * it does. Nothing is created, nothing is planned and nothing is run until the owner says so.
+     */
     await expect(
-      ask.getByRole('heading', { name: 'Jarvis cannot run that yet', level: 3 }),
+      ask.getByRole('heading', { name: 'This looks like a mission', level: 3 }),
     ).toBeVisible();
-    await expect(ask.getByText('arrives in Prompt 2.')).toBeVisible();
-    await expect(
-      ask.getByText('Project execution is not part of this phase. Nothing was run.'),
-    ).toBeVisible();
+    await expect(ask.getByText('Nothing has started.')).toBeVisible();
+
+    const missions = await page.request.get('/api/missions');
+    expect(((await missions.json()) as { total: number }).total).toBe(missionsBefore);
   });
 });

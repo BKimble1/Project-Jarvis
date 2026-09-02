@@ -7,6 +7,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Badge } from '@/components/ui/badge';
 import { ProvenanceBadge } from '@/components/provenance';
+import {
+  DisconnectedWorkers,
+  MissionAttention,
+  groupMissionAttention,
+} from '@/components/mission/mission-attention';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'What needs me' };
@@ -16,10 +21,23 @@ export const metadata: Metadata = { title: 'What needs me' };
  *
  * Only actionable, rule-backed situations appear here. If a project is simply quiet, it is not
  * on this page — silence is not an alarm.
+ *
+ * Since Prompt 2 it also carries mission decisions, and they come first: an agent stopped dead
+ * waiting for a permission decision is more urgent than anything the status engine flags.
  */
 export default async function AttentionPage() {
   const services = await getServices();
   const groups = await services.attention.collect();
+
+  const [missionPage, stalled, workers] = await Promise.all([
+    services.missions.list({ limit: 100 }),
+    services.missions.listStalled(),
+    services.missions.workerHealth(),
+  ]);
+  const missionGroups = groupMissionAttention(
+    missionPage.items,
+    new Set(stalled.map((mission) => mission.id)),
+  );
 
   /* The sidebar badge counts projects; this page counts items. Saying both keeps them reconciled. */
   const projectCount = new Set(
@@ -73,15 +91,25 @@ export default async function AttentionPage() {
       <header>
         <h1 className="text-lg font-semibold sm:text-xl">What needs me</h1>
         <p className="text-sm text-[var(--color-text-muted)]">
-          {groups.total === 0
+          {groups.total === 0 && missionGroups.total === 0
             ? 'Nothing is waiting on you.'
-            : `${groups.total} item${groups.total === 1 ? '' : 's'} across ${projectCount} project${
-                projectCount === 1 ? '' : 's'
-              }, most serious first.`}
+            : [
+                missionGroups.total > 0
+                  ? `${missionGroups.total} mission decision${missionGroups.total === 1 ? '' : 's'}`
+                  : null,
+                groups.total > 0
+                  ? `${groups.total} project item${groups.total === 1 ? '' : 's'} across ${projectCount} project${projectCount === 1 ? '' : 's'}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(' and ') + ', most serious first.'}
         </p>
       </header>
 
-      {groups.total === 0 ? (
+      <MissionAttention groups={missionGroups} />
+      <DisconnectedWorkers workers={workers} />
+
+      {groups.total === 0 && missionGroups.total === 0 ? (
         <EmptyState
           tone="positive"
           icon={<CheckCircle2 className="h-6 w-6 text-[var(--color-positive)]" aria-hidden />}

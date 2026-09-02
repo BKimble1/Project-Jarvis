@@ -109,13 +109,42 @@ design; a rollback of code does not require a rollback of schema.
 **Logs.** Function logs are single-line JSON with secrets redacted, so they can be pasted into an
 issue without leaking a credential.
 
+## Mission Control on Netlify
+
+The Netlify deployment is the **control plane only**. It owns missions, plans, approvals and the
+queue; it never runs an agent, because a function that ends in seconds cannot host a session that
+takes minutes.
+
+Add these to the site's environment:
+
+| Variable                     | Value                                                      |
+| ---------------------------- | ---------------------------------------------------------- |
+| `JARVIS_MISSION_CONCURRENCY` | `1`                                                        |
+| `JARVIS_ALLOW_WEB_RESEARCH`  | `false` unless you want research missions to reach the web |
+
+**Do not set `JARVIS_WORKER_TOKEN`, `JARVIS_WORKER_GITHUB_TOKEN`, or a worker `ANTHROPIC_API_KEY`
+here.** They belong to the worker machine. Jarvis never sends them anywhere, so a compromised
+control plane cannot hand one out — putting them in Netlify would give that property away for
+nothing.
+
+The worker runs somewhere that stays up: your laptop while you are working, a small VM, or a
+container. It dials out to Netlify and needs no inbound access, so it is happy behind a home
+router. See [WORKER.md](WORKER.md).
+
+Migration `0001_missions.sql` is applied by the same runner as `0000_init` on first boot after
+deploy. It is purely additive: it creates twelve new tables and changes nothing existing, so a
+code rollback needs no schema rollback.
+
 ## Troubleshooting
 
-| Symptom                                            | Cause                                                                                      |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Build fails on `ConfigurationError`                | A required production variable is missing. The message names it.                           |
-| `PGlite is a local development and test database…` | `DATABASE_URL` is unset or `JARVIS_DB_DRIVER=pglite` leaked into production.               |
-| Sign-in redirects back with `not_authorised`       | The signed-in account does not match the configured owner.                                 |
-| Sign-in fails with `expired`                       | The OAuth state expired (10 minutes) or the callback URL does not match `JARVIS_BASE_URL`. |
-| Scheduled sync never runs                          | `CRON_SECRET` is unset, or `JARVIS_BASE_URL` is not set for the function.                  |
-| Import lists nothing                               | The fine-grained token has no repositories selected.                                       |
+| Symptom                                            | Cause                                                                                                                       |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Build fails on `ConfigurationError`                | A required production variable is missing. The message names it.                                                            |
+| `PGlite is a local development and test database…` | `DATABASE_URL` is unset or `JARVIS_DB_DRIVER=pglite` leaked into production.                                                |
+| Sign-in redirects back with `not_authorised`       | The signed-in account does not match the configured owner.                                                                  |
+| Sign-in fails with `expired`                       | The OAuth state expired (10 minutes) or the callback URL does not match `JARVIS_BASE_URL`.                                  |
+| Scheduled sync never runs                          | `CRON_SECRET` is unset, or `JARVIS_BASE_URL` is not set for the function.                                                   |
+| Import lists nothing                               | The fine-grained token has no repositories selected.                                                                        |
+| Missions plan but never run                        | No worker is connected — the control plane cannot execute one. Check the Workers page.                                      |
+| The workers page shows "Disconnected"              | The worker process stopped or lost the network. Any mission it held is preserved, not failed. Restart it.                   |
+| A worker connects but stays "Unhealthy"            | Its `ANTHROPIC_API_KEY` is unset or its workspace root is not writable. `npm run worker:health` on that machine says which. |

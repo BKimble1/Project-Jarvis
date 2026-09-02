@@ -124,6 +124,9 @@ async function main(): Promise<void> {
     { name: 'project-detail', url: 'FIRST_PROJECT', auth: true },
     { name: 'project-new', url: '/projects/new', auth: true },
     { name: 'project-import', url: '/projects/import', auth: true },
+    { name: 'missions', url: '/missions', auth: true },
+    { name: 'mission-detail', url: 'FIRST_MISSION', auth: true },
+    { name: 'workers', url: '/workers', auth: true },
     { name: 'attention', url: '/attention', auth: true },
     { name: 'changes', url: '/changes', auth: true },
     { name: 'settings', url: '/settings', auth: true },
@@ -157,6 +160,7 @@ async function main(): Promise<void> {
     }
 
     let firstProjectUrl: string | null = null;
+    let firstMissionUrl: string | null = null;
 
     for (const entry of pages) {
       let target = entry.url;
@@ -173,6 +177,20 @@ async function main(): Promise<void> {
           }
         }
         target = firstProjectUrl;
+      }
+      if (target === 'FIRST_MISSION') {
+        if (!firstMissionUrl) {
+          await page.goto(`${BASE}/missions`, { waitUntil: 'networkidle' });
+          const hrefs = await page
+            .locator('a[href^="/missions/"]')
+            .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('href') ?? ''));
+          firstMissionUrl =
+            hrefs.find((href) => /^\/missions\/[0-9a-f-]{36}$/.test(href)) ?? '/missions';
+          if (firstMissionUrl === '/missions') {
+            problems.push(`[${label}] could not find a mission link on /missions`);
+          }
+        }
+        target = firstMissionUrl;
       }
 
       const active = entry.auth ? page : anonPage;

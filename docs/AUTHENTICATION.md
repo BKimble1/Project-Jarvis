@@ -87,6 +87,25 @@ Client-side route hiding is never used as a security mechanism.
 `NODE_ENV=production` — so the endpoint is inert in a real deployment by construction, not by a
 runtime flag that could be flipped.
 
+## Worker credentials
+
+Workers authenticate with a completely separate mechanism, and the separation is the point: a
+stolen worker token cannot read a project, and a stolen browser cookie cannot claim a mission.
+
+A worker presents `Authorization: Bearer jarvisw_<workerId>.<secret>`. Jarvis splits it, looks the
+worker up by id, and compares SHA-256 of the secret against the stored hash in constant time. That
+is the whole mechanism — no signed envelopes, no clock-skew window, no undocumented header.
+
+- The secret is shown **once**, at enrolment. Only a hash and an eight-character prefix are stored,
+  so it genuinely cannot be shown again.
+- **Rotation** replaces the hash; the old token stops working on its next request.
+- **Revocation** is a row update, checked on every single request rather than cached. A revoked
+  worker is told to shut down — and the mission it held is preserved, not failed.
+- State-changing worker requests must carry an `Idempotency-Key`, so a retried request after a
+  timeout replays its stored response instead of applying twice.
+- Worker routes are exempt from the same-origin check, because a worker is not a browser and sends
+  no `Origin`. They are not exempt from anything else.
+
 ## Recovery
 
 Locked out because the login changed or the OAuth app was deleted:

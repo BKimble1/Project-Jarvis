@@ -33,6 +33,36 @@ import { GithubImportService } from '@/server/services/import-service';
 import { AttentionService } from '@/server/services/attention-service';
 import { StatusQueryRouter } from '@/server/query/router';
 import { SessionStore, OAuthStateStore } from '@/server/auth/session';
+import {
+  DrizzleApprovalRepository,
+  DrizzleArtifactRepository,
+  DrizzleClarificationRepository,
+  DrizzleCommandRepository,
+  DrizzleEventRepository,
+  DrizzleIdempotencyRepository,
+  DrizzleMissionRepository,
+  DrizzlePermissionRepository,
+  DrizzlePlanRepository,
+  DrizzleRunRepository,
+  DrizzleVerificationRepository,
+  DrizzleWorkerRepository,
+} from '@/server/repositories/mission-drizzle';
+import type {
+  ApprovalRepository,
+  ArtifactRepository,
+  ClarificationRepository,
+  CommandRepository,
+  EventRepository,
+  IdempotencyRepository,
+  MissionRepository,
+  PermissionRepository,
+  PlanRepository,
+  RunRepository,
+  VerificationRepository,
+  WorkerRepository,
+} from '@/server/repositories/mission-types';
+import { MissionService } from '@/server/missions/mission-service';
+import { WorkerService } from '@/server/missions/worker-service';
 
 /**
  * Composition root.
@@ -61,6 +91,22 @@ export interface Services {
   readonly router: StatusQueryRouter;
   readonly sessions: SessionStore;
   readonly oauthStates: OAuthStateStore;
+
+  /* Mission Control */
+  readonly missionRepo: MissionRepository;
+  readonly plans: PlanRepository;
+  readonly approvals: ApprovalRepository;
+  readonly clarifications: ClarificationRepository;
+  readonly missionRuns: RunRepository;
+  readonly missionEvents: EventRepository;
+  readonly missionCommands: CommandRepository;
+  readonly permissions: PermissionRepository;
+  readonly verifications: VerificationRepository;
+  readonly artifacts: ArtifactRepository;
+  readonly workerRepo: WorkerRepository;
+  readonly idempotency: IdempotencyRepository;
+  readonly missions: MissionService;
+  readonly workerService: WorkerService;
 }
 
 export interface BuildServicesOverrides {
@@ -115,7 +161,70 @@ export function buildServices(
 
   const imports = new GithubImportService({ projects, sources, provider, sync, activity });
   const attention = new AttentionService({ projects, briefings });
-  const router = new StatusQueryRouter({ projects, briefings, history: queryHistory });
+
+  /* ------------------------------------------------------- Mission Control */
+  const missionRepo = new DrizzleMissionRepository(db);
+  const plans = new DrizzlePlanRepository(db);
+  const approvals = new DrizzleApprovalRepository(db);
+  const clarifications = new DrizzleClarificationRepository(db);
+  const missionRuns = new DrizzleRunRepository(db);
+  const missionEvents = new DrizzleEventRepository(db);
+  const missionCommands = new DrizzleCommandRepository(db);
+  const permissions = new DrizzlePermissionRepository(db);
+  const verifications = new DrizzleVerificationRepository(db);
+  const artifacts = new DrizzleArtifactRepository(db);
+  const workerRepo = new DrizzleWorkerRepository(db);
+  const idempotency = new DrizzleIdempotencyRepository(db);
+
+  const missions = new MissionService({
+    missions: missionRepo,
+    plans,
+    approvals,
+    clarifications,
+    runs: missionRuns,
+    events: missionEvents,
+    commands: missionCommands,
+    permissions,
+    verifications,
+    artifacts,
+    workers: workerRepo,
+    projects,
+    sources,
+    evidence,
+    activity,
+    concurrencyLimit: config.missions.concurrencyLimit,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  const workerService = new WorkerService({
+    missions: missionRepo,
+    plans,
+    approvals,
+    clarifications,
+    runs: missionRuns,
+    events: missionEvents,
+    commands: missionCommands,
+    permissions,
+    verifications,
+    artifacts,
+    workers: workerRepo,
+    projects,
+    sources,
+    evidence,
+    missionService: missions,
+    concurrencyLimit: config.missions.concurrencyLimit,
+    allowWebResearch: config.missions.allowWebResearch,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  const router = new StatusQueryRouter({
+    projects,
+    briefings,
+    history: queryHistory,
+    missions: missionRepo,
+    workers: workerRepo,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
 
   return {
     config,
@@ -138,6 +247,20 @@ export function buildServices(
     router,
     sessions: new SessionStore(db),
     oauthStates: new OAuthStateStore(db),
+    missionRepo,
+    plans,
+    approvals,
+    clarifications,
+    missionRuns,
+    missionEvents,
+    missionCommands,
+    permissions,
+    verifications,
+    artifacts,
+    workerRepo,
+    idempotency,
+    missions,
+    workerService,
   };
 }
 

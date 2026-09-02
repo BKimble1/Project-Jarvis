@@ -144,10 +144,39 @@ driver, so a change proven locally behaves the same on Netlify.
 
 ## Troubleshooting
 
-| Symptom                                            | Cause and fix                                                                                   |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `ConfigurationError: SESSION_SECRET…`              | You set `NODE_ENV=production` locally. Development supplies safe defaults; production does not. |
-| Sign-in button missing                             | `GITHUB_OAUTH_CLIENT_ID`/`SECRET` are unset.                                                    |
-| “That account cannot access this Jarvis instance.” | `OWNER_GITHUB_LOGIN` does not match the account you signed in with.                             |
-| Import page shows no repositories                  | `GITHUB_READ_TOKEN` is unset, or the token was not granted access to any repository.            |
-| Data disappears on restart                         | PGlite is in-memory unless `PGLITE_DATA_DIR` is set.                                            |
+| Symptom                                            | Cause and fix                                                                                                                                                                  |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ConfigurationError: SESSION_SECRET…`              | You set `NODE_ENV=production` locally. Development supplies safe defaults; production does not.                                                                                |
+| Sign-in button missing                             | `GITHUB_OAUTH_CLIENT_ID`/`SECRET` are unset.                                                                                                                                   |
+| “That account cannot access this Jarvis instance.” | `OWNER_GITHUB_LOGIN` does not match the account you signed in with.                                                                                                            |
+| Import page shows no repositories                  | `GITHUB_READ_TOKEN` is unset, or the token was not granted access to any repository.                                                                                           |
+| Data disappears on restart                         | PGlite is in-memory unless `PGLITE_DATA_DIR` is set.                                                                                                                           |
+| Missions plan but never run                        | No worker is connected. Jarvis can still plan from its own project record — labelled **Inferred**, saying so plainly — but only a worker executes. See [WORKER.md](WORKER.md). |
+| The worker connects but claims nothing             | Check `npm run worker:health`. Most often `ANTHROPIC_API_KEY` is unset, so the worker declines work rather than claiming a mission it cannot run.                              |
+| "The plan has not been approved"                   | Approve the **current** version. Editing a plan creates a new version and revokes the old approval, deliberately.                                                              |
+| A mission is stuck "waiting for permission"        | The agent asked for something outside its permission set. Open the mission and decide; it waits rather than proceeding.                                                        |
+
+## Running a worker locally
+
+```bash
+# In Jarvis: Workers → Enrol worker → copy the token (shown once).
+export JARVIS_CONTROL_PLANE_URL=http://localhost:3000
+export JARVIS_WORKER_TOKEN=jarvisw_…
+export ANTHROPIC_API_KEY=sk-ant-…
+export JARVIS_WORKER_GITHUB_TOKEN=github_pat_…   # Contents + Pull requests, read and write
+export JARVIS_WORKER_WORKSPACE_ROOT="$HOME/jarvis-workspaces"
+
+npm run worker:health    # check first — reports presence, never values
+npm run worker
+```
+
+Full setup, including Windows, WSL, Docker and systemd, is in [WORKER.md](WORKER.md).
+
+To rehearse a mission without touching a real repository, point it somewhere harmless:
+
+```bash
+export JARVIS_WORKER_SANDBOX_REPOS="me/my-app=/home/me/sandbox/my-app.git"
+```
+
+A redirected worker says so on the workers page, so a rehearsal is never mistaken for the real
+delivery.

@@ -251,7 +251,9 @@ describe('HTTP route handlers', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
 
     const payload = await body(response);
-    expect(payload.version).toBe(1);
+    /* Version 2 since Prompt 2: the same project payload, plus mission history. */
+    expect(payload.version).toBe(2);
+    expect(Array.isArray(payload.missions)).toBe(true);
     expect(payload.projects).toHaveLength(1);
     expect(payload.projects[0].project.name).toBe('Aurora');
     expect(payload.projects[0].evidence[0].title).toBe('Add the evidence timeline');

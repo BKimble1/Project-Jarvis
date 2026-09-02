@@ -13,6 +13,8 @@ import { PortfolioBriefingPanel } from '@/components/briefing-panel';
 import { ProjectCard } from '@/components/project-card';
 import { SyncButton } from '@/components/sync-controls';
 import { RelativeTime } from '@/components/relative-time';
+import { MissionStrip } from '@/components/mission/mission-strip';
+import { countMissions } from '@/server/status/missions';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Dashboard' };
@@ -73,6 +75,15 @@ async function DashboardContent({
   const { briefing, projects, assessments } = await services.briefings.briefPortfolio();
   const lastRuns = await services.runs.listRecent(1);
   const lastRun = lastRuns[0];
+
+  const [missionPage, workers] = await Promise.all([
+    services.missions.list({ limit: 40 }),
+    services.missions.workerHealth(),
+  ]);
+  const missionCounts = countMissions(
+    missionPage.items.map((entry) => entry.mission),
+    new Map(workers.map((health) => [health.worker.id, health] as const)),
+  );
 
   if (projects.length === 0) {
     return (
@@ -174,6 +185,7 @@ async function DashboardContent({
   return (
     <>
       <CountTiles counts={briefing.assessment.counts} />
+      <MissionStrip counts={missionCounts} missions={missionPage.items} />
       <PortfolioBriefingPanel briefing={briefing} />
 
       <section aria-label="Projects" className="flex flex-col gap-3">
@@ -192,7 +204,16 @@ async function DashboardContent({
               </>
             ) : (
               'No synchronisation has run yet.'
-            )}
+            )}{' '}
+            {/* The phone's bottom bar has room for five destinations and this is not one of them,
+                so the reading surface it belongs to carries the way in. */}
+            ·{' '}
+            <Link
+              href="/changes"
+              className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
+            >
+              What changed
+            </Link>
           </p>
         </div>
 

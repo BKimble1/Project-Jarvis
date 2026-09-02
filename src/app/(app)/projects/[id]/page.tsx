@@ -20,6 +20,7 @@ import {
 } from '@/components/project/entity-manager';
 import { NoRepositoryPanel, RepositoryPanels } from '@/components/project/evidence-panels';
 import { ProjectActions, ProjectSettingsCard } from '@/components/project/project-actions';
+import { ProjectMissions } from '@/components/mission/mission-strip';
 import { ACTIVITY_LABELS } from '@/lib/labels';
 
 export const dynamic = 'force-dynamic';
@@ -45,12 +46,13 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   const { project, sources, blockers, decisions, milestones, updates, nextActions, goals } =
     aggregate;
 
-  const [briefing, evidence, syncRuns, activity, changes] = await Promise.all([
+  const [briefing, evidence, syncRuns, activity, changes, projectMissions] = await Promise.all([
     services.briefings.briefProject(id),
     services.evidence.list({ projectId: id, limit: 200 }),
     services.runs.listByProject(id, 10),
     services.activity.listByProject(id, 25),
     services.briefings.changesForProject(id),
+    services.missions.list({ projectId: id, limit: 20 }),
   ]);
 
   const githubSource = sources.find((source) => source.kind === 'github_repo');
@@ -138,6 +140,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
       </header>
 
       <ProjectBriefingPanel briefing={briefing} evidence={evidence} projectId={project.id} />
+
+      <ProjectMissions projectId={project.id} missions={projectMissions.items} />
 
       {changes.length > 0 ? (
         <Card>

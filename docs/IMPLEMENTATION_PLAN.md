@@ -76,3 +76,60 @@ Mission execution, Claude Code launching, repo writes, branches/PRs, agents, art
 playbooks, costs, voice, RAG, integrations, billing, multi-user. Extension points only:
 `sourceKind` enum is open for new providers, `evidence.kind` is extensible, and the schema reserves
 `projects.id` as the join target for future `missions`/`tasks`/`agent_runs` tables.
+
+---
+
+# Jarvis — Phase 2 Implementation Plan
+
+_Phase 2 scope: Mission Control and the first secure Claude worker._
+
+## 0. Repository assessment (performed before any change)
+
+The baseline was recorded before a line was written: **351 unit tests, 63 integration tests, 28
+end-to-end tests**, `npm run verify` green in 337 seconds. Phase 2 extends that suite; it does not
+replace it.
+
+Two Phase 1 assertions were deliberately changed rather than preserved, because they encoded a
+limitation Phase 2 removes:
+
+- `router.answer('Build a new feature')` no longer answers "Jarvis cannot run that yet". It now
+  previews a mission. The _guarantee_ underneath — that answering a question creates nothing — is
+  still asserted, and more strictly than before (`missions.total === 0`).
+- The export payload is `version: 2`, because it now carries mission history.
+
+The end-to-end assertion on the old wording was updated for the same reason.
+
+## 1. Architecture decisions
+
+| Concern                | Choice                                                      | Rationale                                                                                                                                                                                         |
+| ---------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Where the agent runs   | A separate long-lived **worker** process                    | A Netlify function is over in seconds; a mission takes minutes. Nothing else about the deployment needed to change.                                                                               |
+| Where the worker lives | `src/worker/**` in this repository                          | Both sides compile against the same domain contract, so a protocol change fails one `tsc`. An ESLint rule stops it importing anything but `@/domain`.                                             |
+| Transport              | The worker **polls** over HTTP                              | A serverless control plane cannot hold a socket, and cannot dial out to a worker behind a home router. Polling is also correct after a refresh and after a laptop sleeps.                         |
+| Live UI                | Bounded polling of an incremental event endpoint            | Same reasoning, plus: the page must be closable without affecting the mission.                                                                                                                    |
+| Agent runtime          | The official Claude Agent SDK behind `AgentRuntime`         | Mission logic imports the interface, never the SDK, so every test drives the real flow against a deterministic fake — and a later runtime is a new file, not a rewrite.                           |
+| SDK loading            | A dynamic import of an **optional** dependency              | A worker without the package (or without a key) reports "runtime unavailable" honestly instead of crashing, which is what makes "live execution stays visibly unavailable until configured" real. |
+| Workspaces             | A fresh **clone** per mission, never a worktree             | A worktree shares `.git` with the owner's real checkout. A clone is slower and completely separable, and avoids Windows worktree/symlink differences.                                             |
+| Concurrency            | One mission, enforced inside the claiming SQL               | The schema models several (`mission_runs.attempt`, `workers.max_concurrency`); the product refuses to use them yet.                                                                               |
+| Claiming               | One `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED)` | The concurrency check, the queued check and the write are one statement, so two workers cannot both observe "nothing is running".                                                                 |
+
+## 2. What was built, in order
+
+1. `docs/MISSION_CONTROL.md` and `docs/THREAT_MODEL.md` — the plan and the threat model, first.
+2. Domain models: mission, state machine, plan, run, worker, wire protocol, redaction, workspace
+   safety, risk classification, intake, clarification. All pure, all unit-tested.
+3. `drizzle/0001_missions.sql` — twelve tables, applied through the same runner as `0000_init`.
+4. Repositories, then `MissionService` (owner-facing) and `WorkerService` (worker-facing).
+5. Owner routes through `ownerRoute`; worker routes through a **separate** `workerRoute` wrapper.
+6. The worker runtime: policy, git, workspace, verification, delivery, runtime adapters, runner,
+   main loop, Dockerfile.
+7. Status Brain integration and the extended query router.
+8. UI: inbox, start bar, plan review, live run, clarification, workers, attention.
+9. Tests at four layers, then documentation.
+
+## 3. Deliberate omissions
+
+Multi-agent missions, automatic merge, direct default-branch push, production deploys,
+TestFlight/App Store, self-approval, unbounded repair loops, autonomous recurring missions. Each is
+absent by construction rather than by a flag: there is no code path that could do any of them, and
+the four-method `GitHubDelivery` interface is asserted at runtime so adding one fails the suite.

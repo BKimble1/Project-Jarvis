@@ -111,6 +111,35 @@ Only normalised project evidence: names, statuses, phases, goals, claim text, an
 titles, timestamps and public URLs. Never credentials, never environment variables, never repository
 contents, never database rows verbatim. The narrator is given no tools, so it cannot call anything.
 
+## Mission Control (Phase 2)
+
+Phase 2 introduced two credentials that can change things, and a class of input that did not exist
+before: repository content read by an agent. Both are covered in detail in
+[THREAT_MODEL.md](THREAT_MODEL.md), which is written to be falsifiable — nearly every mitigation
+names the test that proves it.
+
+The short version:
+
+- **The worker holds its own credentials.** Jarvis never sends the Anthropic key or the GitHub
+  write token to anything, and neither appears in a mission prompt, an event, an artifact, a
+  transcript or an export.
+- **The GitHub write credential is narrow by documentation and by code.** Contents and Pull
+  requests, read and write, on selected repositories — and `GitHubDelivery` has no method that
+  could merge, release, deploy, or change a setting or a secret.
+- **Push safety is a pure function over the argument vector**, evaluated before `git` starts:
+  no default-branch push, no force, no `--mirror`/`--all`/`--tags`/`--delete`, no forcing or
+  deleting refspec, no ref other than the mission branch.
+- **Repository content is untrusted input.** A `CLAUDE.md` is project guidance from an untrusted
+  source; it never becomes permission. The precedence order is stated in the system prompt _and_
+  enforced by `evaluateToolUse`, which runs whatever the model believes.
+- **Worker requests are authenticated with a bearer token** whose SHA-256 hash is all Jarvis
+  stores, checked in constant time, revocable immediately, and required to carry an
+  `Idempotency-Key` on anything that changes state.
+- **A worker's claims are never taken at face value.** It says "run X"; the control plane looks X
+  up, checks it belongs to that worker and is still the mission's active run, and only then acts.
+- **A lost heartbeat changes nothing.** It marks the _worker_ disconnected. A crash never produces
+  a false `completed`, and never a false `failed` either — the work on disk may be fine.
+
 ## Reporting
 
 This is a single-user personal deployment. If you find a problem, fix it on a branch and run

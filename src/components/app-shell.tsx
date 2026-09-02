@@ -3,7 +3,15 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { BellRing, FolderKanban, History, LayoutDashboard, LogOut, Settings } from 'lucide-react';
+import {
+  BellRing,
+  FolderKanban,
+  History,
+  LayoutDashboard,
+  LogOut,
+  Rocket,
+  Settings,
+} from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { PwaRegister } from '@/components/pwa-register';
@@ -18,6 +26,7 @@ interface NavItem {
 const NAV: readonly NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', shortLabel: 'Home', Icon: LayoutDashboard },
   { href: '/projects', label: 'Projects', shortLabel: 'Projects', Icon: FolderKanban },
+  { href: '/missions', label: 'Missions', shortLabel: 'Missions', Icon: Rocket },
   { href: '/attention', label: 'What needs me', shortLabel: 'Needs me', Icon: BellRing },
   { href: '/changes', label: 'What changed', shortLabel: 'Changed', Icon: History },
   { href: '/settings', label: 'Settings', shortLabel: 'Settings', Icon: Settings },
@@ -104,11 +113,16 @@ export function AppShell({
         </main>
       </div>
 
+      {/*
+        Five tabs is the most that stays comfortably tappable at 320px, so the bottom bar shows
+        the five destinations that are acted on and leaves "What changed" to the sidebar and the
+        dashboard, where it is a reading surface rather than a decision surface.
+      */}
       <nav
         aria-label="Main"
         className="fixed inset-x-0 bottom-0 z-30 flex border-t border-[var(--color-border)] bg-[var(--color-surface)]/97 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
       >
-        {NAV.map(({ href, shortLabel, Icon }) => (
+        {NAV.filter((item) => item.href !== '/changes').map(({ href, shortLabel, Icon }) => (
           <Link
             key={href}
             href={href}

@@ -97,3 +97,18 @@ credential could not read, absent Actions history, and a repository with no obse
   not a number.
 - **No cross-source erasure.** One failing source never removes trustworthy evidence contributed by
   another (`R-AT4` records the failure; the other source's claims stand).
+
+## Mission rules
+
+Since Phase 2, missions contribute their own rules — `R-MS*` for what a mission state implies
+about a project, plus the risk, queueing, claiming and clarification rules. They live in
+[MISSION_RULES.md](MISSION_RULES.md), and they follow the same discipline as everything above:
+every conclusion carries a rule id, and nothing is inferred that the evidence does not support.
+
+Two of them are worth reading here, because they are the ones most likely to be got wrong:
+
+- **`R-MS11`** — a mission whose worker has stopped reporting is never described as progressing.
+  It is flagged, and it is listed under **unknowns**, because Jarvis genuinely does not know. It is
+  not marked complete, and it is not marked failed, on the strength of silence.
+- **`R-MS5`** — a draft pull request is "ready for your review, not merged". It is never counted
+  as finished work, and never appears under recently completed.

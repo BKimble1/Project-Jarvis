@@ -67,6 +67,28 @@ const config = [
     },
   },
   {
+    /*
+     * The worker runtime is a separate process that talks to Jarvis over HTTP. It shares the
+     * domain contract and nothing else: no database handle, no session store, no getConfig().
+     * This rule is what keeps that boundary real rather than aspirational.
+     */
+    files: ['src/worker/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@/server/*', '@/server/**', '@/app/*', '@/app/**', '@/components/**'],
+              message:
+                'The worker is a separate process. It may import @/domain only, and reach the control plane over HTTP.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['scripts/**/*.{ts,mts}', 'tests/**/*.ts', 'vitest.config.ts', 'playwright.config.ts'],
     rules: { 'no-console': 'off' },
   },

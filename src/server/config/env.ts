@@ -59,6 +59,16 @@ const rawSchema = z.object({
 
   CRON_SECRET: z.string().trim().optional(),
 
+  /* ------------------------------------------------------- Mission Control */
+  /**
+   * How many missions may run at once. Prompt 2 ships one on purpose: everything below is built
+   * for concurrency, but the product has not yet earned the right to use it.
+   */
+  JARVIS_MISSION_CONCURRENCY: positiveInt(1, 4),
+  /** Web research for read-only missions. Off unless deliberately enabled. */
+  JARVIS_ALLOW_WEB_RESEARCH: bool(false),
+  JARVIS_MISSION_EVENT_RETENTION_DAYS: positiveInt(180, 3650),
+
   JARVIS_DEMO_MODE: bool(false),
   JARVIS_ALLOW_DEMO_IN_PRODUCTION: bool(false),
 
@@ -103,6 +113,11 @@ export interface AppConfig {
     readonly model: string;
   };
   readonly cronSecret: string | null;
+  readonly missions: {
+    readonly concurrencyLimit: number;
+    readonly allowWebResearch: boolean;
+    readonly eventRetentionDays: number;
+  };
   readonly demoMode: boolean;
   readonly testAuthSecret: string | null;
   readonly sync: {
@@ -272,6 +287,11 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
     },
     ai: { enabled: aiEnabled, apiKey: aiKey, model: env.JARVIS_AI_MODEL },
     cronSecret,
+    missions: {
+      concurrencyLimit: env.JARVIS_MISSION_CONCURRENCY,
+      allowWebResearch: env.JARVIS_ALLOW_WEB_RESEARCH,
+      eventRetentionDays: env.JARVIS_MISSION_EVENT_RETENTION_DAYS,
+    },
     demoMode,
     testAuthSecret,
     sync: {
@@ -320,6 +340,8 @@ export interface ConfigHealth {
   readonly aiConfigured: boolean;
   readonly aiModel: string;
   readonly cronConfigured: boolean;
+  readonly missionConcurrency: number;
+  readonly webResearchEnabled: boolean;
   readonly demoMode: boolean;
   readonly baseUrl: string;
   readonly warnings: readonly string[];
@@ -338,6 +360,8 @@ export function describeConfigHealth(config: AppConfig = getConfig()): ConfigHea
     aiConfigured: config.ai.enabled,
     aiModel: config.ai.model,
     cronConfigured: config.cronSecret !== null,
+    missionConcurrency: config.missions.concurrencyLimit,
+    webResearchEnabled: config.missions.allowWebResearch,
     demoMode: config.demoMode,
     baseUrl: config.baseUrl,
     warnings: config.warnings,

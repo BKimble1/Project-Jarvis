@@ -244,9 +244,65 @@ export async function seedDemoData(services: Services, now = new Date()): Promis
   projectIds.push(paused.id);
   await services.sources.addManualSource(paused.id);
 
+  /* ------------------------------------------------------------ missions */
+  await seedDemoMissions(services, { coreCreditId: coreCredit.id, siteId: site.id });
+
   for (const id of projectIds) {
     await services.briefings.briefProject(id, { regenerate: true });
   }
 
   return { projectIds, evidenceWritten };
+}
+
+/**
+ * Demo missions, one per interesting state.
+ *
+ * Deliberately stops short of a running mission: a mission cannot be "running" without a worker
+ * genuinely holding it, and seeding that state would be Jarvis lying about its own record — the
+ * one thing this product exists not to do. What is seeded is what can honestly exist without a
+ * worker: a mission awaiting clarification, and one with a plan awaiting approval.
+ */
+async function seedDemoMissions(
+  services: Services,
+  projects: { coreCreditId: string; siteId: string },
+): Promise<void> {
+  const awaitingApproval = await services.missions.create(
+    {
+      rawRequest: 'Add a spending-trends chart to the dashboard',
+      projectId: projects.coreCreditId,
+      priority: 'high',
+      constraints: [],
+      doNotTouch: [],
+      acceptanceCriteria: ['The chart shows the last six months and the suite is still green.'],
+    },
+    'demo-owner',
+  );
+
+  /* Answer whatever Jarvis asks, then let it draft a plan from the project record. */
+  for (let round = 0; round < 4; round += 1) {
+    const open = (await services.clarifications.list(awaitingApproval.mission.id)).filter(
+      (question) => question.answeredAt === null,
+    );
+    if (open.length === 0) break;
+    for (const question of open) {
+      await services.missions.answerClarification(awaitingApproval.mission.id, question.id, {
+        answer: question.recommendation ?? 'Use your judgement and keep it small.',
+        acceptRecommendation: false,
+      });
+    }
+  }
+  await services.missions.requestPlan(awaitingApproval.mission.id).catch(() => undefined);
+
+  /* A second mission left waiting on a question, so both owner-blocked states are visible. */
+  await services.missions.create(
+    {
+      rawRequest: 'Redesign the marketing site hero',
+      projectId: projects.siteId,
+      priority: 'medium',
+      constraints: [],
+      doNotTouch: [],
+      acceptanceCriteria: [],
+    },
+    'demo-owner',
+  );
 }
