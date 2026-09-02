@@ -97,7 +97,11 @@ export interface AppConfig {
     readonly url: string | null;
     readonly pgliteDataDir: string | null;
   };
-  readonly ai: { readonly enabled: boolean; readonly apiKey: string | null; readonly model: string };
+  readonly ai: {
+    readonly enabled: boolean;
+    readonly apiKey: string | null;
+    readonly model: string;
+  };
   readonly cronSecret: string | null;
   readonly demoMode: boolean;
   readonly testAuthSecret: string | null;
@@ -120,7 +124,8 @@ export interface AppConfig {
 
 function normaliseBaseUrl(value: string | undefined, isProduction: boolean): string {
   const fallback = 'http://localhost:3000';
-  const candidate = value?.trim() || process.env.URL?.trim() || process.env.DEPLOY_PRIME_URL?.trim();
+  const candidate =
+    value?.trim() || process.env.URL?.trim() || process.env.DEPLOY_PRIME_URL?.trim();
   if (!candidate) {
     if (isProduction) {
       throw new ConfigurationError(
@@ -144,8 +149,12 @@ function normaliseBaseUrl(value: string | undefined, isProduction: boolean): str
 export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = rawSchema.safeParse(source);
   if (!parsed.success) {
-    const problems = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`);
-    throw new ConfigurationError(`Invalid environment configuration:\n - ${problems.join('\n - ')}`);
+    const problems = parsed.error.issues.map(
+      (issue) => `${issue.path.join('.')}: ${issue.message}`,
+    );
+    throw new ConfigurationError(
+      `Invalid environment configuration:\n - ${problems.join('\n - ')}`,
+    );
   }
   const env = parsed.data;
   const isProduction = env.NODE_ENV === 'production';
@@ -206,7 +215,8 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
   }
 
   /* ---------------------------------------------------------------- ai */
-  const aiKey = env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY.length > 0 ? env.ANTHROPIC_API_KEY : null;
+  const aiKey =
+    env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY.length > 0 ? env.ANTHROPIC_API_KEY : null;
   const aiEnabled = env.JARVIS_AI_ENABLED && aiKey !== null;
   if (!aiKey) {
     warnings.push('ANTHROPIC_API_KEY is not set; Jarvis uses the deterministic narrator.');

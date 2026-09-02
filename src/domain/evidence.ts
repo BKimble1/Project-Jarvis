@@ -100,7 +100,9 @@ export const MANUAL_EVIDENCE_KINDS = new Set<z.infer<typeof evidenceKindSchema>>
  * Observed provider data is `verified`; owner-entered data is `manual`. Nothing here ever
  * returns `inferred` — inference is the status engine's job, not the evidence store's.
  */
-export function classifyEvidence(evidence: Pick<Evidence, 'kind' | 'sourceSystem'>): 'verified' | 'manual' {
+export function classifyEvidence(
+  evidence: Pick<Evidence, 'kind' | 'sourceSystem'>,
+): 'verified' | 'manual' {
   if (evidence.sourceSystem === 'manual') return 'manual';
   if (MANUAL_EVIDENCE_KINDS.has(evidence.kind)) return 'manual';
   return 'verified';

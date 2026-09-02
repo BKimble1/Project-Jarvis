@@ -6,23 +6,10 @@
  * unsupported rather than answered vaguely.
  */
 
-export const QUERY_INTENTS = [
-  'portfolio_status',
-  'project_status',
-  'portfolio_changes',
-  'project_changes',
-  'needs_attention',
-  'blocked_projects',
-  'stale_projects',
-  'focus',
-  'list_active',
-  'list_waiting',
-  'list_paused',
-  'list_in_progress',
-  'execution_request',
-  'unsupported',
-] as const;
-export type QueryIntent = (typeof QUERY_INTENTS)[number];
+import { QUERY_INTENTS, type QueryIntent } from '@/domain/query';
+
+export { QUERY_INTENTS };
+export type { QueryIntent };
 
 export interface ParsedQuery {
   readonly intent: QueryIntent;
@@ -42,8 +29,7 @@ const normalise = (value: string): string =>
 const EXECUTION_PATTERN =
   /\b(build|implement|write|create|add|fix|refactor|deploy|ship|release|open a pr|raise a pr|make a branch|run the tests|generate|code|develop|migrate|upgrade|install|publish|push)\b/;
 
-const PROJECT_SCOPE_PATTERN =
-  /\b(?:on|for|with|about|of|in)\s+(.+)$/;
+const PROJECT_SCOPE_PATTERN = /\b(?:on|for|with|about|of|in)\s+(.+)$/;
 
 interface Rule {
   readonly intent: QueryIntent;
@@ -53,19 +39,40 @@ interface Rule {
 
 /* Order matters: the most specific patterns are tried first. */
 const RULES: readonly Rule[] = [
-  { intent: 'project_changes', test: /^what(?:'s| has| is)? ?(?:changed|new|happened)\b.*\b(?:on|for|with|about|in)\s+.+/, scoped: true },
+  {
+    intent: 'project_changes',
+    test: /^what(?:'s| has| is)? ?(?:changed|new|happened)\b.*\b(?:on|for|with|about|in)\s+.+/,
+    scoped: true,
+  },
   { intent: 'portfolio_changes', test: /^what(?:'s| has| is)? ?(?:changed|new|happened)\b/ },
-  { intent: 'project_status', test: /^(?:where are we|where do we stand|status|how(?:'s| is) it going|what(?:'s| is) the status)\b.*\b(?:on|for|with|about|in)\s+.+/, scoped: true },
-  { intent: 'portfolio_status', test: /^(?:where are we|where do we stand|status|give me the (?:status|briefing|rundown)|brief me|what(?:'s| is) the status)\b/ },
-  { intent: 'needs_attention', test: /\b(?:needs? (?:me|my attention|attention)|what should i look at|what requires me|anything for me)\b/ },
+  {
+    intent: 'project_status',
+    test: /^(?:where are we|where do we stand|status|how(?:'s| is) it going|what(?:'s| is) the status)\b.*\b(?:on|for|with|about|in)\s+.+/,
+    scoped: true,
+  },
+  {
+    intent: 'portfolio_status',
+    test: /^(?:where are we|where do we stand|status|give me the (?:status|briefing|rundown)|brief me|what(?:'s| is) the status)\b/,
+  },
+  {
+    intent: 'needs_attention',
+    test: /\b(?:needs? (?:me|my attention|attention)|what should i look at|what requires me|anything for me)\b/,
+  },
   { intent: 'blocked_projects', test: /\b(?:blocked|blockers?)\b/ },
   { intent: 'stale_projects', test: /\b(?:stale|out of date|going cold|neglected|forgotten)\b/ },
   { intent: 'focus', test: /\b(?:focus|prioriti[sz]e|work on next|what next|what should i do)\b/ },
-  { intent: 'list_in_progress', test: /\b(?:in progress|currently (?:in progress|being worked on)|what(?:'s| is) happening)\b/ },
+  {
+    intent: 'list_in_progress',
+    test: /\b(?:in progress|currently (?:in progress|being worked on)|what(?:'s| is) happening)\b/,
+  },
   { intent: 'list_waiting', test: /\bwaiting\b/ },
   { intent: 'list_paused', test: /\bpaused\b/ },
   { intent: 'list_active', test: /\bactive\b/ },
-  { intent: 'project_status', test: /^(?:tell me about|how is|how's|catch me up on)\s+.+/, scoped: true },
+  {
+    intent: 'project_status',
+    test: /^(?:tell me about|how is|how's|catch me up on)\s+.+/,
+    scoped: true,
+  },
 ];
 
 export function parseQuery(raw: string): ParsedQuery {
@@ -124,7 +131,10 @@ export interface MatchResult {
  * finally an edit-distance pass catches typos. When more than one candidate survives, the caller
  * is told to ask rather than guessing.
  */
-export function resolveProjectName(query: string, candidates: readonly MatchCandidate[]): MatchResult {
+export function resolveProjectName(
+  query: string,
+  candidates: readonly MatchCandidate[],
+): MatchResult {
   const needle = normalise(query);
   if (needle.length === 0 || candidates.length === 0) return { kind: 'none', matches: [] };
 
@@ -136,13 +146,16 @@ export function resolveProjectName(query: string, candidates: readonly MatchCand
 
   const exact = scored.filter((entry) => entry.name === needle || entry.short === needle);
   if (exact.length === 1) return { kind: 'exact', matches: exact.map((entry) => entry.candidate) };
-  if (exact.length > 1) return { kind: 'ambiguous', matches: exact.map((entry) => entry.candidate) };
+  if (exact.length > 1)
+    return { kind: 'ambiguous', matches: exact.map((entry) => entry.candidate) };
 
   const prefix = scored.filter(
     (entry) => entry.name.startsWith(needle) || (entry.short?.startsWith(needle) ?? false),
   );
-  if (prefix.length === 1) return { kind: 'close', matches: prefix.map((entry) => entry.candidate) };
-  if (prefix.length > 1) return { kind: 'ambiguous', matches: prefix.map((entry) => entry.candidate) };
+  if (prefix.length === 1)
+    return { kind: 'close', matches: prefix.map((entry) => entry.candidate) };
+  if (prefix.length > 1)
+    return { kind: 'ambiguous', matches: prefix.map((entry) => entry.candidate) };
 
   const substring = scored.filter(
     (entry) =>
@@ -150,8 +163,10 @@ export function resolveProjectName(query: string, candidates: readonly MatchCand
       needle.includes(entry.name) ||
       (entry.short ? entry.short.includes(needle) || needle.includes(entry.short) : false),
   );
-  if (substring.length === 1) return { kind: 'close', matches: substring.map((entry) => entry.candidate) };
-  if (substring.length > 1) return { kind: 'ambiguous', matches: substring.map((entry) => entry.candidate) };
+  if (substring.length === 1)
+    return { kind: 'close', matches: substring.map((entry) => entry.candidate) };
+  if (substring.length > 1)
+    return { kind: 'ambiguous', matches: substring.map((entry) => entry.candidate) };
 
   const tolerance = needle.length <= 5 ? 1 : needle.length <= 10 ? 2 : 3;
   const fuzzy = scored

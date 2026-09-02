@@ -54,7 +54,8 @@ export function latestWorkflowStates(evidence: readonly Evidence[]): readonly Wo
   const byName = new Map<string, WorkflowState>();
   for (const item of [...evidence].sort(byObservedDesc)) {
     if (item.kind !== 'workflow_run') continue;
-    const name = typeof item.metadata.workflowName === 'string' ? item.metadata.workflowName : item.title;
+    const name =
+      typeof item.metadata.workflowName === 'string' ? item.metadata.workflowName : item.title;
     if (byName.has(name)) continue;
     byName.set(name, {
       name,
@@ -83,7 +84,10 @@ export function failingWorkflows(
 }
 
 /** R-PR1 — Merged pull requests inside the recent window are verified completed work. */
-export function recentlyMergedPullRequests(evidence: readonly Evidence[], now: Date): readonly Evidence[] {
+export function recentlyMergedPullRequests(
+  evidence: readonly Evidence[],
+  now: Date,
+): readonly Evidence[] {
   return evidence
     .filter(
       (item) =>
@@ -98,7 +102,10 @@ export function recentlyMergedPullRequests(evidence: readonly Evidence[], now: D
  * R-PR2 — An open pull request only evidences *active* work while it is still moving.
  * A draft or long-untouched PR is reported as an open thread, not as work in progress.
  */
-export function activeOpenPullRequests(evidence: readonly Evidence[], now: Date): readonly Evidence[] {
+export function activeOpenPullRequests(
+  evidence: readonly Evidence[],
+  now: Date,
+): readonly Evidence[] {
   return evidence
     .filter(
       (item) =>
@@ -110,7 +117,10 @@ export function activeOpenPullRequests(evidence: readonly Evidence[], now: Date)
     .sort(byObservedDesc);
 }
 
-export function staleOpenPullRequests(evidence: readonly Evidence[], now: Date): readonly Evidence[] {
+export function staleOpenPullRequests(
+  evidence: readonly Evidence[],
+  now: Date,
+): readonly Evidence[] {
   return evidence
     .filter(
       (item) =>
@@ -124,7 +134,9 @@ export function staleOpenPullRequests(evidence: readonly Evidence[], now: Date):
 export function recentCommits(evidence: readonly Evidence[], now: Date): readonly Evidence[] {
   return evidence
     .filter(
-      (item) => item.kind === 'git_commit' && withinDays(item.observedAt, now, STATUS_WINDOWS.activeCommitDays),
+      (item) =>
+        item.kind === 'git_commit' &&
+        withinDays(item.observedAt, now, STATUS_WINDOWS.activeCommitDays),
     )
     .sort(byObservedDesc);
 }
@@ -169,7 +181,8 @@ export function computeFreshness(input: AssessmentInput): FreshnessAssessment {
   const failing = sources
     .filter((source) => source.syncStatus === 'failed' && source.lastSyncFailedAt)
     .sort(
-      (a, b) => new Date(b.lastSyncFailedAt ?? 0).getTime() - new Date(a.lastSyncFailedAt ?? 0).getTime(),
+      (a, b) =>
+        new Date(b.lastSyncFailedAt ?? 0).getTime() - new Date(a.lastSyncFailedAt ?? 0).getTime(),
     );
   const worst = failing[0];
 
@@ -210,12 +223,24 @@ export function deriveStatus(input: AssessmentInput): DerivedStatus {
   if (archivedRepo && project.status !== 'completed') {
     return { status: 'archived', provenance: 'verified', rule: 'R-ST2-archived-repository' };
   }
-  if (project.status === 'completed' || project.status === 'paused' || project.status === 'archived') {
-    return { status: project.status, provenance: 'manual', rule: 'R-ST3-owner-declared-terminal-state' };
+  if (
+    project.status === 'completed' ||
+    project.status === 'paused' ||
+    project.status === 'archived'
+  ) {
+    return {
+      status: project.status,
+      provenance: 'manual',
+      rule: 'R-ST3-owner-declared-terminal-state',
+    };
   }
   const activeBlockers = blockers.filter((blocker) => blocker.isActive);
   if (activeBlockers.length > 0 && project.status !== 'blocked') {
-    return { status: 'blocked', provenance: 'inferred', rule: 'R-ST4-active-blocker-implies-blocked' };
+    return {
+      status: 'blocked',
+      provenance: 'inferred',
+      rule: 'R-ST4-active-blocker-implies-blocked',
+    };
   }
   if (project.status === 'unknown') {
     return { status: 'unknown', provenance: 'unknown', rule: 'R-ST5-no-status-recorded' };
@@ -225,7 +250,10 @@ export function deriveStatus(input: AssessmentInput): DerivedStatus {
 
 /* ---------------------------------------------------------------- attention */
 
-export function attentionReasons(input: AssessmentInput, freshness: FreshnessAssessment): readonly AttentionReason[] {
+export function attentionReasons(
+  input: AssessmentInput,
+  freshness: FreshnessAssessment,
+): readonly AttentionReason[] {
   const { aggregate, evidence, now } = input;
   const { project, blockers, nextActions, sources } = aggregate;
   const reasons: AttentionReason[] = [];
@@ -336,7 +364,8 @@ export function attentionReasons(input: AssessmentInput, freshness: FreshnessAss
   /* R-AT8 — an archived repository behind a project the owner still treats as live. */
   for (const source of sources) {
     if (source.github?.archived !== true) continue;
-    if (project.status === 'completed' || project.status === 'archived' || project.archivedAt) continue;
+    if (project.status === 'completed' || project.status === 'archived' || project.archivedAt)
+      continue;
     reasons.push({
       code: 'archived_repository',
       severity: 'low',
@@ -390,7 +419,9 @@ export function recommendActions(
   }
 
   if (derived.status === 'completed') {
-    const openActions = nextActions.filter((action) => action.status === 'open' || action.status === 'in_progress');
+    const openActions = nextActions.filter(
+      (action) => action.status === 'open' || action.status === 'in_progress',
+    );
     if (openActions.length > 0) {
       actions.push({
         action: `Close out ${openActions.length} remaining action${openActions.length === 1 ? '' : 's'} or archive the project.`,
@@ -436,7 +467,9 @@ export function recommendActions(
     });
   }
 
-  for (const blocker of blockers.filter((item) => item.isActive && !item.requiresOwnerDecision).slice(0, 2)) {
+  for (const blocker of blockers
+    .filter((item) => item.isActive && !item.requiresOwnerDecision)
+    .slice(0, 2)) {
     actions.push({
       action: `Clear the blocker: ${blocker.title}`,
       rationale: blocker.resolutionRequirement ?? 'This blocker is still open.',
@@ -453,7 +486,9 @@ export function recommendActions(
     .slice(0, 3)) {
     actions.push({
       action: action.action,
-      rationale: action.dueDate ? `You planned this for ${action.dueDate}.` : 'On your next-action list.',
+      rationale: action.dueDate
+        ? `You planned this for ${action.dueDate}.`
+        : 'On your next-action list.',
       provenance: 'manual',
       evidenceIds: [],
       requiresOwner: action.requiresOwner,
@@ -480,7 +515,8 @@ export function recommendActions(
   if (reasons.some((reason) => reason.code === 'failed_sync')) {
     actions.push({
       action: 'Re-run synchronisation and check the GitHub credential.',
-      rationale: 'The most recent synchronisation failed, so the information here may be out of date.',
+      rationale:
+        'The most recent synchronisation failed, so the information here may be out of date.',
       provenance: 'verified',
       evidenceIds: [],
       requiresOwner: true,
@@ -535,10 +571,19 @@ export function assessProject(input: AssessmentInput): ProjectAssessment {
   /* ------------------------------------------------ recently completed work */
   const recentlyCompleted: Claim[] = [];
   for (const pr of merged.slice(0, 5)) {
-    recentlyCompleted.push(claim(`Merged ${pr.title}`, 'verified', [pr.id], 'R-PR1-merged-pr-is-completed-work'));
+    recentlyCompleted.push(
+      claim(`Merged ${pr.title}`, 'verified', [pr.id], 'R-PR1-merged-pr-is-completed-work'),
+    );
   }
   for (const release of releases.slice(0, 3)) {
-    recentlyCompleted.push(claim(`Released ${release.title}`, 'verified', [release.id], 'R-RL1-release-is-completed-work'));
+    recentlyCompleted.push(
+      claim(
+        `Released ${release.title}`,
+        'verified',
+        [release.id],
+        'R-RL1-release-is-completed-work',
+      ),
+    );
   }
   /* R-MS1 — a milestone the owner ticked stays Manual until another source verifies it. */
   for (const milestone of milestones) {
@@ -555,7 +600,9 @@ export function assessProject(input: AssessmentInput): ProjectAssessment {
   }
   for (const update of updates.slice(0, 3)) {
     if (!withinDays(update.createdAt, now, STATUS_WINDOWS.recentlyCompletedDays)) continue;
-    recentlyCompleted.push(claim(update.whatChanged, 'manual', [], 'R-MU1-manual-update-is-manual'));
+    recentlyCompleted.push(
+      claim(update.whatChanged, 'manual', [], 'R-MU1-manual-update-is-manual'),
+    );
   }
 
   /* ------------------------------------------------------------ current work */
@@ -563,11 +610,18 @@ export function assessProject(input: AssessmentInput): ProjectAssessment {
   if (derived.status === 'paused') {
     /* R-ST3 — a paused project is never described as progressing. */
     currentWork.push(
-      claim('Paused — no work is expected until you resume it.', 'manual', [], 'R-CW0-paused-not-progressing'),
+      claim(
+        'Paused — no work is expected until you resume it.',
+        'manual',
+        [],
+        'R-CW0-paused-not-progressing',
+      ),
     );
   } else {
     for (const pr of activePrs.slice(0, 4)) {
-      currentWork.push(claim(`Open pull request ${pr.title}`, 'verified', [pr.id], 'R-PR2-active-open-pr'));
+      currentWork.push(
+        claim(`Open pull request ${pr.title}`, 'verified', [pr.id], 'R-PR2-active-open-pr'),
+      );
     }
     if (commits.length > 0) {
       const latest = commits[0];
@@ -582,12 +636,22 @@ export function assessProject(input: AssessmentInput): ProjectAssessment {
     }
     for (const milestone of milestones.filter((item) => item.state === 'in_progress').slice(0, 3)) {
       currentWork.push(
-        claim(`Working on milestone: ${milestone.title}`, 'manual', milestone.evidenceIds, 'R-CW2-in-progress-milestone'),
+        claim(
+          `Working on milestone: ${milestone.title}`,
+          'manual',
+          milestone.evidenceIds,
+          'R-CW2-in-progress-milestone',
+        ),
       );
     }
     const latestUpdate = updates[0];
-    if (latestUpdate?.currentWork && withinDays(latestUpdate.createdAt, now, STATUS_WINDOWS.recentlyCompletedDays)) {
-      currentWork.push(claim(latestUpdate.currentWork, 'manual', [], 'R-CW3-owner-reported-current-work'));
+    if (
+      latestUpdate?.currentWork &&
+      withinDays(latestUpdate.createdAt, now, STATUS_WINDOWS.recentlyCompletedDays)
+    ) {
+      currentWork.push(
+        claim(latestUpdate.currentWork, 'manual', [], 'R-CW3-owner-reported-current-work'),
+      );
     }
   }
 
@@ -618,7 +682,9 @@ export function assessProject(input: AssessmentInput): ProjectAssessment {
     .filter((blocker) => blocker.isActive && blocker.requiresOwnerDecision)
     .map((blocker) =>
       claim(
-        blocker.resolutionRequirement ? `${blocker.title} — ${blocker.resolutionRequirement}` : blocker.title,
+        blocker.resolutionRequirement
+          ? `${blocker.title} — ${blocker.resolutionRequirement}`
+          : blocker.title,
         'manual',
         blocker.evidenceIds,
         'R-DC1-decision-blocker',
@@ -759,7 +825,9 @@ function collectUnknowns(
   const unknowns: string[] = [];
 
   if (!project.goal && goals.length === 0) {
-    unknowns.push('No goal has been recorded, so Jarvis cannot judge whether the project is on track.');
+    unknowns.push(
+      'No goal has been recorded, so Jarvis cannot judge whether the project is on track.',
+    );
   }
   if (!project.phase) {
     unknowns.push('No phase has been recorded.');

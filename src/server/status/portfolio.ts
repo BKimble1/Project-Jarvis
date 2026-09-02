@@ -82,7 +82,9 @@ export function assessPortfolio(input: PortfolioInput): PortfolioAssessment {
 
   const counts: PortfolioCounts = {
     total: projects.length,
-    active: live.filter((project) => (assessments.get(project.id)?.status ?? project.status) === 'active').length,
+    active: live.filter(
+      (project) => (assessments.get(project.id)?.status ?? project.status) === 'active',
+    ).length,
     progressing: progressingIds.length,
     needsAttention: needsAttentionIds.length,
     blocked: blockedIds.length,
@@ -94,7 +96,9 @@ export function assessPortfolio(input: PortfolioInput): PortfolioAssessment {
     syncFailing,
   };
 
-  const nameById = new Map(projects.map((project) => [project.id, project.shortName ?? project.name]));
+  const nameById = new Map(
+    projects.map((project) => [project.id, project.shortName ?? project.name]),
+  );
 
   return {
     generatedAt: now.toISOString(),
@@ -155,7 +159,8 @@ export function buildFocusOrder(
 
       const status = assessment?.status ?? project.status;
       /* Terminal states never outrank live work in the focus list. */
-      const terminalPenalty = status === 'completed' || status === 'archived' || status === 'paused' ? 10 : 0;
+      const terminalPenalty =
+        status === 'completed' || status === 'archived' || status === 'paused' ? 10 : 0;
 
       return {
         project,
@@ -165,7 +170,12 @@ export function buildFocusOrder(
         provenance: worst?.provenance ?? assessment?.headline.provenance ?? 'unknown',
       };
     })
-    .sort((a, b) => a.bucket - b.bucket || a.priority - b.priority || a.project.name.localeCompare(b.project.name));
+    .sort(
+      (a, b) =>
+        a.bucket - b.bucket ||
+        a.priority - b.priority ||
+        a.project.name.localeCompare(b.project.name),
+    );
 
   return entries.map((entry, index) => ({
     projectId: entry.project.id,
@@ -217,8 +227,10 @@ function describeEvidenceChange(item: Evidence): string | null {
     case 'release':
       return `Released ${item.title}`;
     case 'workflow_run': {
-      const conclusion = typeof item.metadata.conclusion === 'string' ? item.metadata.conclusion : null;
-      if (conclusion === 'failure' || conclusion === 'timed_out') return `Build failed: ${item.title}`;
+      const conclusion =
+        typeof item.metadata.conclusion === 'string' ? item.metadata.conclusion : null;
+      if (conclusion === 'failure' || conclusion === 'timed_out')
+        return `Build failed: ${item.title}`;
       return null;
     }
     case 'deployment':
@@ -241,7 +253,9 @@ function collectPortfolioUnknowns(
       `${noAssessment.length} project${noAssessment.length === 1 ? ' has' : 's have'} not been assessed yet.`,
     );
   }
-  const failing = projects.filter((project) => assessments.get(project.id)?.freshness.state === 'failing');
+  const failing = projects.filter(
+    (project) => assessments.get(project.id)?.freshness.state === 'failing',
+  );
   if (failing.length > 0) {
     unknowns.push(
       `${failing.length} project${failing.length === 1 ? "'s" : "s'"} data could not be refreshed, so recent activity there is unknown.`,
@@ -249,7 +263,9 @@ function collectPortfolioUnknowns(
   }
   const noGoal = projects.filter((project) => !project.goal);
   if (noGoal.length > 0) {
-    unknowns.push(`${noGoal.length} project${noGoal.length === 1 ? '' : 's'} have no recorded goal.`);
+    unknowns.push(
+      `${noGoal.length} project${noGoal.length === 1 ? '' : 's'} have no recorded goal.`,
+    );
   }
   return unknowns;
 }

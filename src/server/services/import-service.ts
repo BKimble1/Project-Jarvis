@@ -2,8 +2,13 @@ import { z } from 'zod';
 import { ConflictError, ValidationError } from '@/domain/errors';
 import { githubSourceConfigSchema, projectInputSchema, tagSchema } from '@/domain/project';
 import type { Project } from '@/domain/project';
-import type { RepositorySummary, SourceProvider } from '@/server/providers/types';
-import type { ActivityLogService, ProjectRepository, SourceRepository } from '@/server/repositories/types';
+import type { ImportableRepository } from '@/domain/integrations';
+import type { SourceProvider } from '@/server/providers/types';
+import type {
+  ActivityLogService,
+  ProjectRepository,
+  SourceRepository,
+} from '@/server/repositories/types';
 import type { ProjectSyncService, SyncOutcome } from './sync-service';
 
 /**
@@ -24,10 +29,7 @@ export const importRequestSchema = githubSourceConfigSchema.extend({
 });
 export type ImportRequest = z.infer<typeof importRequestSchema>;
 
-export interface ImportableRepository extends RepositorySummary {
-  readonly alreadyImported: boolean;
-  readonly importedProjectId: string | null;
-}
+export type { ImportableRepository };
 
 export interface ImportResult {
   readonly project: Project;
@@ -117,7 +119,8 @@ export class GithubImportService {
     const sync = await this.deps.sync.syncProject(project.id, 'import');
     const refreshed = (await this.deps.projects.findById(project.id)) ?? project;
 
-    const outcome = sync.status === 'ok' ? 'full' : sync.status === 'partial' ? 'partial' : 'failed';
+    const outcome =
+      sync.status === 'ok' ? 'full' : sync.status === 'partial' ? 'partial' : 'failed';
     const message =
       outcome === 'full'
         ? `Imported ${summary.fullName} and synchronised ${sync.evidenceWritten} record${sync.evidenceWritten === 1 ? '' : 's'}.`

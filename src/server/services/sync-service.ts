@@ -28,15 +28,9 @@ import type {
  *    the lock expires so a killed invocation cannot wedge anything.
  */
 
-export interface SyncOutcome {
-  readonly projectId: string;
-  readonly projectName: string;
-  readonly status: SyncStatus;
-  readonly evidenceWritten: number;
-  readonly message: string;
-  readonly runId: string | null;
-  readonly skipped?: 'locked' | 'no_source' | 'not_configured';
-}
+import type { SyncOutcome } from '@/domain/integrations';
+
+export type { SyncOutcome };
 
 export interface SyncServiceDeps {
   readonly projects: ProjectRepository;
@@ -197,7 +191,10 @@ export class ProjectSyncService {
         await this.deps.runs.finish(run.id, {
           status: snapshot.status,
           evidenceWritten: written,
-          categoryResults: snapshot.categories as Record<string, { ok: boolean; reason?: string; count?: number }>,
+          categoryResults: snapshot.categories as Record<
+            string,
+            { ok: boolean; reason?: string; count?: number }
+          >,
           rateLimit: {
             remaining: snapshot.rateLimit?.remaining ?? null,
             limit: snapshot.rateLimit?.limit ?? null,
@@ -222,7 +219,13 @@ export class ProjectSyncService {
       }
     }
 
-    const status: SyncStatus = anyFailure ? (totalWritten > 0 ? 'partial' : 'failed') : anyPartial ? 'partial' : 'ok';
+    const status: SyncStatus = anyFailure
+      ? totalWritten > 0
+        ? 'partial'
+        : 'failed'
+      : anyPartial
+        ? 'partial'
+        : 'ok';
 
     return {
       projectId,

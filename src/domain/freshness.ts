@@ -8,20 +8,21 @@ import type { FreshnessState, ProjectType } from './enums';
  * project is not. Using one global threshold would either spam attention for slow-moving
  * projects or hide genuinely abandoned fast-moving ones.
  */
-export const FRESHNESS_THRESHOLDS: Readonly<Record<ProjectType, { live: number; recent: number }>> = {
-  software: { live: 6, recent: 24 * 7 },
-  ios_app: { live: 6, recent: 24 * 7 },
-  website: { live: 6, recent: 24 * 7 },
-  business: { live: 24, recent: 24 * 21 },
-  product_idea: { live: 24, recent: 24 * 30 },
-  research: { live: 24, recent: 24 * 21 },
-  school: { live: 24, recent: 24 * 14 },
-  career: { live: 24, recent: 24 * 30 },
-  engineering: { live: 12, recent: 24 * 14 },
-  document: { live: 24, recent: 24 * 14 },
-  personal: { live: 24, recent: 24 * 30 },
-  other: { live: 24, recent: 24 * 21 },
-};
+export const FRESHNESS_THRESHOLDS: Readonly<Record<ProjectType, { live: number; recent: number }>> =
+  {
+    software: { live: 6, recent: 24 * 7 },
+    ios_app: { live: 6, recent: 24 * 7 },
+    website: { live: 6, recent: 24 * 7 },
+    business: { live: 24, recent: 24 * 21 },
+    product_idea: { live: 24, recent: 24 * 30 },
+    research: { live: 24, recent: 24 * 21 },
+    school: { live: 24, recent: 24 * 14 },
+    career: { live: 24, recent: 24 * 30 },
+    engineering: { live: 12, recent: 24 * 14 },
+    document: { live: 24, recent: 24 * 14 },
+    personal: { live: 24, recent: 24 * 30 },
+    other: { live: 24, recent: 24 * 21 },
+  };
 
 export interface FreshnessInput {
   readonly type: ProjectType;
@@ -57,7 +58,8 @@ export function assessFreshness(input: FreshnessInput): FreshnessAssessment {
   const failed = lastSyncFailedAt ? new Date(lastSyncFailedAt) : null;
   const failedValid = failed && !Number.isNaN(failed.getTime()) ? failed : null;
   const syncIsFailing =
-    failedValid !== null && (observedValid === null || failedValid.getTime() > observedValid.getTime());
+    failedValid !== null &&
+    (observedValid === null || failedValid.getTime() > observedValid.getTime());
 
   if (syncIsFailing) {
     return {

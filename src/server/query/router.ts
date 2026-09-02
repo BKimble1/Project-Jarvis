@@ -1,4 +1,5 @@
 import type { ProvenanceLevel } from '@/domain/enums';
+import type { AnswerItem, AnswerSection, QueryAnswer } from '@/domain/query';
 import type { Project } from '@/domain/project';
 import type { ProjectAssessment } from '@/domain/status';
 import type { BriefingService } from '@/server/services/briefing-service';
@@ -13,33 +14,7 @@ import { parseQuery, resolveProjectName, type QueryIntent } from './parser';
  * than implying otherwise — mission execution arrives in Prompt 2.
  */
 
-export interface AnswerItem {
-  readonly text: string;
-  readonly provenance: ProvenanceLevel;
-  readonly projectId?: string;
-  readonly href?: string;
-  readonly evidenceIds?: readonly string[];
-}
-
-export interface AnswerSection {
-  readonly label: string;
-  readonly items: readonly AnswerItem[];
-  readonly emptyText?: string;
-}
-
-export interface QueryAnswer {
-  readonly intent: QueryIntent;
-  readonly title: string;
-  readonly summary: string;
-  readonly summaryProvenance: ProvenanceLevel;
-  readonly sections: readonly AnswerSection[];
-  readonly projectIds: readonly string[];
-  /** Present when the project name matched more than one project. */
-  readonly disambiguation: readonly { readonly id: string; readonly name: string }[] | null;
-  /** Present for requests Jarvis understands but cannot perform yet. */
-  readonly notice: string | null;
-  readonly href: string | null;
-}
+export type { AnswerItem, AnswerSection, QueryAnswer };
 
 export class StatusQueryRouter {
   constructor(
@@ -67,7 +42,10 @@ export class StatusQueryRouter {
         })),
       );
       if (match.kind === 'ambiguous') {
-        disambiguation = match.matches.map((candidate) => ({ id: candidate.id, name: candidate.name }));
+        disambiguation = match.matches.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+        }));
       } else if (match.matches.length === 1) {
         scoped = projects.find((project) => project.id === match.matches[0]?.id) ?? null;
       }
@@ -116,8 +94,14 @@ export class StatusQueryRouter {
           {
             label: 'What you can do now',
             items: [
-              { text: 'Record it as a next action on a project so it is not lost.', provenance: 'verified' },
-              { text: 'Ask "where are we?" or "what needs me?" for the current picture.', provenance: 'verified' },
+              {
+                text: 'Record it as a next action on a project so it is not lost.',
+                provenance: 'verified',
+              },
+              {
+                text: 'Ask "where are we?" or "what needs me?" for the current picture.',
+                provenance: 'verified',
+              },
             ],
           },
         ],
@@ -139,20 +123,41 @@ export class StatusQueryRouter {
       case 'needs_attention':
         return this.attentionAnswer(projects);
       case 'blocked_projects':
-        return this.filteredAnswer('blocked_projects', 'Blocked projects', projects, (assessment) => assessment.status === 'blocked');
+        return this.filteredAnswer(
+          'blocked_projects',
+          'Blocked projects',
+          projects,
+          (assessment) => assessment.status === 'blocked',
+        );
       case 'stale_projects':
         return this.filteredAnswer(
           'stale_projects',
           'Projects with stale data',
           projects,
-          (assessment) => assessment.freshness.state === 'stale' || assessment.freshness.state === 'never',
+          (assessment) =>
+            assessment.freshness.state === 'stale' || assessment.freshness.state === 'never',
         );
       case 'list_waiting':
-        return this.filteredAnswer('list_waiting', 'Waiting projects', projects, (assessment) => assessment.status === 'waiting');
+        return this.filteredAnswer(
+          'list_waiting',
+          'Waiting projects',
+          projects,
+          (assessment) => assessment.status === 'waiting',
+        );
       case 'list_paused':
-        return this.filteredAnswer('list_paused', 'Paused projects', projects, (assessment) => assessment.status === 'paused');
+        return this.filteredAnswer(
+          'list_paused',
+          'Paused projects',
+          projects,
+          (assessment) => assessment.status === 'paused',
+        );
       case 'list_active':
-        return this.filteredAnswer('list_active', 'Active projects', projects, (assessment) => assessment.status === 'active');
+        return this.filteredAnswer(
+          'list_active',
+          'Active projects',
+          projects,
+          (assessment) => assessment.status === 'active',
+        );
       case 'list_in_progress':
         return this.filteredAnswer(
           'list_in_progress',
@@ -221,8 +226,20 @@ export class StatusQueryRouter {
       summary: narrative.currentState,
       summaryProvenance: assessment.headline.provenance,
       sections: [
-        section('Recently completed', assessment.recentlyCompleted, project.id, href, 'Nothing verified recently.'),
-        section('In progress', assessment.currentWork, project.id, href, 'No evidence of work in progress.'),
+        section(
+          'Recently completed',
+          assessment.recentlyCompleted,
+          project.id,
+          href,
+          'Nothing verified recently.',
+        ),
+        section(
+          'In progress',
+          assessment.currentWork,
+          project.id,
+          href,
+          'No evidence of work in progress.',
+        ),
         section('Blockers', assessment.activeBlockers, project.id, href, 'No active blockers.'),
         section('Decisions needed', assessment.decisionsNeeded, project.id, href, 'None.'),
         {
@@ -281,7 +298,10 @@ export class StatusQueryRouter {
         },
         {
           label: 'Unknowns',
-          items: briefing.assessment.unknowns.map((text) => ({ text, provenance: 'unknown' as const })),
+          items: briefing.assessment.unknowns.map((text) => ({
+            text,
+            provenance: 'unknown' as const,
+          })),
           emptyText: 'Nothing flagged as unknown.',
         },
       ],
@@ -346,11 +366,17 @@ export class StatusQueryRouter {
         { label: 'Decisions required', items: toItems(groups.decisions), emptyText: 'None.' },
         { label: 'Active blockers', items: toItems(groups.blockers), emptyText: 'None.' },
         { label: 'Failed builds', items: toItems(groups.failedBuilds), emptyText: 'None.' },
-        { label: 'Failed synchronisations', items: toItems(groups.failedSyncs), emptyText: 'None.' },
+        {
+          label: 'Failed synchronisations',
+          items: toItems(groups.failedSyncs),
+          emptyText: 'None.',
+        },
         { label: 'Overdue', items: toItems(groups.overdue), emptyText: 'None.' },
         { label: 'Stale projects', items: toItems(groups.stale), emptyText: 'None.' },
       ],
-      projectIds: [...new Set([...groups.decisions, ...groups.blockers].map((item) => item.projectId))],
+      projectIds: [
+        ...new Set([...groups.decisions, ...groups.blockers].map((item) => item.projectId)),
+      ],
       disambiguation: null,
       notice: null,
       href: '/attention',
@@ -428,7 +454,11 @@ export class StatusQueryRouter {
     };
   }
 
-  private notFoundAnswer(intent: QueryIntent, raw: string, projects: readonly Project[]): QueryAnswer {
+  private notFoundAnswer(
+    intent: QueryIntent,
+    raw: string,
+    projects: readonly Project[],
+  ): QueryAnswer {
     return {
       intent,
       title: 'No matching project',

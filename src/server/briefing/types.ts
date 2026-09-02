@@ -55,7 +55,9 @@ export interface BriefingNarrator {
   readonly name: string;
   isAvailable(): boolean;
   narrateProject(payload: NarrationPayload): Promise<NarrationResult<BriefingNarrative>>;
-  narratePortfolio(payload: PortfolioNarrationPayload): Promise<NarrationResult<PortfolioNarrative>>;
+  narratePortfolio(
+    payload: PortfolioNarrationPayload,
+  ): Promise<NarrationResult<PortfolioNarrative>>;
 }
 
 export function buildNarrationPayload(

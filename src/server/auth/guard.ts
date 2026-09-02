@@ -47,7 +47,9 @@ export async function requireOwnerApi(): Promise<OwnerSession> {
 export function assertCronAuthorised(request: Request): void {
   const config = getConfig();
   if (!config.cronSecret) {
-    throw new ForbiddenError('Scheduled synchronisation is disabled because CRON_SECRET is not set.');
+    throw new ForbiddenError(
+      'Scheduled synchronisation is disabled because CRON_SECRET is not set.',
+    );
   }
   const header =
     request.headers.get('x-jarvis-cron-secret') ??

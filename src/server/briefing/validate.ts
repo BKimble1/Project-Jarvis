@@ -31,7 +31,10 @@ export function validateProjectNarrative(
 ): ValidationResult<BriefingNarrative> {
   const parsed = briefingNarrativeSchema.safeParse(raw);
   if (!parsed.success) {
-    return { ok: false, reason: `Narrator output failed schema validation: ${firstIssue(parsed.error)}` };
+    return {
+      ok: false,
+      reason: `Narrator output failed schema validation: ${firstIssue(parsed.error)}`,
+    };
   }
   const narrative = parsed.data;
   const allowed = new Set(payload.evidence.map((item) => item.id));
@@ -59,13 +62,19 @@ export function validateProjectNarrative(
     return { ok: false, reason: 'Narrator reported more blockers than the assessment found.' };
   }
   if (narrative.recentlyCompleted.length > assessment.recentlyCompleted.length) {
-    return { ok: false, reason: 'Narrator reported more completed work than the assessment found.' };
+    return {
+      ok: false,
+      reason: 'Narrator reported more completed work than the assessment found.',
+    };
   }
   if (narrative.nextActions.length > Math.max(3, assessment.recommendedActions.length)) {
     return { ok: false, reason: 'Narrator produced more next actions than were recommended.' };
   }
   if (containsFabricatedProgress(narrative.currentState)) {
-    return { ok: false, reason: 'Narrator produced a completion percentage, which Jarvis never reports.' };
+    return {
+      ok: false,
+      reason: 'Narrator produced a completion percentage, which Jarvis never reports.',
+    };
   }
   return { ok: true, value: narrative };
 }
@@ -76,7 +85,10 @@ export function validatePortfolioNarrative(
 ): ValidationResult<PortfolioNarrative> {
   const parsed = portfolioNarrativeSchema.safeParse(raw);
   if (!parsed.success) {
-    return { ok: false, reason: `Narrator output failed schema validation: ${firstIssue(parsed.error)}` };
+    return {
+      ok: false,
+      reason: `Narrator output failed schema validation: ${firstIssue(parsed.error)}`,
+    };
   }
   const narrative = parsed.data;
   const { assessment } = payload;
@@ -88,17 +100,24 @@ export function validatePortfolioNarrative(
     return { ok: false, reason: 'Narrator listed more projects than exist in the portfolio.' };
   }
   if (containsFabricatedProgress(narrative.headline)) {
-    return { ok: false, reason: 'Narrator produced a completion percentage, which Jarvis never reports.' };
+    return {
+      ok: false,
+      reason: 'Narrator produced a completion percentage, which Jarvis never reports.',
+    };
   }
   return { ok: true, value: narrative };
 }
 
 /** Jarvis never reports completion percentages or health scores; neither may a narrator. */
 export function containsFabricatedProgress(text: string): boolean {
-  return /\b\d{1,3}\s?%\s*(complete|done|finished|progress)|\b(health|progress)\s+score\b/i.test(text);
+  return /\b\d{1,3}\s?%\s*(complete|done|finished|progress)|\b(health|progress)\s+score\b/i.test(
+    text,
+  );
 }
 
-function firstIssue(error: { issues: readonly { path: PropertyKey[]; message: string }[] }): string {
+function firstIssue(error: {
+  issues: readonly { path: PropertyKey[]; message: string }[];
+}): string {
   const issue = error.issues[0];
   return issue ? `${issue.path.join('.') || 'root'} — ${issue.message}` : 'unknown issue';
 }

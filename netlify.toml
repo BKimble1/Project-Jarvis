@@ -1,0 +1,39 @@
+# Netlify deployment configuration for Jarvis.
+
+[build]
+  # Migrations run before the build so the deployed code never meets an older schema.
+  command = "npm run db:migrate && npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Scheduled synchronisation.
+#
+# Netlify's scheduler invokes the function below, which calls /api/cron/sync with
+# CRON_SECRET. The endpoint is closed when that secret is unset, so a misconfigured
+# deployment fails safe rather than exposing an unauthenticated sync trigger.
+[functions."scheduled-sync"]
+  schedule = "0 */2 * * *"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/icons/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800, immutable"

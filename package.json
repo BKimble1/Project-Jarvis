@@ -25,7 +25,7 @@
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
     "verify": "tsx scripts/verify.ts",
-    "verify:ci": "tsx scripts/verify.ts --ci"
+    "verify:ci": "tsx scripts/verify.ts --skip-e2e"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

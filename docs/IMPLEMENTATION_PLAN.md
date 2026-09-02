@@ -11,18 +11,18 @@ content (project name and intent) in the rewritten README.
 
 ## 1. Stack decision
 
-| Concern | Choice | Rationale |
-| --- | --- | --- |
-| Framework | Next.js 15 (App Router) + React 19 | Server components enforce authorization on the server, one deployable for UI + API, first-class Netlify support. |
-| Language | TypeScript, `strict` + `noUncheckedIndexedAccess` | Required by the brief; catches evidence/provenance mistakes at compile time. |
-| Styling | Tailwind CSS v4 + small local UI primitives over Radix | Calm, dense, accessible, mobile-first; no heavyweight component framework. |
-| Validation | Zod v4 | Runtime validation at every trust boundary (env, HTTP body, GitHub payloads, AI output). |
-| Database | PostgreSQL via Drizzle ORM with SQL migrations | Durable hosted storage (Neon/Netlify DB) in production; migration-backed. |
-| Local/test DB | PGlite (embedded Postgres, same dialect + same migrations) | A functioning local path with zero external credentials; **never** used in production. |
-| GitHub | `@octokit/rest` behind a `SourceProvider` interface | Read-only, centralised, mockable. |
-| AI narration | Optional `@anthropic-ai/sdk`, schema-validated structured output | Fully optional; deterministic narrator is the default and the fallback. |
-| Tests | Vitest (unit + integration on PGlite) + Playwright (E2E) | One `npm run verify` gate. |
-| Deploy | Netlify (`@netlify/plugin-nextjs`) + scheduled function for sync | Requested target. |
+| Concern       | Choice                                                           | Rationale                                                                                                        |
+| ------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Framework     | Next.js 15 (App Router) + React 19                               | Server components enforce authorization on the server, one deployable for UI + API, first-class Netlify support. |
+| Language      | TypeScript, `strict` + `noUncheckedIndexedAccess`                | Required by the brief; catches evidence/provenance mistakes at compile time.                                     |
+| Styling       | Tailwind CSS v4 + small local UI primitives over Radix           | Calm, dense, accessible, mobile-first; no heavyweight component framework.                                       |
+| Validation    | Zod v4                                                           | Runtime validation at every trust boundary (env, HTTP body, GitHub payloads, AI output).                         |
+| Database      | PostgreSQL via Drizzle ORM with SQL migrations                   | Durable hosted storage (Neon/Netlify DB) in production; migration-backed.                                        |
+| Local/test DB | PGlite (embedded Postgres, same dialect + same migrations)       | A functioning local path with zero external credentials; **never** used in production.                           |
+| GitHub        | `@octokit/rest` behind a `SourceProvider` interface              | Read-only, centralised, mockable.                                                                                |
+| AI narration  | Optional `@anthropic-ai/sdk`, schema-validated structured output | Fully optional; deterministic narrator is the default and the fallback.                                          |
+| Tests         | Vitest (unit + integration on PGlite) + Playwright (E2E)         | One `npm run verify` gate.                                                                                       |
+| Deploy        | Netlify (`@netlify/plugin-nextjs`) + scheduled function for sync | Requested target.                                                                                                |
 
 Persistence is behind `ProjectRepository` / `EvidenceRepository` / … interfaces so the provider
 can be replaced without touching feature code.

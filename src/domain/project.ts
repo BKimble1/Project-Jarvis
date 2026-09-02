@@ -65,7 +65,10 @@ export const tagSchema = z
   .toLowerCase()
   .min(1)
   .max(32)
-  .regex(/^[a-z0-9][a-z0-9 _-]*$/, 'Tags may contain letters, numbers, spaces, hyphens and underscores');
+  .regex(
+    /^[a-z0-9][a-z0-9 _-]*$/,
+    'Tags may contain letters, numbers, spaces, hyphens and underscores',
+  );
 
 export const projectTypeSchema = z.enum(PROJECT_TYPES);
 export const projectStatusSchema = z.enum(PROJECT_STATUSES);

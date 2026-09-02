@@ -108,8 +108,14 @@ export const projects = pgTable(
     targetDate: text('target_date'),
     icon: text('icon'),
     color: text('color'),
-    tags: jsonb('tags').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
-    links: jsonb('links').$type<ExternalLink[]>().notNull().default(sql`'[]'::jsonb`),
+    tags: jsonb('tags')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    links: jsonb('links')
+      .$type<ExternalLink[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     lastManualUpdateAt: timestamp('last_manual_update_at', { withTimezone: true }),
@@ -218,7 +224,10 @@ export const milestones = pgTable(
     completedAt: timestamp('completed_at', { withTimezone: true }),
     provenance: text('provenance').$type<ProvenanceLevel>().notNull().default('manual'),
     sourceSystem: text('source_system').$type<SourceSystem>().notNull().default('manual'),
-    evidenceIds: jsonb('evidence_ids').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    evidenceIds: jsonb('evidence_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -243,7 +252,10 @@ export const blockers = pgTable(
     requiresOwnerDecision: boolean('requires_owner_decision').notNull().default(false),
     provenance: text('provenance').$type<ProvenanceLevel>().notNull().default('manual'),
     sourceSystem: text('source_system').$type<SourceSystem>().notNull().default('manual'),
-    evidenceIds: jsonb('evidence_ids').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    evidenceIds: jsonb('evidence_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   },
@@ -268,7 +280,10 @@ export const decisions = pgTable(
     supersedesDecisionId: uuid('supersedes_decision_id'),
     provenance: text('provenance').$type<ProvenanceLevel>().notNull().default('manual'),
     sourceSystem: text('source_system').$type<SourceSystem>().notNull().default('manual'),
-    evidenceIds: jsonb('evidence_ids').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    evidenceIds: jsonb('evidence_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -340,7 +355,10 @@ export const evidence = pgTable(
     url: text('url'),
     observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
     fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
-    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
   },
   (table) => [
     /** Idempotency key: re-syncing the same commit/PR/run updates instead of duplicating. */
@@ -369,18 +387,39 @@ export const statusSnapshots = pgTable(
     status: text('status').$type<ProjectStatus>().notNull(),
     phase: text('phase'),
     headline: text('headline').notNull(),
-    recentlyCompleted: jsonb('recently_completed').$type<Claim[]>().notNull().default(sql`'[]'::jsonb`),
-    currentWork: jsonb('current_work').$type<Claim[]>().notNull().default(sql`'[]'::jsonb`),
-    blockers: jsonb('blockers').$type<Claim[]>().notNull().default(sql`'[]'::jsonb`),
-    decisionsNeeded: jsonb('decisions_needed').$type<Claim[]>().notNull().default(sql`'[]'::jsonb`),
+    recentlyCompleted: jsonb('recently_completed')
+      .$type<Claim[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    currentWork: jsonb('current_work')
+      .$type<Claim[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    blockers: jsonb('blockers')
+      .$type<Claim[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    decisionsNeeded: jsonb('decisions_needed')
+      .$type<Claim[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     recommendedActions: jsonb('recommended_actions')
       .$type<RecommendedAction[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
-    attention: jsonb('attention').$type<AttentionReason[]>().notNull().default(sql`'[]'::jsonb`),
-    evidenceIds: jsonb('evidence_ids').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    attention: jsonb('attention')
+      .$type<AttentionReason[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    evidenceIds: jsonb('evidence_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     freshness: jsonb('freshness').$type<FreshnessAssessment>().notNull(),
-    unknowns: jsonb('unknowns').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    unknowns: jsonb('unknowns')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     summaryMethod: text('summary_method').$type<SummaryMethod>().notNull(),
     /** Stable hash of the assessment; equal fingerprints mean "nothing meaningful changed". */
     fingerprint: text('fingerprint').notNull(),
@@ -451,7 +490,10 @@ export const activityLog = pgTable(
     kind: text('kind').$type<ActivityKind>().notNull(),
     summary: text('summary').notNull(),
     /** Small, redacted, non-sensitive detail. Never a raw provider payload. */
-    detail: jsonb('detail').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    detail: jsonb('detail')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

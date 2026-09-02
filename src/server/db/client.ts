@@ -42,7 +42,8 @@ async function createHandle(config: AppConfig): Promise<DatabaseHandle> {
     const { Pool, neonConfig } = await import('@neondatabase/serverless');
     const { drizzle } = await import('drizzle-orm/neon-serverless');
     if (typeof WebSocket !== 'undefined' && !neonConfig.webSocketConstructor) {
-      neonConfig.webSocketConstructor = WebSocket as unknown as typeof neonConfig.webSocketConstructor;
+      neonConfig.webSocketConstructor =
+        WebSocket as unknown as typeof neonConfig.webSocketConstructor;
     }
     const pool = new Pool({ connectionString: url, max: 1 });
     const db = drizzle(pool, { schema }) as unknown as Database;

@@ -13,6 +13,7 @@ const config = [
       'playwright-report/**',
       'test-results/**',
       'drizzle/**',
+      'next-env.d.ts',
       'netlify/functions/**',
       '.jarvis-data/**',
     ],
@@ -66,7 +67,7 @@ const config = [
     },
   },
   {
-    files: ['scripts/**/*.ts', 'tests/**/*.ts', 'vitest.config.ts', 'playwright.config.ts'],
+    files: ['scripts/**/*.{ts,mts}', 'tests/**/*.ts', 'vitest.config.ts', 'playwright.config.ts'],
     rules: { 'no-console': 'off' },
   },
 ];

@@ -149,7 +149,11 @@ export interface EvidenceRepository {
   findByIds(ids: readonly string[]): Promise<readonly Evidence[]>;
   countByProject(projectIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
   latestObservedAt(projectId: string): Promise<string | null>;
-  deleteOlderThan(projectId: string, cutoff: Date, keepKinds?: readonly Evidence['kind'][]): Promise<number>;
+  deleteOlderThan(
+    projectId: string,
+    cutoff: Date,
+    keepKinds?: readonly Evidence['kind'][],
+  ): Promise<number>;
 }
 
 export interface SnapshotRepository {

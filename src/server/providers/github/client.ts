@@ -107,7 +107,8 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
 
   const instrumentedFetch: typeof fetch = async (input, init) => {
     const method = (init?.method ?? 'GET').toUpperCase();
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     assertReadOnlyRequest(method, url);
 
     let lastError: unknown = null;
@@ -139,7 +140,9 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
     }
     throw new GithubApiError(
       'unavailable',
-      lastError instanceof Error ? `Could not reach GitHub: ${lastError.name}` : 'Could not reach GitHub.',
+      lastError instanceof Error
+        ? `Could not reach GitHub: ${lastError.name}`
+        : 'Could not reach GitHub.',
       rateLimit,
     );
   };
@@ -191,7 +194,10 @@ function numberOrNull(value: string | null): number | null {
  * This is where "credential revoked", "repository renamed", "Actions disabled" and
  * "rate limited" stop being HTTP status codes and become states the product can explain.
  */
-export function translateGithubError(error: unknown, rateLimit: RateLimitState | null): GithubApiError {
+export function translateGithubError(
+  error: unknown,
+  rateLimit: RateLimitState | null,
+): GithubApiError {
   if (error instanceof GithubApiError) return error;
 
   if (error instanceof RequestError) {
@@ -228,12 +234,20 @@ export function translateGithubError(error: unknown, rateLimit: RateLimitState |
       );
     }
     if (error.status === 409) {
-      return new GithubApiError('empty_repository', 'The repository has no commits yet.', headerLimit);
+      return new GithubApiError(
+        'empty_repository',
+        'The repository has no commits yet.',
+        headerLimit,
+      );
     }
     if (error.status >= 500) {
       return new GithubApiError('unavailable', 'GitHub is currently unavailable.', headerLimit);
     }
-    return new GithubApiError('unavailable', `GitHub request failed (status ${error.status}).`, headerLimit);
+    return new GithubApiError(
+      'unavailable',
+      `GitHub request failed (status ${error.status}).`,
+      headerLimit,
+    );
   }
 
   if (error instanceof Error && error.name === 'AbortError') {

@@ -39,9 +39,7 @@ const EMPTY: AttentionGroups = {
 };
 
 export class AttentionService {
-  constructor(
-    private readonly deps: { projects: ProjectRepository; briefings: BriefingService },
-  ) {}
+  constructor(private readonly deps: { projects: ProjectRepository; briefings: BriefingService }) {}
 
   async collect(): Promise<AttentionGroups> {
     const projects = await this.deps.projects.listAllForAssessment(false);

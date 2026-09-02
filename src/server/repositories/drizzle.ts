@@ -1,4 +1,17 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { NotFoundError } from '@/domain/errors';
 import type {
   Blocker,
@@ -126,7 +139,10 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async update(id: string, input: ProjectUpdateInput): Promise<Project> {
-    const patch: Record<string, unknown> = { updatedAt: new Date(), lastManualUpdateAt: new Date() };
+    const patch: Record<string, unknown> = {
+      updatedAt: new Date(),
+      lastManualUpdateAt: new Date(),
+    };
     if (input.name !== undefined) patch.name = input.name;
     if (input.shortName !== undefined) patch.shortName = input.shortName ?? null;
     if (input.description !== undefined) patch.description = input.description ?? null;
@@ -180,8 +196,10 @@ export class DrizzleProjectRepository implements ProjectRepository {
     }
     if (filter.statuses?.length) conditions.push(inArray(projects.status, [...filter.statuses]));
     if (filter.types?.length) conditions.push(inArray(projects.type, [...filter.types]));
-    if (filter.priorities?.length) conditions.push(inArray(projects.priority, [...filter.priorities]));
-    if (filter.freshness?.length) conditions.push(inArray(projects.freshness, [...filter.freshness]));
+    if (filter.priorities?.length)
+      conditions.push(inArray(projects.priority, [...filter.priorities]));
+    if (filter.freshness?.length)
+      conditions.push(inArray(projects.freshness, [...filter.freshness]));
     if (filter.needsAttention) conditions.push(eq(projects.needsAttention, true));
     if (filter.tags?.length) {
       for (const tag of filter.tags) {
@@ -217,7 +235,10 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .limit(limit)
       .offset(offset);
 
-    const countBase = this.db.select({ value: sql<number>`count(*)::int` }).from(projects).$dynamic();
+    const countBase = this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(projects)
+      .$dynamic();
     const counted = await (where ? countBase.where(where) : countBase);
 
     return { items: rows.map(toProject), total: Number(counted[0]?.value ?? rows.length) };
@@ -273,7 +294,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
     ] = await Promise.all([
       this.db.select().from(projects).where(inArray(projects.id, idList)),
       this.db.select().from(projectSources).where(inArray(projectSources.projectId, idList)),
-      this.db.select().from(goals).where(inArray(goals.projectId, idList)).orderBy(desc(goals.createdAt)),
+      this.db
+        .select()
+        .from(goals)
+        .where(inArray(goals.projectId, idList))
+        .orderBy(desc(goals.createdAt)),
       this.db
         .select()
         .from(milestones)
@@ -379,7 +404,8 @@ export class DrizzleProjectRepository implements ProjectRepository {
   async updateGoal(id: string, input: Partial<GoalInput>): Promise<Goal> {
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (input.statement !== undefined) patch.statement = input.statement;
-    if (input.successDefinition !== undefined) patch.successDefinition = input.successDefinition ?? null;
+    if (input.successDefinition !== undefined)
+      patch.successDefinition = input.successDefinition ?? null;
     if (input.status !== undefined) patch.status = input.status;
     if (input.targetDate !== undefined) patch.targetDate = input.targetDate ?? null;
     const rows = await this.db.update(goals).set(patch).where(eq(goals.id, id)).returning();
@@ -424,7 +450,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
     if (input.position !== undefined) patch.position = input.position;
     if (input.targetDate !== undefined) patch.targetDate = input.targetDate ?? null;
     if (input.completedAt !== undefined) patch.completedAt = toDate(input.completedAt ?? null);
-    const rows = await this.db.update(milestones).set(patch).where(eq(milestones.id, id)).returning();
+    const rows = await this.db
+      .update(milestones)
+      .set(patch)
+      .where(eq(milestones.id, id))
+      .returning();
     const row = first(rows, 'Milestone');
     await this.markManualUpdate(row.projectId);
     return toMilestone(row);
@@ -592,7 +622,11 @@ export class DrizzleProjectRepository implements ProjectRepository {
     if (input.position !== undefined) patch.position = input.position;
     if (input.dueDate !== undefined) patch.dueDate = input.dueDate ?? null;
     if (input.requiresOwner !== undefined) patch.requiresOwner = input.requiresOwner;
-    const rows = await this.db.update(nextActions).set(patch).where(eq(nextActions.id, id)).returning();
+    const rows = await this.db
+      .update(nextActions)
+      .set(patch)
+      .where(eq(nextActions.id, id))
+      .returning();
     const row = first(rows, 'Next action');
     await this.markManualUpdate(row.projectId);
     return toNextAction(row);
@@ -633,7 +667,11 @@ export class DrizzleSourceRepository implements SourceRepository {
     return toProjectSource(first(rows, 'Source'));
   }
 
-  async addExternalLinkSource(projectId: string, url: string, label?: string): Promise<ProjectSource> {
+  async addExternalLinkSource(
+    projectId: string,
+    url: string,
+    label?: string,
+  ): Promise<ProjectSource> {
     const rows = await this.db
       .insert(projectSources)
       .values({
@@ -651,7 +689,13 @@ export class DrizzleSourceRepository implements SourceRepository {
   async addManualSource(projectId: string): Promise<ProjectSource> {
     const rows = await this.db
       .insert(projectSources)
-      .values({ projectId, kind: 'manual', isPrimary: true, label: 'Manual updates', syncStatus: 'never' })
+      .values({
+        projectId,
+        kind: 'manual',
+        isPrimary: true,
+        label: 'Manual updates',
+        syncStatus: 'never',
+      })
       .returning();
     return toProjectSource(first(rows, 'Source'));
   }
@@ -675,7 +719,11 @@ export class DrizzleSourceRepository implements SourceRepository {
   }
 
   async findById(id: string): Promise<ProjectSource | null> {
-    const rows = await this.db.select().from(projectSources).where(eq(projectSources.id, id)).limit(1);
+    const rows = await this.db
+      .select()
+      .from(projectSources)
+      .where(eq(projectSources.id, id))
+      .limit(1);
     const row = rows[0];
     return row ? toProjectSource(row) : null;
   }
@@ -789,7 +837,8 @@ export class DrizzleEvidenceRepository implements EvidenceRepository {
   async list(query: EvidenceQuery): Promise<readonly Evidence[]> {
     const conditions: SQL[] = [];
     if (query.projectId) conditions.push(eq(evidence.projectId, query.projectId));
-    if (query.projectIds?.length) conditions.push(inArray(evidence.projectId, [...query.projectIds]));
+    if (query.projectIds?.length)
+      conditions.push(inArray(evidence.projectId, [...query.projectIds]));
     if (query.kinds?.length) conditions.push(inArray(evidence.kind, [...query.kinds]));
     if (query.since) conditions.push(gte(evidence.observedAt, query.since));
 
@@ -804,7 +853,10 @@ export class DrizzleEvidenceRepository implements EvidenceRepository {
 
   async findByIds(ids: readonly string[]): Promise<readonly Evidence[]> {
     if (ids.length === 0) return [];
-    const rows = await this.db.select().from(evidence).where(inArray(evidence.id, [...ids]));
+    const rows = await this.db
+      .select()
+      .from(evidence)
+      .where(inArray(evidence.id, [...ids]));
     return rows.map(toEvidence);
   }
 
@@ -916,7 +968,9 @@ export class DrizzleSnapshotRepository implements SnapshotRepository {
     return rows.map(toSnapshot);
   }
 
-  async latestForProjects(projectIds: readonly string[]): Promise<ReadonlyMap<string, StatusSnapshot>> {
+  async latestForProjects(
+    projectIds: readonly string[],
+  ): Promise<ReadonlyMap<string, StatusSnapshot>> {
     const result = new Map<string, StatusSnapshot>();
     if (projectIds.length === 0) return result;
     const rows = await this.db
@@ -1009,7 +1063,9 @@ export class DrizzleSyncRunRepository implements SyncRunRepository {
     return rows.map(toSyncRun);
   }
 
-  async latestByProject(projectIds: readonly string[]): Promise<ReadonlyMap<string, SyncRunRecord>> {
+  async latestByProject(
+    projectIds: readonly string[],
+  ): Promise<ReadonlyMap<string, SyncRunRecord>> {
     const result = new Map<string, SyncRunRecord>();
     if (projectIds.length === 0) return result;
     const rows = await this.db
@@ -1140,7 +1196,11 @@ export class DrizzleSettingsRepository implements SettingsRepository {
 export class DrizzleQueryHistoryRepository implements QueryHistoryRepository {
   constructor(private readonly db: Database) {}
 
-  async record(entry: { queryText: string; intent: string; projectId?: string | null }): Promise<void> {
+  async record(entry: {
+    queryText: string;
+    intent: string;
+    projectId?: string | null;
+  }): Promise<void> {
     await this.db.insert(queryHistory).values({
       queryText: entry.queryText.slice(0, 500),
       intent: entry.intent,

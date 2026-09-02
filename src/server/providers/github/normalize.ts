@@ -23,7 +23,8 @@ export const num = (value: unknown): number | null =>
 
 export const bool = (value: unknown): boolean | null => (typeof value === 'boolean' ? value : null);
 
-export const obj = (value: unknown): Json => (value && typeof value === 'object' ? (value as Json) : {});
+export const obj = (value: unknown): Json =>
+  value && typeof value === 'object' ? (value as Json) : {};
 
 /** Accepts any GitHub timestamp shape and returns a valid ISO instant, or null. */
 export const isoOrNull = (value: unknown): string | null => {
@@ -59,7 +60,9 @@ function cleanMetadata(input: Record<string, unknown>): EvidenceMetadata {
       const items = value
         .filter((item) => ['string', 'number', 'boolean'].includes(typeof item))
         .slice(0, 50)
-        .map((item) => (typeof item === 'string' ? (str(item, 500) ?? '') : (item as number | boolean)));
+        .map((item) =>
+          typeof item === 'string' ? (str(item, 500) ?? '') : (item as number | boolean),
+        );
       output[key] = items as Array<string | number | boolean>;
     }
   }
@@ -73,7 +76,8 @@ export interface NormalizeContext {
 }
 
 /** Commit subjects that only restate a merge already captured as pull-request evidence. */
-const NOISE_COMMIT_PATTERN = /^(merge pull request #\d+|merge branch |merge remote-tracking branch )/i;
+const NOISE_COMMIT_PATTERN =
+  /^(merge pull request #\d+|merge branch |merge remote-tracking branch )/i;
 
 export function isMeaningfulCommit(message: string | null): boolean {
   if (!message) return false;
@@ -151,7 +155,8 @@ export function commitEvidence(payload: unknown, context: NormalizeContext): Evi
   const message = str(commit.message, 2000);
   const author = obj(commit.author);
   const committer = obj(commit.committer);
-  const observedAt = isoOrNull(author.date) ?? isoOrNull(committer.date) ?? context.fallbackObservedAt;
+  const observedAt =
+    isoOrNull(author.date) ?? isoOrNull(committer.date) ?? context.fallbackObservedAt;
   const subject = (message ?? sha.slice(0, 7)).split('\n')[0] ?? sha.slice(0, 7);
 
   return {
@@ -174,7 +179,10 @@ export function commitEvidence(payload: unknown, context: NormalizeContext): Evi
   };
 }
 
-export function pullRequestEvidence(payload: unknown, context: NormalizeContext): EvidenceInput | null {
+export function pullRequestEvidence(
+  payload: unknown,
+  context: NormalizeContext,
+): EvidenceInput | null {
   const pr = obj(payload);
   const number = num(pr.number);
   if (number === null) return null;
@@ -183,7 +191,11 @@ export function pullRequestEvidence(payload: unknown, context: NormalizeContext)
   const state = str(pr.state, 20) ?? 'open';
   const isDraft = bool(pr.draft) ?? false;
   const observedAt =
-    mergedAt ?? isoOrNull(pr.updated_at) ?? closedAt ?? isoOrNull(pr.created_at) ?? context.fallbackObservedAt;
+    mergedAt ??
+    isoOrNull(pr.updated_at) ??
+    closedAt ??
+    isoOrNull(pr.created_at) ??
+    context.fallbackObservedAt;
 
   return {
     projectId: context.projectId,
@@ -208,7 +220,9 @@ export function pullRequestEvidence(payload: unknown, context: NormalizeContext)
       headRef: str(obj(pr.head).ref, 250),
       baseRef: str(obj(pr.base).ref, 250),
       labels: Array.isArray(pr.labels)
-        ? pr.labels.map((label) => str(obj(label).name, 100)).filter((name): name is string => name !== null)
+        ? pr.labels
+            .map((label) => str(obj(label).name, 100))
+            .filter((name): name is string => name !== null)
         : [],
     }),
   };
@@ -232,7 +246,10 @@ export function issueEvidence(payload: unknown, context: NormalizeContext): Evid
     summary: str(issue.body, 1000),
     url: httpsUrl(issue.html_url),
     observedAt:
-      isoOrNull(issue.updated_at) ?? closedAt ?? isoOrNull(issue.created_at) ?? context.fallbackObservedAt,
+      isoOrNull(issue.updated_at) ??
+      closedAt ??
+      isoOrNull(issue.created_at) ??
+      context.fallbackObservedAt,
     metadata: cleanMetadata({
       number,
       state: str(issue.state, 20) ?? 'open',
@@ -242,14 +259,19 @@ export function issueEvidence(payload: unknown, context: NormalizeContext): Evid
       comments: num(issue.comments),
       labels: Array.isArray(issue.labels)
         ? issue.labels
-            .map((label) => (typeof label === 'string' ? str(label, 100) : str(obj(label).name, 100)))
+            .map((label) =>
+              typeof label === 'string' ? str(label, 100) : str(obj(label).name, 100),
+            )
             .filter((name): name is string => name !== null)
         : [],
     }),
   };
 }
 
-export function workflowRunEvidence(payload: unknown, context: NormalizeContext): EvidenceInput | null {
+export function workflowRunEvidence(
+  payload: unknown,
+  context: NormalizeContext,
+): EvidenceInput | null {
   const run = obj(payload);
   const id = num(run.id);
   if (id === null) return null;
@@ -267,7 +289,10 @@ export function workflowRunEvidence(payload: unknown, context: NormalizeContext)
     summary: str(run.display_title, 500),
     url: httpsUrl(run.html_url),
     observedAt:
-      isoOrNull(run.updated_at) ?? isoOrNull(run.run_started_at) ?? isoOrNull(run.created_at) ?? context.fallbackObservedAt,
+      isoOrNull(run.updated_at) ??
+      isoOrNull(run.run_started_at) ??
+      isoOrNull(run.created_at) ??
+      context.fallbackObservedAt,
     metadata: cleanMetadata({
       runId: id,
       workflowName: name,
@@ -284,7 +309,10 @@ export function workflowRunEvidence(payload: unknown, context: NormalizeContext)
   };
 }
 
-export function checkRunEvidence(payload: unknown, context: NormalizeContext): EvidenceInput | null {
+export function checkRunEvidence(
+  payload: unknown,
+  context: NormalizeContext,
+): EvidenceInput | null {
   const check = obj(payload);
   const id = num(check.id);
   if (id === null) return null;
@@ -328,7 +356,9 @@ export function releaseEvidence(payload: unknown, context: NormalizeContext): Ev
     summary: str(release.body, 1000),
     url: httpsUrl(release.html_url),
     observedAt:
-      isoOrNull(release.published_at) ?? isoOrNull(release.created_at) ?? context.fallbackObservedAt,
+      isoOrNull(release.published_at) ??
+      isoOrNull(release.created_at) ??
+      context.fallbackObservedAt,
     metadata: cleanMetadata({
       releaseId: id,
       tag,
@@ -361,7 +391,10 @@ export function deploymentEvidence(
     summary: str(deployment.description, 500),
     url: httpsUrl(status.target_url) ?? httpsUrl(deployment.url),
     observedAt:
-      isoOrNull(status.created_at) ?? isoOrNull(deployment.updated_at) ?? isoOrNull(deployment.created_at) ?? context.fallbackObservedAt,
+      isoOrNull(status.created_at) ??
+      isoOrNull(deployment.updated_at) ??
+      isoOrNull(deployment.created_at) ??
+      context.fallbackObservedAt,
     metadata: cleanMetadata({
       deploymentId: id,
       environment,

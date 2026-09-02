@@ -20,4 +20,10 @@ export const STATUS_WINDOWS = {
 /** Workflow conclusions that mean the build is broken. */
 export const FAILING_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure']);
 /** Conclusions that are neither success nor failure and must not raise an alarm. */
-export const NEUTRAL_CONCLUSIONS = new Set(['neutral', 'skipped', 'cancelled', 'action_required', 'stale']);
+export const NEUTRAL_CONCLUSIONS = new Set([
+  'neutral',
+  'skipped',
+  'cancelled',
+  'action_required',
+  'stale',
+]);

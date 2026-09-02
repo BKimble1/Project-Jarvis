@@ -136,7 +136,10 @@ export function diffSnapshots(input: DiffInput): readonly StatusChange[] {
 }
 
 /** Evidence-level changes (PR opened/merged, build failed/recovered) with verified provenance. */
-export function evidenceChanges(projectId: string, evidence: readonly Evidence[]): readonly StatusChange[] {
+export function evidenceChanges(
+  projectId: string,
+  evidence: readonly Evidence[],
+): readonly StatusChange[] {
   const changes: StatusChange[] = [];
   const workflowsSeen = new Set<string>();
 
@@ -154,10 +157,12 @@ export function evidenceChanges(projectId: string, evidence: readonly Evidence[]
       continue;
     }
     if (item.kind === 'workflow_run') {
-      const name = typeof item.metadata.workflowName === 'string' ? item.metadata.workflowName : item.title;
+      const name =
+        typeof item.metadata.workflowName === 'string' ? item.metadata.workflowName : item.title;
       if (workflowsSeen.has(name)) continue;
       workflowsSeen.add(name);
-      const conclusion = typeof item.metadata.conclusion === 'string' ? item.metadata.conclusion : null;
+      const conclusion =
+        typeof item.metadata.conclusion === 'string' ? item.metadata.conclusion : null;
       if (conclusion && FAILING_CONCLUSIONS.has(conclusion)) {
         changes.push(change('workflow_failed', projectId, `${name} failed`, item));
       } else if (conclusion === 'success') {

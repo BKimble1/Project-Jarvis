@@ -115,7 +115,11 @@ export function isJarvisError(value: unknown): value is JarvisError {
 }
 
 export interface ErrorResponseBody {
-  readonly error: { readonly code: JarvisErrorCode; readonly message: string; readonly details?: Readonly<Record<string, unknown>> };
+  readonly error: {
+    readonly code: JarvisErrorCode;
+    readonly message: string;
+    readonly details?: Readonly<Record<string, unknown>>;
+  };
 }
 
 /** Convert any thrown value into a safe, structured response body plus a status code. */

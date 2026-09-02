@@ -82,6 +82,8 @@ export function buildPortfolioNarrative(payload: PortfolioNarrationPayload): Por
       .slice(0, 6)
       .map((entry) => `${entry.projectName} — ${entry.reason}`),
     unknowns: payload.assessment.unknowns.slice(0, 8),
-    citedEvidenceIds: payload.assessment.recentChanges.flatMap((change) => change.evidenceIds).slice(0, 60),
+    citedEvidenceIds: payload.assessment.recentChanges
+      .flatMap((change) => change.evidenceIds)
+      .slice(0, 60),
   };
 }

@@ -84,10 +84,7 @@ export class SessionStore {
       await this.destroy(token);
       return null;
     }
-    await this.db
-      .update(sessions)
-      .set({ lastSeenAt: new Date() })
-      .where(eq(sessions.id, row.id));
+    await this.db.update(sessions).set({ lastSeenAt: new Date() }).where(eq(sessions.id, row.id));
     return toSession(row);
   }
 
@@ -100,7 +97,10 @@ export class SessionStore {
   }
 
   async purgeExpired(now = new Date()): Promise<number> {
-    const rows = await this.db.delete(sessions).where(lt(sessions.expiresAt, now)).returning({ id: sessions.id });
+    const rows = await this.db
+      .delete(sessions)
+      .where(lt(sessions.expiresAt, now))
+      .returning({ id: sessions.id });
     return rows.length;
   }
 }
@@ -137,7 +137,11 @@ export class OAuthStateStore {
   async consume(state: string): Promise<{ ok: boolean; redirectTo: string | null }> {
     const { oauthStates } = await import('@/server/db/schema');
     const hash = hashToken(state);
-    const rows = await this.db.select().from(oauthStates).where(eq(oauthStates.stateHash, hash)).limit(1);
+    const rows = await this.db
+      .select()
+      .from(oauthStates)
+      .where(eq(oauthStates.stateHash, hash))
+      .limit(1);
     await this.db.delete(oauthStates).where(eq(oauthStates.stateHash, hash));
     const row = rows[0];
     if (!row) return { ok: false, redirectTo: null };

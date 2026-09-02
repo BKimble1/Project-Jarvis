@@ -82,7 +82,6 @@ export interface LoggerOptions {
 }
 
 function defaultSink(line: string): void {
-  // eslint-disable-next-line no-console
   console.error(line);
 }
 

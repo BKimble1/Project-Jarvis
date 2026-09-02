@@ -100,7 +100,10 @@ export class BriefingService {
    * Full project briefing. Persists a snapshot when the fingerprint changes (or when the owner
    * explicitly regenerates), and refreshes the project's denormalised freshness/attention flags.
    */
-  async briefProject(projectId: string, options: { regenerate?: boolean } = {}): Promise<ProjectBriefing> {
+  async briefProject(
+    projectId: string,
+    options: { regenerate?: boolean } = {},
+  ): Promise<ProjectBriefing> {
     const aggregate = await this.deps.projects.aggregate(projectId);
     if (!aggregate) throw new NotFoundError('Project');
     const evidence = await this.loadEvidence(projectId);
@@ -172,7 +175,9 @@ export class BriefingService {
     projects: readonly Project[];
     assessments: ReadonlyMap<string, ProjectAssessment>;
   }> {
-    const projects = await this.deps.projects.listAllForAssessment(options.includeArchived ?? false);
+    const projects = await this.deps.projects.listAllForAssessment(
+      options.includeArchived ?? false,
+    );
     const assessments = await this.assessMany(projects.map((project) => project.id));
     const now = this.clock();
 
@@ -200,7 +205,11 @@ export class BriefingService {
 
     const narration =
       projects.length === 0
-        ? { narrative: buildPortfolioNarrative(payload), method: 'deterministic' as const, error: null }
+        ? {
+            narrative: buildPortfolioNarrative(payload),
+            method: 'deterministic' as const,
+            error: null,
+          }
         : await this.deps.narrator.narratePortfolio(payload);
 
     return {
@@ -235,7 +244,9 @@ export class BriefingService {
         all.push({ ...change, projectName: project.shortName ?? project.name });
       }
     }
-    return all.sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()).slice(0, 100);
+    return all
+      .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
+      .slice(0, 100);
   }
 }
 
@@ -257,5 +268,7 @@ function extractNarrative(snapshot: StatusSnapshot): ProjectBriefing['narrative'
 }
 
 function toStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 }

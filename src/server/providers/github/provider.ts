@@ -55,7 +55,9 @@ export class GitHubSourceProvider implements SourceProvider {
   private readonly log: Logger;
   private readonly clientFactory: () => GithubClient;
 
-  constructor(options: { config?: AppConfig; logger?: Logger; clientFactory?: () => GithubClient } = {}) {
+  constructor(
+    options: { config?: AppConfig; logger?: Logger; clientFactory?: () => GithubClient } = {},
+  ) {
     this.config = options.config ?? getConfig();
     this.log = (options.logger ?? rootLogger()).child({ provider: 'github' });
     this.clientFactory =
@@ -192,7 +194,10 @@ export class GitHubSourceProvider implements SourceProvider {
     let repoState: GithubSourceState;
     let repoPayload: unknown;
     try {
-      const response = await client.octokit.rest.repos.get({ owner: github.owner, repo: github.repo });
+      const response = await client.octokit.rest.repos.get({
+        owner: github.owner,
+        repo: github.repo,
+      });
       repoPayload = response.data;
       const normalized = normalizeRepository(response.data);
       if (!normalized) {
@@ -212,13 +217,18 @@ export class GitHubSourceProvider implements SourceProvider {
         repo: github.repo,
         kind: translated.kind,
       });
-      return failedSnapshot(translated.kind, translated.message, translated.rateLimit ?? client.rateLimit());
+      return failedSnapshot(
+        translated.kind,
+        translated.message,
+        translated.rateLimit ?? client.rateLimit(),
+      );
     }
 
     /* A renamed repository is followed transparently by GitHub; record the new coordinates. */
     const owner = repoState.owner;
     const repo = repoState.repo;
-    const emptyRepository = (num(repoPayload, 'size') ?? 0) === 0 && repoState.lastActivityAt === null;
+    const emptyRepository =
+      (num(repoPayload, 'size') ?? 0) === 0 && repoState.lastActivityAt === null;
 
     /* --------------------------------------------------------------- commits */
     await this.category(categories, 'commits', async () => {
@@ -271,7 +281,8 @@ export class GitHubSourceProvider implements SourceProvider {
       for (const item of items.slice(0, context.limits.prLimit * 2)) {
         const normalized = pullRequestEvidence(item, normalizeContext);
         if (!normalized) continue;
-        if (new Date(normalized.observedAt) < since && normalized.metadata.state !== 'open') continue;
+        if (new Date(normalized.observedAt) < since && normalized.metadata.state !== 'open')
+          continue;
         evidence.push(normalized);
         written += 1;
       }
@@ -320,7 +331,10 @@ export class GitHubSourceProvider implements SourceProvider {
       for (const item of items.slice(0, context.limits.workflowLimit)) {
         const enriched =
           item && typeof item === 'object'
-            ? { ...(item as Record<string, unknown>), repository: { default_branch: repoState.defaultBranch } }
+            ? {
+                ...(item as Record<string, unknown>),
+                repository: { default_branch: repoState.defaultBranch },
+              }
             : item;
         const normalized = workflowRunEvidence(enriched, normalizeContext);
         if (!normalized) continue;
@@ -337,7 +351,12 @@ export class GitHubSourceProvider implements SourceProvider {
     await this.category(categories, 'checks', async () => {
       const ref = latestHeadSha ?? repoState.defaultBranch;
       if (!ref) return { ok: true, count: 0, note: 'No commit to inspect checks for.' };
-      const response = await client.octokit.rest.checks.listForRef({ owner, repo, ref, per_page: 30 });
+      const response = await client.octokit.rest.checks.listForRef({
+        owner,
+        repo,
+        ref,
+        per_page: 30,
+      });
       const data = obj(response.data);
       const items = Array.isArray(data.check_runs) ? data.check_runs : [];
       let written = 0;
@@ -403,8 +422,12 @@ export class GitHubSourceProvider implements SourceProvider {
       return { ok: true, count: written };
     });
 
-    const available = (Object.keys(categories) as SourceCapability[]).filter((key) => categories[key]?.ok);
-    const unavailable = (Object.keys(categories) as SourceCapability[]).filter((key) => !categories[key]?.ok);
+    const available = (Object.keys(categories) as SourceCapability[]).filter(
+      (key) => categories[key]?.ok,
+    );
+    const unavailable = (Object.keys(categories) as SourceCapability[]).filter(
+      (key) => !categories[key]?.ok,
+    );
 
     return {
       status: unavailable.length === 0 ? 'ok' : 'partial',
@@ -416,9 +439,7 @@ export class GitHubSourceProvider implements SourceProvider {
       rateLimit: client.rateLimit(),
       errorCode: null,
       errorMessage:
-        unavailable.length === 0
-          ? null
-          : `Some data was unavailable: ${unavailable.join(', ')}.`,
+        unavailable.length === 0 ? null : `Some data was unavailable: ${unavailable.join(', ')}.`,
     };
   }
 
@@ -430,9 +451,14 @@ export class GitHubSourceProvider implements SourceProvider {
   ): Promise<void> {
     try {
       const result = await run();
-      into[capability] = { ok: true, count: result.count, ...(result.note ? { reason: result.note } : {}) };
+      into[capability] = {
+        ok: true,
+        count: result.count,
+        ...(result.note ? { reason: result.note } : {}),
+      };
     } catch (error) {
-      const translated = error instanceof GithubApiError ? error : translateGithubError(error, null);
+      const translated =
+        error instanceof GithubApiError ? error : translateGithubError(error, null);
       /* An empty repository is a legitimate state, not a failure of the category. */
       if (translated.kind === 'empty_repository') {
         into[capability] = { ok: true, count: 0, reason: 'The repository has no commits yet.' };
@@ -441,12 +467,17 @@ export class GitHubSourceProvider implements SourceProvider {
       into[capability] = { ok: false, reason: translated.message };
       this.log.warn('github category unavailable', { capability, kind: translated.kind });
       /* Rate limiting and revoked credentials affect every remaining category; surface loudly. */
-      if (translated.kind === 'rate_limited' || translated.kind === 'unauthorized') throw translated;
+      if (translated.kind === 'rate_limited' || translated.kind === 'unauthorized')
+        throw translated;
     }
   }
 }
 
-function failedSnapshot(code: string, message: string, rateLimit: RateLimitState | null): SourceSnapshot {
+function failedSnapshot(
+  code: string,
+  message: string,
+  rateLimit: RateLimitState | null,
+): SourceSnapshot {
   return {
     status: 'failed',
     repo: null,

@@ -56,7 +56,9 @@ export async function exchangeCodeForIdentity(
   }
   const tokenBody: unknown = await tokenResponse.json();
   const accessToken =
-    tokenBody && typeof tokenBody === 'object' && typeof (tokenBody as { access_token?: unknown }).access_token === 'string'
+    tokenBody &&
+    typeof tokenBody === 'object' &&
+    typeof (tokenBody as { access_token?: unknown }).access_token === 'string'
       ? (tokenBody as { access_token: string }).access_token
       : null;
   if (!accessToken) throw new ForbiddenError('GitHub did not return a usable sign-in token.');
@@ -91,7 +93,10 @@ export async function exchangeCodeForIdentity(
 async function withTimeout(promise: Promise<Response>, timeoutMs: number): Promise<Response> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new JarvisError('timeout', 'GitHub did not respond in time.')), timeoutMs);
+    timer = setTimeout(
+      () => reject(new JarvisError('timeout', 'GitHub did not respond in time.')),
+      timeoutMs,
+    );
   });
   try {
     return await Promise.race([promise, timeout]);

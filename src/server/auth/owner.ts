@@ -17,11 +17,7 @@ export interface GithubIdentity {
 export interface OwnershipDecision {
   readonly allowed: boolean;
   readonly reason:
-    | 'ok'
-    | 'no_owner_configured'
-    | 'login_mismatch'
-    | 'id_mismatch'
-    | 'missing_identity';
+    'ok' | 'no_owner_configured' | 'login_mismatch' | 'id_mismatch' | 'missing_identity';
 }
 
 export function isOwner(identity: GithubIdentity | null, config: AppConfig): OwnershipDecision {
@@ -42,6 +38,7 @@ export function isOwner(identity: GithubIdentity | null, config: AppConfig): Own
     return { allowed: true, reason: 'ok' };
   }
 
-  if (identity.login.toLowerCase() !== expectedLogin) return { allowed: false, reason: 'login_mismatch' };
+  if (identity.login.toLowerCase() !== expectedLogin)
+    return { allowed: false, reason: 'login_mismatch' };
   return { allowed: true, reason: 'ok' };
 }

@@ -1,13 +1,9 @@
 import type { EvidenceInput } from '@/domain/evidence';
 import type { GithubSourceState, ProjectSource } from '@/domain/project';
 import type { SourceCapability, SourceKind } from '@/domain/enums';
+import type { ProviderHealth, RateLimitState, RepositorySummary } from '@/domain/integrations';
 
-export interface RateLimitState {
-  readonly limit: number | null;
-  readonly remaining: number | null;
-  readonly resetAt: string | null;
-  readonly resource: string | null;
-}
+export type { ProviderHealth, RateLimitState, RepositorySummary };
 
 export interface CategoryOutcome {
   readonly ok: boolean;
@@ -48,20 +44,6 @@ export interface FetchContext {
   readonly limits: FetchLimits;
 }
 
-export interface RepositorySummary {
-  readonly id: number;
-  readonly owner: string;
-  readonly repo: string;
-  readonly fullName: string;
-  readonly description: string | null;
-  readonly visibility: 'public' | 'private' | 'internal' | null;
-  readonly archived: boolean;
-  readonly primaryLanguage: string | null;
-  readonly updatedAt: string | null;
-  readonly url: string;
-  readonly permissions: { readonly admin: boolean; readonly push: boolean; readonly pull: boolean };
-}
-
 /**
  * A read-only integration with an external system.
  *
@@ -75,18 +57,11 @@ export interface SourceProvider {
   isConfigured(): boolean;
   fetchSnapshot(source: ProjectSource, context: FetchContext): Promise<SourceSnapshot>;
   /** Repositories the configured credential can see. Used by the import screen. */
-  listAvailableRepositories(options?: { search?: string; limit?: number }): Promise<readonly RepositorySummary[]>;
+  listAvailableRepositories(options?: {
+    search?: string;
+    limit?: number;
+  }): Promise<readonly RepositorySummary[]>;
   /** Confirms a specific repository is reachable before it is imported. */
   describeRepository(owner: string, repo: string): Promise<RepositorySummary>;
   checkHealth(): Promise<ProviderHealth>;
-}
-
-export interface ProviderHealth {
-  readonly configured: boolean;
-  readonly ok: boolean;
-  readonly message: string;
-  readonly account: string | null;
-  readonly rateLimit: RateLimitState | null;
-  /** Confirms the credential cannot write. Rendered on the Settings screen. */
-  readonly readOnly: true;
 }
