@@ -153,7 +153,7 @@ export interface EvidenceRepository {
 }
 
 export interface SnapshotRepository {
-  save(snapshot: Omit<StatusSnapshot, 'id'> & { narrative?: unknown }): Promise<StatusSnapshot>;
+  save(snapshot: Omit<StatusSnapshot, 'id'>): Promise<StatusSnapshot>;
   latest(projectId: string): Promise<StatusSnapshot | null>;
   previousDistinct(projectId: string): Promise<StatusSnapshot | null>;
   list(projectId: string, limit?: number): Promise<readonly StatusSnapshot[]>;

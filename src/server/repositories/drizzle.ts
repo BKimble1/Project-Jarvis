@@ -851,7 +851,7 @@ export class DrizzleEvidenceRepository implements EvidenceRepository {
 export class DrizzleSnapshotRepository implements SnapshotRepository {
   constructor(private readonly db: Database) {}
 
-  async save(snapshot: Omit<StatusSnapshot, 'id'> & { narrative?: unknown }): Promise<StatusSnapshot> {
+  async save(snapshot: Omit<StatusSnapshot, 'id'>): Promise<StatusSnapshot> {
     const rows = await this.db
       .insert(statusSnapshots)
       .values({

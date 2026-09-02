@@ -229,6 +229,7 @@ export function toSnapshot(row: Row<typeof statusSnapshots>): StatusSnapshot {
     unknowns: row.unknowns ?? [],
     summaryMethod: row.summaryMethod,
     fingerprint: row.fingerprint,
+    narrative: row.narrative ?? null,
   };
 }
 

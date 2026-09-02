@@ -178,6 +178,8 @@ export interface StatusSnapshot {
   readonly unknowns: readonly string[];
   readonly summaryMethod: SummaryMethodValue;
   readonly fingerprint: string;
+  /** The narrative stored with the snapshot, reused when evidence has not changed. */
+  readonly narrative: unknown;
 }
 
 export const CHANGE_KINDS = [
