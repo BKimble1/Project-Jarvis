@@ -35,10 +35,15 @@ export function CountTiles({ counts }: { counts: PortfolioCounts }) {
       tone: 'neutral' as const,
     },
     {
+      /*
+       * A project whose synchronisation is failing is showing last-known-good data, which is
+       * stale by any useful definition — counting only `stale` here would report zero while a
+       * card on the same screen says "Sync failing".
+       */
       label: 'Stale data',
-      value: counts.stale,
+      value: counts.stale + counts.syncFailing,
       href: '/projects?sort=staleness',
-      tone: counts.stale > 0 ? ('caution' as const) : ('neutral' as const),
+      tone: counts.stale + counts.syncFailing > 0 ? ('caution' as const) : ('neutral' as const),
     },
   ];
 

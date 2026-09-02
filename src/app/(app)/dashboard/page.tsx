@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SkeletonCard } from '@/components/ui/skeleton';
 import { CommandBar } from '@/components/command-bar';
+import { DashboardFilters } from '@/components/dashboard-filters';
 import { CountTiles } from '@/components/count-tiles';
 import { PortfolioBriefingPanel } from '@/components/briefing-panel';
 import { ProjectCard } from '@/components/project-card';
@@ -16,7 +17,16 @@ import { RelativeTime } from '@/components/relative-time';
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Dashboard' };
 
-export default function DashboardPage() {
+type Search = Record<string, string | string[] | undefined>;
+
+const one = (value: string | string[] | undefined): string | undefined =>
+  Array.isArray(value) ? value[0] : value;
+
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<Search> }) {
+  const params = await searchParams;
+  const services = await getServices();
+  const history = await services.queryHistory.recent(6);
+
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -37,16 +47,28 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <CommandBar />
+      <CommandBar initialHistory={history.map((entry) => entry.queryText)} />
 
       <Suspense fallback={<DashboardSkeleton />}>
-        <DashboardContent />
+        <DashboardContent
+          search={one(params.q)}
+          status={one(params.status)}
+          sort={one(params.sort)}
+        />
       </Suspense>
     </div>
   );
 }
 
-async function DashboardContent() {
+async function DashboardContent({
+  search,
+  status,
+  sort,
+}: {
+  search?: string | undefined;
+  status?: string | undefined;
+  sort?: string | undefined;
+}) {
   const services = await getServices();
   const { briefing, projects, assessments } = await services.briefings.briefPortfolio();
   const lastRuns = await services.runs.listRecent(1);
@@ -97,12 +119,56 @@ async function DashboardContent() {
     if (failures > 0) failingBuilds.set(projectId, failures);
   }
 
-  /* Attention first, then the owner's priority — the same order the focus list uses. */
-  const ordered = [...projects].sort((a, b) => {
-    const aAttention = assessments.get(a.id)?.needsAttention ? 0 : 1;
-    const bAttention = assessments.get(b.id)?.needsAttention ? 0 : 1;
-    if (aAttention !== bAttention) return aAttention - bAttention;
-    return a.name.localeCompare(b.name);
+  /*
+   * The briefing and the counts above always describe the whole portfolio; only the card list
+   * below responds to the filter, so a narrowed view can never misrepresent "where are we?".
+   */
+  const needle = search?.trim().toLowerCase() ?? '';
+  const visible = projects.filter((project) => {
+    if (status && (assessments.get(project.id)?.status ?? project.status) !== status) return false;
+    if (needle.length === 0) return true;
+    return [project.name, project.shortName, project.goal, project.description, ...project.tags]
+      .filter((value): value is string => typeof value === 'string')
+      .some((value) => value.toLowerCase().includes(needle));
+  });
+
+  const priorityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const freshnessRank: Record<string, number> = {
+    failing: 0,
+    never: 1,
+    stale: 2,
+    recent: 3,
+    live: 4,
+  };
+  const activityOf = (project: (typeof projects)[number]) =>
+    new Date(project.lastSyncedAt ?? project.lastManualUpdateAt ?? project.updatedAt).getTime();
+
+  const ordered = [...visible].sort((a, b) => {
+    switch (sort) {
+      case 'recent_activity':
+        return activityOf(b) - activityOf(a);
+      case 'priority':
+        return (
+          priorityRank[a.priority]! - priorityRank[b.priority]! || a.name.localeCompare(b.name)
+        );
+      case 'staleness':
+        return (
+          freshnessRank[assessments.get(a.id)?.freshness.state ?? a.freshness]! -
+            freshnessRank[assessments.get(b.id)?.freshness.state ?? b.freshness]! ||
+          activityOf(a) - activityOf(b)
+        );
+      case 'name':
+        return a.name.localeCompare(b.name);
+      default: {
+        /* Attention first, then the owner's priority — the same order the focus list uses. */
+        const aAttention = assessments.get(a.id)?.needsAttention ? 0 : 1;
+        const bAttention = assessments.get(b.id)?.needsAttention ? 0 : 1;
+        if (aAttention !== bAttention) return aAttention - bAttention;
+        return (
+          priorityRank[a.priority]! - priorityRank[b.priority]! || a.name.localeCompare(b.name)
+        );
+      }
+    }
   });
 
   return (
@@ -111,8 +177,14 @@ async function DashboardContent() {
       <PortfolioBriefingPanel briefing={briefing} />
 
       <section aria-label="Projects" className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold">Projects</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold">
+            Projects{' '}
+            <span className="font-normal text-[var(--color-text-subtle)]">
+              ({ordered.length}
+              {ordered.length === projects.length ? '' : ` of ${projects.length}`})
+            </span>
+          </h2>
           <p className="text-xs text-[var(--color-text-subtle)]">
             {lastRun ? (
               <>
@@ -123,17 +195,27 @@ async function DashboardContent() {
             )}
           </p>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {ordered.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              assessment={assessments.get(project.id)}
-              openPullRequests={openPrs.get(project.id) ?? 0}
-              failingBuilds={failingBuilds.get(project.id) ?? 0}
-            />
-          ))}
-        </div>
+
+        <DashboardFilters />
+
+        {ordered.length === 0 ? (
+          <EmptyState
+            title="No projects match that filter"
+            description="Clear the filter to see the whole portfolio again."
+          />
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {ordered.map((project) => (
+              <ProjectCard
+                key={project.id}
+                project={project}
+                assessment={assessments.get(project.id)}
+                openPullRequests={openPrs.get(project.id) ?? 0}
+                failingBuilds={failingBuilds.get(project.id) ?? 0}
+              />
+            ))}
+          </div>
+        )}
       </section>
     </>
   );

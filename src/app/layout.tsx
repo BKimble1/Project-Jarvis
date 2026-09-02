@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { headers } from 'next/headers';
 import { Toaster } from 'sonner';
 import './globals.css';
 
@@ -39,11 +40,23 @@ export const viewport: Viewport = {
  */
 const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem('jarvis-theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`;
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  /* Set by src/middleware.ts. The theme script is the one inline script Jarvis emits itself. */
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
+
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+        {/*
+          `suppressHydrationWarning` is required, not cosmetic: browsers deliberately hide a
+          script's nonce from the DOM once the page is parsed, so the client always sees an empty
+          value where the server sent one. Without this, React reports a mismatch on every load.
+        */}
+        <script
+          nonce={nonce}
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }}
+        />
       </head>
       <body>
         <a href="#main" className="jarvis-skip-link">

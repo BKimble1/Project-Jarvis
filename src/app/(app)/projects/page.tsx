@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { ProjectCard } from '@/components/project-card';
 import { ProjectFilters } from '@/components/project-filters';
+import { RestoreButton } from '@/components/archive-actions';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Projects' };
@@ -110,11 +111,12 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {page.items.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              assessment={assessments.get(project.id)}
-            />
+            <div key={project.id} className="flex flex-col gap-2">
+              <ProjectCard project={project} assessment={assessments.get(project.id)} />
+              {project.archivedAt ? (
+                <RestoreButton projectId={project.id} projectName={project.name} />
+              ) : null}
+            </div>
           ))}
         </div>
       )}

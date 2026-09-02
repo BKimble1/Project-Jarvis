@@ -80,8 +80,13 @@ and, when configured, the Anthropic API.
 
 Applied in `next.config.ts` and reinforced in `netlify.toml`:
 
-- A Content-Security-Policy with `default-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'`
-  and a `connect-src` limited to the same origin. No third-party scripts are loaded.
+- A **nonce-based** Content-Security-Policy, emitted per request by `src/middleware.ts`:
+  `script-src 'self' 'nonce-…' 'strict-dynamic'`, with `default-src 'self'`,
+  `frame-ancestors 'none'`, `object-src 'none'` and a `connect-src` limited to the same origin.
+  There is no blanket `'unsafe-inline'` for scripts — the one inline script Jarvis emits (the
+  pre-paint theme switch) carries the nonce. `style-src` keeps `'unsafe-inline'` because the
+  framework inlines critical CSS without a nonce; an injected stylesheet is a far smaller risk
+  than injected script. No third-party scripts are loaded at all.
 - `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
   `Referrer-Policy: strict-origin-when-cross-origin`, a restrictive `Permissions-Policy`, and
   `Cross-Origin-Opener-Policy: same-origin`.
