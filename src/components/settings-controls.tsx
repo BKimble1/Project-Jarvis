@@ -118,7 +118,13 @@ export function DataControls({
             />
           </Field>
         </div>
-        <Button type="submit" variant="secondary" size="sm" disabled={pending}>
+        <Button
+          type="submit"
+          variant="secondary"
+          size="sm"
+          disabled={pending}
+          className="self-start"
+        >
           {pending ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           ) : (

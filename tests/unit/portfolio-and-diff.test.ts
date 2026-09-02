@@ -25,7 +25,10 @@ import {
 
 const PROJECT_ID = 'project-under-test';
 
-const freshnessOf = (state: FreshnessState, lastError: string | null = null): FreshnessAssessment => ({
+const freshnessOf = (
+  state: FreshnessState,
+  lastError: string | null = null,
+): FreshnessAssessment => ({
   state,
   observedAt: hoursBefore(1),
   ageHours: 1,
@@ -42,10 +45,7 @@ const reason = (
   evidenceIds: readonly string[] = [],
 ): AttentionReason => ({ code, severity, summary, provenance, evidenceIds, rule });
 
-const action = (
-  text: string,
-  rule = 'R-RC4-owner-next-action',
-): RecommendedAction => ({
+const action = (text: string, rule = 'R-RC4-owner-next-action'): RecommendedAction => ({
   action: text,
   rationale: 'Because the evidence says so.',
   provenance: 'inferred',
@@ -79,8 +79,9 @@ function makeAssessment(
   };
 }
 
-const assessmentsOf = (...items: readonly ProjectAssessment[]): ReadonlyMap<string, ProjectAssessment> =>
-  new Map(items.map((item) => [item.projectId, item]));
+const assessmentsOf = (
+  ...items: readonly ProjectAssessment[]
+): ReadonlyMap<string, ProjectAssessment> => new Map(items.map((item) => [item.projectId, item]));
 
 function makeSnapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
   return {
@@ -183,7 +184,12 @@ describe('assessPortfolio counts', () => {
       status: 'archived',
       needsAttention: true,
       attention: [
-        reason('decision_required', 'critical', 'Decision needed: shut it down', 'R-AT1-blocker-requires-owner-decision'),
+        reason(
+          'decision_required',
+          'critical',
+          'Decision needed: shut it down',
+          'R-AT1-blocker-requires-owner-decision',
+        ),
       ],
     }),
   );
@@ -239,22 +245,43 @@ describe('assessPortfolio decisions', () => {
           projectId: alpha.id,
           needsAttention: true,
           attention: [
-            reason('decision_required', 'high', 'Decision needed: pick a host', 'R-AT1-blocker-requires-owner-decision'),
-            reason('active_blocker', 'critical', 'Blocked: waiting on legal', 'R-AT2-active-blocker'),
+            reason(
+              'decision_required',
+              'high',
+              'Decision needed: pick a host',
+              'R-AT1-blocker-requires-owner-decision',
+            ),
+            reason(
+              'active_blocker',
+              'critical',
+              'Blocked: waiting on legal',
+              'R-AT2-active-blocker',
+            ),
           ],
         }),
         makeAssessment({
           projectId: bravo.id,
           needsAttention: true,
           attention: [
-            reason('decision_required', 'critical', 'Decision needed: cancel the pilot', 'R-AT1-blocker-requires-owner-decision'),
+            reason(
+              'decision_required',
+              'critical',
+              'Decision needed: cancel the pilot',
+              'R-AT1-blocker-requires-owner-decision',
+            ),
           ],
         }),
         makeAssessment({
           projectId: charlie.id,
           needsAttention: true,
           attention: [
-            reason('failed_workflow', 'high', 'CI failed 2 hours ago', 'R-AT3-recent-failed-workflow', 'verified'),
+            reason(
+              'failed_workflow',
+              'high',
+              'CI failed 2 hours ago',
+              'R-AT3-recent-failed-workflow',
+              'verified',
+            ),
           ],
         }),
       ),
@@ -280,35 +307,60 @@ describe('buildFocusOrder', () => {
     name: string,
     attention: readonly AttentionReason[],
     overrides: Partial<Project> = {},
-  ) => {
-    const project = makeProject({ id, name, ...overrides });
-    return { project, assessment: makeAssessment({ projectId: id, attention }) };
-  };
+    assessmentOverrides: Partial<ProjectAssessment> = {},
+  ) => ({
+    project: makeProject({ id, name, ...overrides }),
+    assessment: makeAssessment({ projectId: id, attention, ...assessmentOverrides }),
+  });
+
+  const orderOf = (members: readonly { project: Project; assessment: ProjectAssessment }[]) =>
+    buildFocusOrder(
+      members.map((member) => member.project),
+      assessmentsOf(...members.map((member) => member.assessment)),
+    );
 
   it('orders by the worst thing true of a project, not alphabetically', () => {
     const zulu = withReason('zulu', 'Zulu', [
-      reason('decision_required', 'critical', 'Decision needed: pick a host', 'R-AT1-blocker-requires-owner-decision'),
+      reason(
+        'decision_required',
+        'critical',
+        'Decision needed: pick a host',
+        'R-AT1-blocker-requires-owner-decision',
+      ),
     ]);
     const yankee = withReason('yankee', 'Yankee', [
-      reason('failed_workflow', 'high', 'CI failed 3 hours ago', 'R-AT3-recent-failed-workflow', 'verified'),
+      reason(
+        'failed_workflow',
+        'high',
+        'CI failed 3 hours ago',
+        'R-AT3-recent-failed-workflow',
+        'verified',
+      ),
     ]);
     const xray = withReason('xray', 'Xray', [
       reason('active_blocker', 'high', 'Blocked: waiting on legal', 'R-AT2-active-blocker'),
     ]);
     const whiskey = withReason('whiskey', 'Whiskey', [
-      reason('overdue_action', 'medium', 'Overdue since 2025-06-01: write the migration', 'R-AT6-overdue-next-action'),
+      reason(
+        'overdue_action',
+        'medium',
+        'Overdue since 2025-06-01: write the migration',
+        'R-AT6-overdue-next-action',
+      ),
     ]);
     const victor = withReason('victor', 'Victor', [
-      reason('stale_data', 'low', 'No new evidence for 3 weeks.', 'R-AT5-stale-project', 'verified'),
+      reason(
+        'stale_data',
+        'low',
+        'No new evidence for 3 weeks.',
+        'R-AT5-stale-project',
+        'verified',
+      ),
     ]);
     /* Alphabetically first, but nothing is wrong with it, so it ranks last. */
     const alpha = withReason('alpha', 'Alpha', []);
 
-    const members = [alpha, victor, whiskey, xray, yankee, zulu];
-    const order = buildFocusOrder(
-      members.map((member) => member.project),
-      assessmentsOf(...members.map((member) => member.assessment)),
-    );
+    const order = orderOf([alpha, victor, whiskey, xray, yankee, zulu]);
 
     expect(order.map((entry) => entry.projectId)).toEqual([
       'zulu',
@@ -328,7 +380,7 @@ describe('buildFocusOrder', () => {
   });
 
   it('breaks bucket ties with the owner priority, then the project name', () => {
-    const members = [
+    const order = orderOf([
       withReason(
         'anvil',
         'Anvil',
@@ -353,41 +405,59 @@ describe('buildFocusOrder', () => {
         [reason('active_blocker', 'high', 'Blocked: dune', 'R-AT2-active-blocker')],
         { priority: 'low' },
       ),
-    ];
-
-    const order = buildFocusOrder(
-      members.map((member) => member.project),
-      assessmentsOf(...members.map((member) => member.assessment)),
-    );
+    ]);
 
     expect(order.map((entry) => entry.projectId)).toEqual(['cobalt', 'anvil', 'beacon', 'dune']);
   });
 
   it('pushes terminal states behind live work however bad their reason is', () => {
-    const members = [
+    const order = orderOf([
       withReason(
         'closed',
         'Closed',
-        [reason('decision_required', 'critical', 'Decision needed: archive it', 'R-AT1-blocker-requires-owner-decision')],
+        [
+          reason(
+            'decision_required',
+            'critical',
+            'Decision needed: archive it',
+            'R-AT1-blocker-requires-owner-decision',
+          ),
+        ],
         { priority: 'critical' },
+        { status: 'completed' },
       ),
-      withReason('resting', 'Resting', [
-        reason('failed_workflow', 'high', 'CI failed 1 day ago', 'R-AT3-recent-failed-workflow', 'verified'),
-      ]),
+      withReason(
+        'resting',
+        'Resting',
+        [
+          reason(
+            'failed_workflow',
+            'high',
+            'CI failed 1 day ago',
+            'R-AT3-recent-failed-workflow',
+            'verified',
+          ),
+        ],
+        {},
+        { status: 'paused' },
+      ),
+      withReason(
+        'shelved',
+        'Shelved',
+        [reason('active_blocker', 'high', 'Blocked: shelved', 'R-AT2-active-blocker')],
+        {},
+        { status: 'archived' },
+      ),
       withReason('running', 'Running', []),
-    ];
-    const assessments = assessmentsOf(
-      makeAssessment({ projectId: 'closed', status: 'completed', attention: members[0]!.assessment.attention }),
-      makeAssessment({ projectId: 'resting', status: 'paused', attention: members[1]!.assessment.attention }),
-      makeAssessment({ projectId: 'running' }),
-    );
+    ]);
 
-    const order = buildFocusOrder(
-      members.map((member) => member.project),
-      assessments,
-    );
-
-    expect(order.map((entry) => entry.projectId)).toEqual(['running', 'closed', 'resting']);
+    expect(order.map((entry) => entry.projectId)).toEqual([
+      'running',
+      'closed',
+      'resting',
+      'shelved',
+    ]);
+    /* The reason is still shown truthfully — only its position changes. */
     expect(order[1]?.reason).toBe('Decision needed: archive it');
   });
 
@@ -466,7 +536,11 @@ describe('assessPortfolio recent changes', () => {
   });
 
   it('labels provenance by the system that produced the evidence', () => {
-    const merged = makeMergedPr({ id: 'evidence-pr', projectId: aurora.id, observedAt: daysBefore(1) });
+    const merged = makeMergedPr({
+      id: 'evidence-pr',
+      projectId: aurora.id,
+      observedAt: daysBefore(1),
+    });
     const manual = makeEvidence({
       id: 'evidence-manual',
       projectId: aurora.id,

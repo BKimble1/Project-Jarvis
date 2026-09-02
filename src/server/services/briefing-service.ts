@@ -42,6 +42,9 @@ export interface BriefingServiceDeps {
   readonly evidenceLimit?: number;
 }
 
+/** How far back "what changed" looks when a project has only ever produced one snapshot. */
+const FIRST_VIEW_WINDOW_DAYS = 14;
+
 export class BriefingService {
   private readonly clock: () => Date;
 
@@ -230,7 +233,14 @@ export class BriefingService {
     const current = await this.deps.snapshots.latest(projectId);
     if (!current) return [];
     const previous = await this.deps.snapshots.previousDistinct(projectId);
-    const since = previous ? new Date(previous.generatedAt) : new Date(current.generatedAt);
+    /*
+     * With no previous snapshot there is no baseline to diff against, so "since the last snapshot"
+     * would mean "since a moment ago" and the screen would be empty despite real recent activity.
+     * The first view therefore falls back to a fixed recent window of verified evidence.
+     */
+    const since = previous
+      ? new Date(previous.generatedAt)
+      : new Date(this.clock().getTime() - FIRST_VIEW_WINDOW_DAYS * 86_400_000);
     const evidenceSince = await this.deps.evidence.list({ projectId, since, limit: 100 });
     return diffSnapshots({ previous, current, evidenceSince });
   }

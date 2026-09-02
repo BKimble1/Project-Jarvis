@@ -166,7 +166,7 @@ export function buildFocusOrder(
         project,
         bucket: bucket + terminalPenalty,
         priority: PRIORITY_RANK[project.priority],
-        reason: worst?.summary ?? 'Progressing with nothing outstanding.',
+        reason: worst?.summary ?? describeQuietProject(status),
         provenance: worst?.provenance ?? assessment?.headline.provenance ?? 'unknown',
       };
     })
@@ -184,6 +184,31 @@ export function buildFocusOrder(
     provenance: entry.provenance,
     rank: index + 1,
   }));
+}
+
+/**
+ * The reason shown for a project with nothing flagged.
+ *
+ * "Progressing with nothing outstanding" would be wrong for a paused or waiting project, so the
+ * wording follows the derived status rather than assuming forward motion.
+ */
+function describeQuietProject(status: Project['status']): string {
+  switch (status) {
+    case 'paused':
+      return 'Paused — nothing is expected until you resume it.';
+    case 'waiting':
+      return 'Waiting on something external.';
+    case 'completed':
+      return 'Complete, with nothing outstanding.';
+    case 'archived':
+      return 'Archived.';
+    case 'blocked':
+      return 'Marked blocked, with no specific blocker recorded.';
+    case 'unknown':
+      return 'Status unknown — nothing has been recorded.';
+    default:
+      return 'Progressing with nothing outstanding.';
+  }
 }
 
 function buildRecentChanges(

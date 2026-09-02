@@ -35,12 +35,14 @@ Thresholds are in `src/server/status/constants.ts`; freshness windows are per pr
 
 ## Freshness (`assessFreshness`, `computeFreshness`)
 
-| Rule    | Behaviour                                                                                                                                                |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `R-FR1` | A failed synchronisation marks the data **failing** and preserves the last good observation. It is never treated as evidence that no activity occurred.  |
-| —       | `live` / `recent` / `stale` thresholds vary by project type: a software repository is expected to produce evidence far more often than a career project. |
-| —       | `never` means nothing has ever been observed — distinct from "nothing happened".                                                                         |
-| —       | A stale or failing source can never support a claim that the status is up to date; the headline says so explicitly (`R-HL5`, `R-HL7`).                   |
+| Rule     | Behaviour                                                                                                                                                                                                                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `R-FR1`  | A failed synchronisation marks the data **failing** and preserves the last good observation. It is never treated as evidence that no activity occurred.                                                                                                                                                      |
+| `R-FR1a` | "Failing" is decided **per source**, against that same source's last success. A healthy second source — or the owner typing a manual update — never masks a broken one, and never turns last-known-good data into "up to date".                                                                              |
+| `R-FR1b` | The observation date shown for a failing project is the last successful _synchronisation_, not a later manual edit, because that is the moment the data on screen actually dates from. Evidence belonging to a failing source is excluded from that calculation; evidence from healthy sources still counts. |
+| —        | `live` / `recent` / `stale` thresholds vary by project type: a software repository is expected to produce evidence far more often than a career project.                                                                                                                                                     |
+| —        | `never` means nothing has ever been observed — distinct from "nothing happened".                                                                                                                                                                                                                             |
+| —        | A stale or failing source can never support a claim that the status is up to date; the headline says so explicitly (`R-HL5`, `R-HL7`).                                                                                                                                                                       |
 
 ## Attention (`attentionReasons`)
 

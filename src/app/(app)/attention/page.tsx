@@ -21,6 +21,19 @@ export default async function AttentionPage() {
   const services = await getServices();
   const groups = await services.attention.collect();
 
+  /* The sidebar badge counts projects; this page counts items. Saying both keeps them reconciled. */
+  const projectCount = new Set(
+    [
+      ...groups.decisions,
+      ...groups.blockers,
+      ...groups.failedBuilds,
+      ...groups.failedSyncs,
+      ...groups.stale,
+      ...groups.overdue,
+      ...groups.other,
+    ].map((item) => item.projectId),
+  ).size;
+
   const sections: readonly {
     title: string;
     description: string;
@@ -62,7 +75,9 @@ export default async function AttentionPage() {
         <p className="text-sm text-[var(--color-text-muted)]">
           {groups.total === 0
             ? 'Nothing is waiting on you.'
-            : `${groups.total} item${groups.total === 1 ? '' : 's'}, most serious first.`}
+            : `${groups.total} item${groups.total === 1 ? '' : 's'} across ${projectCount} project${
+                projectCount === 1 ? '' : 's'
+              }, most serious first.`}
         </p>
       </header>
 

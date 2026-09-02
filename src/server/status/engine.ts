@@ -158,18 +158,36 @@ export function computeFreshness(input: AssessmentInput): FreshnessAssessment {
   const { aggregate, evidence, now } = input;
   const { project, sources } = aggregate;
 
+  /*
+   * R-FR1 — a source is failing when its own most recent *attempt* failed. Comparing a failure
+   * against a project-wide observation time would let a healthy source (or a manual edit) mask a
+   * broken one, so the comparison is made per source against that same source's last success.
+   */
+  const failingSources = sources.filter((source) => {
+    if (!source.lastSyncFailedAt) return false;
+    const failedAt = new Date(source.lastSyncFailedAt).getTime();
+    if (Number.isNaN(failedAt)) return false;
+    const okAt = source.lastSyncOkAt
+      ? new Date(source.lastSyncOkAt).getTime()
+      : Number.NEGATIVE_INFINITY;
+    return failedAt > okAt;
+  });
+  const failingSourceIds = new Set(failingSources.map((source) => source.id));
+
   const observedCandidates: number[] = [];
   for (const item of evidence) {
+    /* Evidence from a failing source cannot vouch for how current the picture is. */
+    if (item.sourceId !== null && failingSourceIds.has(item.sourceId)) continue;
     const time = new Date(item.fetchedAt).getTime();
     if (!Number.isNaN(time)) observedCandidates.push(time);
   }
   for (const source of sources) {
-    if (source.lastSyncOkAt) {
-      const time = new Date(source.lastSyncOkAt).getTime();
-      if (!Number.isNaN(time)) observedCandidates.push(time);
-    }
+    if (!source.lastSyncOkAt) continue;
+    const time = new Date(source.lastSyncOkAt).getTime();
+    if (!Number.isNaN(time)) observedCandidates.push(time);
   }
-  if (project.lastManualUpdateAt) {
+  /* A manual edit only counts as an observation on a project Jarvis is not otherwise watching. */
+  if (project.lastManualUpdateAt && failingSources.length === 0) {
     const time = new Date(project.lastManualUpdateAt).getTime();
     if (!Number.isNaN(time)) observedCandidates.push(time);
   }
@@ -177,14 +195,10 @@ export function computeFreshness(input: AssessmentInput): FreshnessAssessment {
   const lastObservedAt =
     observedCandidates.length > 0 ? new Date(Math.max(...observedCandidates)).toISOString() : null;
 
-  /* R-FR1 — a failing sync marks the data stale; it never means "nothing happened". */
-  const failing = sources
-    .filter((source) => source.syncStatus === 'failed' && source.lastSyncFailedAt)
-    .sort(
-      (a, b) =>
-        new Date(b.lastSyncFailedAt ?? 0).getTime() - new Date(a.lastSyncFailedAt ?? 0).getTime(),
-    );
-  const worst = failing[0];
+  const worst = [...failingSources].sort(
+    (a, b) =>
+      new Date(b.lastSyncFailedAt ?? 0).getTime() - new Date(a.lastSyncFailedAt ?? 0).getTime(),
+  )[0];
 
   return assessFreshness({
     type: project.type,
@@ -192,6 +206,7 @@ export function computeFreshness(input: AssessmentInput): FreshnessAssessment {
     lastSyncFailedAt: worst?.lastSyncFailedAt ?? null,
     lastSyncError: worst?.lastSyncError ?? null,
     hasSources: sources.some((source) => source.kind !== 'manual'),
+    syncFailing: failingSources.length > 0,
     now,
   });
 }
@@ -792,6 +807,10 @@ function buildHeadline(input: {
       'R-HL7-stale',
     );
   }
+  /* A waiting project is waiting even when work is visible, so this is checked before progress. */
+  if (derived.status === 'waiting') {
+    return claim(`${name} is waiting on something external.`, 'manual', [], 'R-HL10-waiting');
+  }
   if (currentWorkCount > 0) {
     return claim(`${name} is progressing normally.`, 'inferred', [], 'R-HL8-progressing');
   }
@@ -802,9 +821,6 @@ function buildHeadline(input: {
       [],
       'R-HL9-recent-completion-no-current-work',
     );
-  }
-  if (derived.status === 'waiting') {
-    return claim(`${name} is waiting on something external.`, 'manual', [], 'R-HL10-waiting');
   }
   return claim(
     `${name} is active, but Jarvis has no evidence of work in progress.`,

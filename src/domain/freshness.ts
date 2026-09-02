@@ -33,6 +33,14 @@ export interface FreshnessInput {
   readonly lastSyncError: string | null;
   readonly hasSources: boolean;
   readonly now: Date;
+  /**
+   * Explicit "a source is currently in a failed state" signal.
+   *
+   * Callers that know the per-source history should set this, because comparing a failure
+   * timestamp against a project-wide observation time would let one healthy source mask another
+   * source's failure. When omitted, the timestamps are compared instead.
+   */
+  readonly syncFailing?: boolean;
 }
 
 const HOUR_MS = 3_600_000;
@@ -58,8 +66,9 @@ export function assessFreshness(input: FreshnessInput): FreshnessAssessment {
   const failed = lastSyncFailedAt ? new Date(lastSyncFailedAt) : null;
   const failedValid = failed && !Number.isNaN(failed.getTime()) ? failed : null;
   const syncIsFailing =
-    failedValid !== null &&
-    (observedValid === null || failedValid.getTime() > observedValid.getTime());
+    input.syncFailing ??
+    (failedValid !== null &&
+      (observedValid === null || failedValid.getTime() > observedValid.getTime()));
 
   if (syncIsFailing) {
     return {
