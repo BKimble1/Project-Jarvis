@@ -249,7 +249,9 @@ export function makeAggregate(overrides: Partial<ProjectAggregate> = {}): Projec
   };
 }
 
-export function evidenceInput(overrides: Partial<EvidenceInput> & { projectId: string }): EvidenceInput {
+export function evidenceInput(
+  overrides: Partial<EvidenceInput> & { projectId: string },
+): EvidenceInput {
   return {
     kind: 'git_commit',
     sourceSystem: 'github',

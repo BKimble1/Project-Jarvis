@@ -48,9 +48,7 @@ export class FakeSourceProvider implements SourceProvider {
 
   async describeRepository(owner: string, repo: string): Promise<RepositorySummary> {
     if (this.describeError) throw this.describeError;
-    const found = this.repositories.find(
-      (item) => item.owner === owner && item.repo === repo,
-    );
+    const found = this.repositories.find((item) => item.owner === owner && item.repo === repo);
     return found ?? makeRepositorySummary({ owner, repo });
   }
 
@@ -61,7 +59,9 @@ export class FakeSourceProvider implements SourceProvider {
   }
 }
 
-export function makeRepositorySummary(overrides: Partial<RepositorySummary> = {}): RepositorySummary {
+export function makeRepositorySummary(
+  overrides: Partial<RepositorySummary> = {},
+): RepositorySummary {
   const owner = overrides.owner ?? 'test-owner';
   const repo = overrides.repo ?? 'aurora';
   return {

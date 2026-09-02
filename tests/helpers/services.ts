@@ -16,11 +16,13 @@ export interface TestHarness {
   readonly close: () => Promise<void>;
 }
 
-export async function createHarness(options: {
-  config?: AppConfig;
-  narrator?: BriefingNarrator;
-  clock?: () => Date;
-} = {}): Promise<TestHarness> {
+export async function createHarness(
+  options: {
+    config?: AppConfig;
+    narrator?: BriefingNarrator;
+    clock?: () => Date;
+  } = {},
+): Promise<TestHarness> {
   const { db, close } = await createTestDatabase();
   const config = options.config ?? testConfig();
   const provider = new FakeSourceProvider();
