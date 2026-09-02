@@ -55,7 +55,32 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
     services.projects.list(filter),
     services.projects.allTags(),
   ]);
-  const assessments = await services.briefings.assessMany(page.items.map((project) => project.id));
+  const projectIds = page.items.map((project) => project.id);
+  const assessments = await services.briefings.assessMany(projectIds);
+
+  /*
+   * The same repository signals the dashboard shows. Read from stored evidence in one query, so
+   * a card never means something different depending on which screen it appears on.
+   */
+  const openPullRequests = new Map<string, number>();
+  if (projectIds.length > 0) {
+    const pullRequests = await services.evidence.list({
+      projectIds,
+      kinds: ['pull_request'],
+      limit: 400,
+    });
+    for (const item of pullRequests) {
+      if (item.metadata.state !== 'open') continue;
+      openPullRequests.set(item.projectId, (openPullRequests.get(item.projectId) ?? 0) + 1);
+    }
+  }
+  const failingBuilds = new Map<string, number>();
+  for (const [projectId, assessment] of assessments) {
+    const failures = assessment.attention.filter(
+      (reason) => reason.code === 'failed_workflow',
+    ).length;
+    if (failures > 0) failingBuilds.set(projectId, failures);
+  }
   const hasFilters = Boolean(
     one(params.search) || status || type || priority || tag || one(params.archived),
   );
@@ -112,7 +137,12 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {page.items.map((project) => (
             <div key={project.id} className="flex flex-col gap-2">
-              <ProjectCard project={project} assessment={assessments.get(project.id)} />
+              <ProjectCard
+                project={project}
+                assessment={assessments.get(project.id)}
+                openPullRequests={openPullRequests.get(project.id) ?? 0}
+                failingBuilds={failingBuilds.get(project.id) ?? 0}
+              />
               {project.archivedAt ? (
                 <RestoreButton projectId={project.id} projectName={project.name} />
               ) : null}

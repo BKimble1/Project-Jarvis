@@ -14,11 +14,11 @@ Nothing is skipped or weakened to make the gate pass. If a check fails, the phas
 
 ## Layers
 
-| Layer       | Runner                         | Runs against                                                          | Location             |
-| ----------- | ------------------------------ | --------------------------------------------------------------------- | -------------------- |
-| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                               | `tests/unit/`        |
-| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL | `tests/integration/` |
-| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint    | `tests/e2e/`         |
+| Layer       | Runner                         | Runs against                                                                                            | Location             | Tests |
+| ----------- | ------------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------- | ----- |
+| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                 | `tests/unit/`        | 350   |
+| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL                                   | `tests/integration/` | 79    |
+| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport | `tests/e2e/`         | 26    |
 
 Individually:
 
