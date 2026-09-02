@@ -12,6 +12,7 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { NotFoundError } from '@/domain/errors';
 import type {
   Blocker,
@@ -415,7 +416,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async removeGoal(id: string): Promise<void> {
-    await this.db.delete(goals).where(eq(goals.id, id));
+    await this.removeOwned(goals, goals.id, id);
   }
 
   /* ------------------------------------------------------- milestones */
@@ -461,7 +462,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async removeMilestone(id: string): Promise<void> {
-    await this.db.delete(milestones).where(eq(milestones.id, id));
+    await this.removeOwned(milestones, milestones.id, id);
   }
 
   /* ---------------------------------------------------------- blockers */
@@ -525,7 +526,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async removeBlocker(id: string): Promise<void> {
-    await this.db.delete(blockers).where(eq(blockers.id, id));
+    await this.removeOwned(blockers, blockers.id, id);
   }
 
   /* --------------------------------------------------------- decisions */
@@ -564,7 +565,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async removeDecision(id: string): Promise<void> {
-    await this.db.delete(decisions).where(eq(decisions.id, id));
+    await this.removeOwned(decisions, decisions.id, id);
   }
 
   /* ----------------------------------------------------------- updates */
@@ -587,7 +588,7 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async removeUpdate(id: string): Promise<void> {
-    await this.db.delete(manualUpdates).where(eq(manualUpdates.id, id));
+    await this.removeOwned(manualUpdates, manualUpdates.id, id);
   }
 
   /* ------------------------------------------------------ next actions */
@@ -633,7 +634,27 @@ export class DrizzleProjectRepository implements ProjectRepository {
   }
 
   async removeNextAction(id: string): Promise<void> {
-    await this.db.delete(nextActions).where(eq(nextActions.id, id));
+    await this.removeOwned(nextActions, nextActions.id, id);
+  }
+
+  /**
+   * Deletes one owner-managed row and records that the owner changed something.
+   *
+   * Deleting a blocker or an update is every bit as much an explicit action as adding one, and
+   * `lastManualUpdateAt` feeds the freshness assessment — without this, clearing the last blocker
+   * on a project with no source would leave it looking staler than it is.
+   */
+  private async removeOwned<TTable extends { projectId: PgColumn }, TColumn extends PgColumn>(
+    table: TTable,
+    idColumn: TColumn,
+    id: string,
+  ): Promise<void> {
+    const rows = await this.db
+      .delete(table as never)
+      .where(eq(idColumn, id))
+      .returning({ projectId: table.projectId });
+    const projectId = rows[0]?.projectId;
+    if (typeof projectId === 'string') await this.markManualUpdate(projectId);
   }
 
   private async markManualUpdate(projectId: string): Promise<void> {

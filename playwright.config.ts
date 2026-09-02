@@ -50,13 +50,25 @@ export default defineConfig({
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
-    { name: 'iphone', use: { ...devices['iPhone 13'] } },
+    {
+      name: 'iphone',
+      use: {
+        ...devices['iPhone 13'],
+        /*
+         * The iPhone descriptor selects WebKit by default. Only Chromium is provisioned here and
+         * in CI, so the viewport, user agent, touch and mobile flags are emulated with Chromium
+         * instead — which is what the layout assertions actually exercise.
+         */
+        browserName: 'chromium',
+        defaultBrowserType: 'chromium',
+      },
+    },
   ],
   webServer: [
     {
       command: 'npx tsx scripts/mock-github.mts',
       port: MOCK_PORT,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       env: { MOCK_GITHUB_PORT: String(MOCK_PORT) },
       stdout: 'ignore',
       stderr: 'pipe',
@@ -64,7 +76,12 @@ export default defineConfig({
     {
       command: 'npx tsx scripts/e2e-prepare.mts && npx next dev --port ' + PORT,
       port: PORT,
-      reuseExistingServer: !process.env.CI,
+      /*
+       * Never reuse a server this run did not start. The end-to-end database is file-backed and
+       * only reset by `e2e-prepare`, which runs as part of this command — reusing an old server
+       * would silently test yesterday's data against today's code.
+       */
+      reuseExistingServer: false,
       timeout: 240_000,
       env: appEnv,
       stdout: 'ignore',

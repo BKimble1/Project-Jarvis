@@ -9,12 +9,16 @@
  * Pass `--skip-e2e` when browsers are unavailable (the step is otherwise always run).
  */
 import { spawn } from 'node:child_process';
+import { rm } from 'node:fs/promises';
+import path from 'node:path';
 
 interface Step {
   readonly name: string;
   readonly command: string;
   readonly args: readonly string[];
   readonly env?: Record<string, string>;
+  /** Run before the command; used to guarantee a clean build directory. */
+  readonly before?: () => Promise<void>;
 }
 
 const argv = new Set(process.argv.slice(2));
@@ -42,7 +46,19 @@ const steps: Step[] = [
     command: 'npx',
     args: ['vitest', 'run', '--project', 'integration'],
   },
-  { name: 'Production build', command: 'npx', args: ['next', 'build'], env: buildEnv },
+  {
+    name: 'Production build',
+    command: 'npx',
+    args: ['next', 'build'],
+    env: buildEnv,
+    /*
+     * A development server writes into the same `.next` directory. Clearing it first means the
+     * gate always builds from source rather than from whatever a dev session left behind.
+     */
+    before: async () => {
+      await rm(path.join(process.cwd(), '.next'), { recursive: true, force: true });
+    },
+  },
 ];
 
 if (!skipE2e) {
@@ -69,6 +85,7 @@ async function main(): Promise<void> {
   const started = Date.now();
   for (const [index, step] of steps.entries()) {
     console.log(`\n${BOLD}[${index + 1}/${steps.length}] ${step.name}${RESET}`);
+    await step.before?.();
     const code = await run(step);
     if (code !== 0) {
       console.error(`\n${RED}\u2717 ${step.name} failed (exit ${code}).${RESET}`);

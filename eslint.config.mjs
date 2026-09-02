@@ -70,6 +70,14 @@ const config = [
     files: ['scripts/**/*.{ts,mts}', 'tests/**/*.ts', 'vitest.config.ts', 'playwright.config.ts'],
     rules: { 'no-console': 'off' },
   },
+  {
+    /*
+     * Playwright fixtures take a callback named `use`, which the React hooks rule mistakes for a
+     * hook call. There are no React components in the end-to-end suite for the rule to protect.
+     */
+    files: ['tests/e2e/**/*.ts'],
+    rules: { 'react-hooks/rules-of-hooks': 'off' },
+  },
 ];
 
 export default config;

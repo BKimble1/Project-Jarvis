@@ -228,11 +228,11 @@ describe('project sub-entities', () => {
   });
 
   /**
-   * Deleting a sub-entity is just as much an owner action as adding one, but the repository's
-   * `remove*` methods skip `markManualUpdate`. This asserts what the code actually does today so
-   * the gap is visible rather than silently accepted; see the accompanying report.
+   * Deleting a sub-entity is just as much an owner action as adding one, and
+   * `lastManualUpdateAt` feeds the freshness assessment — so clearing the last blocker on a
+   * project with no source must not leave it looking staler than it is.
    */
-  it('removes a sub-entity but leaves lastManualUpdateAt at its previous value', async () => {
+  it('records a manual change when a sub-entity is removed', async () => {
     for (const entity of entityCases(harness)) {
       const id = await entity.add(project.id);
       await stampOldManualUpdate(harness, project.id);
@@ -240,7 +240,7 @@ describe('project sub-entities', () => {
       await entity.remove(id);
 
       expect(entity.count(await aggregateOf(harness, project.id)), `${entity.name} count`).toBe(0);
-      expect(await manualUpdateAt(harness, project.id), `${entity.name} remove`).toBe(
+      expect(await manualUpdateAt(harness, project.id), `${entity.name} remove`).toBeGreaterThan(
         OLD_TOUCH.getTime(),
       );
     }
