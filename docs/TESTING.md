@@ -16,9 +16,9 @@ Nothing is skipped or weakened to make the gate pass. If a check fails, the phas
 
 | Layer       | Runner                         | Runs against                                                                                            | Location             | Tests |
 | ----------- | ------------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------- | ----- |
-| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                 | `tests/unit/`        | 350   |
-| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL                                   | `tests/integration/` | 79    |
-| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport | `tests/e2e/`         | 26    |
+| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                 | `tests/unit/`        | 351   |
+| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL                                   | `tests/integration/` | 63    |
+| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport | `tests/e2e/`         | 28    |
 
 Individually:
 
@@ -72,6 +72,8 @@ The suite is organised around the claims the product makes, not around file stru
 **Resilience**
 
 - Idempotent synchronisation: the same snapshot twice produces the same rows.
+- The failed-refresh journey end to end: the interface says "Sync failing", names the
+  problem, and still shows every piece of evidence gathered before the failure.
 - A failed synchronisation preserves previously verified evidence and marks it `failing`, never
   `never` and never empty.
 - Partial permissions produce a partial sync with named unavailable categories, not a failure.
@@ -82,11 +84,16 @@ The suite is organised around the claims the product makes, not around file stru
 
 **Security**
 
-- Authorisation is enforced for pages and API routes; an unauthenticated request never reaches data.
+- Authorisation is enforced by driving the real route handlers: an unauthenticated call to
+  `/api/projects`, `/api/export` or `/api/query` returns 401 before anything is read or
+  written, an expired session is refused and purged, and a cross-origin write is rejected
+  with 403 while a same-origin one and a header-less non-browser call both succeed.
 - The single-owner check rejects every other GitHub identity, with the numeric id authoritative.
 - The scheduled-sync endpoint rejects a missing or wrong secret, and is closed when unset.
 - Configuration fails closed in production for every required variable.
-- Secrets never appear in logs, in `describeConfigHealth`, or in an export.
+- Secrets never appear in logs, in `describeConfigHealth`, or in an export — the export
+  assertion runs against the shipping route's own payload, with a live session token and
+  OAuth state present in the database for it to catch.
 - **The GitHub integration has no write operation**: asserted at the client (non-GET throws before
   any fetch), at the interface (`SourceProvider` declares only reads) and end-to-end (the mock
   rejects writes).

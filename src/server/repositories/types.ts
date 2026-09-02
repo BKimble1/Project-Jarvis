@@ -143,8 +143,12 @@ export interface EvidenceQuery {
 }
 
 export interface EvidenceRepository {
-  /** Idempotent: existing rows matching (project, system, kind, externalId) are updated. */
-  upsertMany(inputs: readonly EvidenceInput[]): Promise<readonly Evidence[]>;
+  /**
+   * Idempotent: existing rows matching (project, system, kind, externalId) are updated.
+   * `fetchedAt` records when Jarvis observed the data; callers with a clock should supply it so
+   * the observation time is theirs to control rather than the repository's.
+   */
+  upsertMany(inputs: readonly EvidenceInput[], fetchedAt?: Date): Promise<readonly Evidence[]>;
   list(query: EvidenceQuery): Promise<readonly Evidence[]>;
   findByIds(ids: readonly string[]): Promise<readonly Evidence[]>;
   countByProject(projectIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
@@ -170,6 +174,7 @@ export interface SyncRunRepository {
     projectId: string | null;
     sourceId: string | null;
     trigger: 'manual' | 'scheduled' | 'import';
+    startedAt?: Date;
   }): Promise<SyncRunRecord>;
   finish(
     id: string,

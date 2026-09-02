@@ -630,6 +630,21 @@ describe('assessPortfolio unknowns', () => {
       '2 projects have no recorded goal.',
     ]);
   });
+
+  /* Every unknown sentence is read by a person, so each must agree with itself in number. */
+  it('writes the singular of every unknown sentence correctly', () => {
+    const result = assessPortfolio({
+      projects: [makeProject({ id: 'p-1', goal: null })],
+      assessments: new Map(),
+      recentEvidence: [],
+      now: NOW,
+    });
+
+    expect(result.unknowns).toEqual([
+      '1 project has not been assessed yet.',
+      '1 project has no recorded goal.',
+    ]);
+  });
 });
 
 /* -------------------------------------------------------------------- diff */

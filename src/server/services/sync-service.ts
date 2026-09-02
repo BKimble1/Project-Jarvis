@@ -126,7 +126,13 @@ export class ProjectSyncService {
     let lastRunId: string | null = null;
 
     for (const source of sources) {
-      const run = await this.deps.runs.start({ projectId, sourceId: source.id, trigger });
+      const startedAt = this.clock();
+      const run = await this.deps.runs.start({
+        projectId,
+        sourceId: source.id,
+        trigger,
+        startedAt,
+      });
       lastRunId = run.id;
       await this.deps.activity.record({
         projectId,
@@ -155,7 +161,7 @@ export class ProjectSyncService {
           continue;
         }
 
-        const written = await this.writeEvidence(snapshot.evidence);
+        const written = await this.writeEvidence(snapshot.evidence, now);
         totalWritten += written;
 
         if (snapshot.status === 'partial') anyPartial = true;
@@ -239,14 +245,14 @@ export class ProjectSyncService {
     };
   }
 
-  private async writeEvidence(inputs: readonly EvidenceInput[]): Promise<number> {
+  private async writeEvidence(inputs: readonly EvidenceInput[], fetchedAt: Date): Promise<number> {
     if (inputs.length === 0) return 0;
     /* Later entries win, so a repeated external id inside one batch cannot break the upsert. */
     const deduped = new Map<string, EvidenceInput>();
     for (const input of inputs) {
       deduped.set(`${input.sourceSystem}:${input.kind}:${input.externalId}`, input);
     }
-    const written = await this.deps.evidence.upsertMany([...deduped.values()]);
+    const written = await this.deps.evidence.upsertMany([...deduped.values()], fetchedAt);
     return written.length;
   }
 

@@ -213,17 +213,22 @@ export class DrizzleProjectRepository implements ProjectRepository {
     const orderBy = (() => {
       switch (filter.sort ?? 'recent_activity') {
         case 'attention':
-          return [desc(projects.needsAttention), asc(PRIORITY_RANK), desc(LAST_ACTIVITY)];
+          return [
+            desc(projects.needsAttention),
+            asc(PRIORITY_RANK),
+            desc(LAST_ACTIVITY),
+            asc(projects.id),
+          ];
         case 'priority':
-          return [asc(PRIORITY_RANK), desc(LAST_ACTIVITY)];
+          return [asc(PRIORITY_RANK), desc(LAST_ACTIVITY), asc(projects.id)];
         case 'staleness':
-          return [asc(FRESHNESS_RANK), asc(LAST_ACTIVITY)];
+          return [asc(FRESHNESS_RANK), asc(LAST_ACTIVITY), asc(projects.id)];
         case 'name':
           return [asc(sql`lower(${projects.name})`)];
         case 'created':
-          return [desc(projects.createdAt)];
+          return [desc(projects.createdAt), asc(projects.id)];
         default:
-          return [desc(LAST_ACTIVITY)];
+          return [desc(LAST_ACTIVITY), asc(projects.id)];
       }
     })();
 
@@ -735,7 +740,8 @@ export class DrizzleSourceRepository implements SourceRepository {
       .select()
       .from(projectSources)
       .where(eq(projectSources.kind, 'github_repo'))
-      .orderBy(asc(projectSources.createdAt));
+      /* `id` breaks ties so the visiting order is stable when rows share a creation instant. */
+      .orderBy(asc(projectSources.createdAt), asc(projectSources.id));
     return rows.map(toProjectSource);
   }
 
@@ -812,9 +818,11 @@ export class DrizzleSourceRepository implements SourceRepository {
 export class DrizzleEvidenceRepository implements EvidenceRepository {
   constructor(private readonly db: Database) {}
 
-  async upsertMany(inputs: readonly EvidenceInput[]): Promise<readonly Evidence[]> {
+  async upsertMany(
+    inputs: readonly EvidenceInput[],
+    fetchedAt: Date = new Date(),
+  ): Promise<readonly Evidence[]> {
     if (inputs.length === 0) return [];
-    const fetchedAt = new Date();
     const written: Evidence[] = [];
 
     /* Chunked so a large first sync never builds an oversized statement. */
@@ -1023,6 +1031,7 @@ export class DrizzleSyncRunRepository implements SyncRunRepository {
     projectId: string | null;
     sourceId: string | null;
     trigger: 'manual' | 'scheduled' | 'import';
+    startedAt?: Date;
   }): Promise<SyncRunRecord> {
     const rows = await this.db
       .insert(syncRuns)
@@ -1031,6 +1040,7 @@ export class DrizzleSyncRunRepository implements SyncRunRepository {
         sourceId: input.sourceId,
         trigger: input.trigger,
         status: 'running',
+        ...(input.startedAt ? { startedAt: input.startedAt } : {}),
       })
       .returning();
     return toSyncRun(first(rows, 'Sync run'));
@@ -1070,7 +1080,7 @@ export class DrizzleSyncRunRepository implements SyncRunRepository {
       .select()
       .from(syncRuns)
       .where(eq(syncRuns.projectId, projectId))
-      .orderBy(desc(syncRuns.startedAt))
+      .orderBy(desc(syncRuns.startedAt), desc(syncRuns.id))
       .limit(Math.min(limit, 100));
     return rows.map(toSyncRun);
   }

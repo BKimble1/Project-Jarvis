@@ -23,6 +23,15 @@ export class FakeSourceProvider implements SourceProvider {
   repositories: RepositorySummary[] = [];
   /** Queue of snapshots; the last one repeats once the queue is exhausted. */
   snapshots: SourceSnapshot[] = [];
+  /**
+   * Responses keyed by `owner/repo`, checked before the queue.
+   *
+   * Tests that care *which* repository fails should use this rather than the positional queue,
+   * so the assertion does not silently depend on the order `syncAll` happens to visit sources in.
+   */
+  snapshotsByRepo = new Map<string, SourceSnapshot>();
+  /** Every `owner/repo` asked for, in order, so a test can assert what was and was not called. */
+  requested: string[] = [];
   describeError: Error | null = null;
   listError: Error | null = null;
 
@@ -52,8 +61,14 @@ export class FakeSourceProvider implements SourceProvider {
     return found ?? makeRepositorySummary({ owner, repo });
   }
 
-  async fetchSnapshot(_source: ProjectSource, _context: FetchContext): Promise<SourceSnapshot> {
+  async fetchSnapshot(source: ProjectSource, _context: FetchContext): Promise<SourceSnapshot> {
     this.calls += 1;
+    const key = source.github ? `${source.github.owner}/${source.github.repo}` : '';
+    this.requested.push(key);
+
+    const keyed = this.snapshotsByRepo.get(key);
+    if (keyed) return keyed;
+
     const next = this.snapshots.length > 1 ? this.snapshots.shift() : this.snapshots[0];
     return next ?? emptySnapshot();
   }

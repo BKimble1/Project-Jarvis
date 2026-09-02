@@ -289,7 +289,9 @@ function collectPortfolioUnknowns(
   const noGoal = projects.filter((project) => !project.goal);
   if (noGoal.length > 0) {
     unknowns.push(
-      `${noGoal.length} project${noGoal.length === 1 ? '' : 's'} have no recorded goal.`,
+      noGoal.length === 1
+        ? '1 project has no recorded goal.'
+        : `${noGoal.length} projects have no recorded goal.`,
     );
   }
   return unknowns;

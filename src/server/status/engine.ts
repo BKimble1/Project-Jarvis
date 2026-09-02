@@ -822,8 +822,14 @@ function buildHeadline(input: {
       'R-HL9-recent-completion-no-current-work',
     );
   }
+  /*
+   * "Active" would overstate a status the engine explicitly refused to guess (R-ST5), so an
+   * unknown status says so rather than borrowing a word nobody chose.
+   */
   return claim(
-    `${name} is active, but Jarvis has no evidence of work in progress.`,
+    derived.status === 'unknown'
+      ? `${name} has no recorded status, and Jarvis has no evidence of work in progress.`
+      : `${name} is active, but Jarvis has no evidence of work in progress.`,
     'unknown',
     [],
     'R-HL11-active-without-evidence',

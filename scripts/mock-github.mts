@@ -209,6 +209,16 @@ const RELEASES = [
   },
 ];
 
+/**
+ * Failure injection.
+ *
+ * Toggled through a GET control path so the mock keeps refusing every non-GET method — the
+ * property that makes an accidental write fail the suite. Without this there is no way to
+ * exercise the failed-synchronisation journey through the real UI, which is where the
+ * "last-known-good stays on screen" promise is actually kept.
+ */
+const state = { failure: null as null | 'unauthorized' | 'rate_limited', partial: false };
+
 const server = createServer((request, response) => {
   const send = (status: number, body: unknown) => {
     const payload = JSON.stringify(body);
@@ -231,6 +241,21 @@ const server = createServer((request, response) => {
   const url = new URL(request.url ?? '/', `http://127.0.0.1:${PORT}`);
   const path = url.pathname.replace(/\/+$/, '');
 
+  if (path === '/__control') {
+    const mode = url.searchParams.get('mode') ?? 'healthy';
+    state.failure = mode === 'unauthorized' || mode === 'rate_limited' ? mode : null;
+    state.partial = mode === 'partial';
+    return send(200, { mode, failure: state.failure, partial: state.partial });
+  }
+
+  if (state.failure === 'unauthorized' && path !== '/user') {
+    return send(401, { message: 'Bad credentials' });
+  }
+  if (state.failure === 'rate_limited' && path !== '/user') {
+    response.setHeader('x-ratelimit-remaining', '0');
+    return send(403, { message: 'API rate limit exceeded' });
+  }
+
   if (path === '/user') return send(200, { login: OWNER, id: 4242, name: 'Test Owner' });
   if (path === '/user/repos') return send(200, url.searchParams.get('page') === '2' ? [] : REPOS);
 
@@ -249,6 +274,9 @@ const server = createServer((request, response) => {
     }
     if (rest === '/issues') {
       if (!repo.has_issues) return send(410, { message: 'Issues are disabled for this repo' });
+      /* Partial mode denies one category only, so the sync degrades rather than fails. */
+      if (state.partial)
+        return send(403, { message: 'Resource not accessible by personal access token' });
       return send(200, ISSUES);
     }
     if (rest === '/actions/runs') {

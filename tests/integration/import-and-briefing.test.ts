@@ -46,8 +46,14 @@ describe('importing a GitHub repository', () => {
    * be queued up front — it is built from the fetch context the sync service passes in.
    */
   const respondWith = (build: (context: FetchContext) => SourceSnapshot): void => {
-    harness.provider.fetchSnapshot = async (_source: ProjectSource, context: FetchContext) =>
-      build(context);
+    /* Keeps the fake's call counter honest, so `provider.calls` assertions cannot pass vacuously. */
+    harness.provider.fetchSnapshot = async (source: ProjectSource, context: FetchContext) => {
+      harness.provider.calls += 1;
+      harness.provider.requested.push(
+        source.github ? `${source.github.owner}/${source.github.repo}` : '',
+      );
+      return build(context);
+    };
   };
 
   function importedEvidence(context: FetchContext): EvidenceInput[] {
@@ -151,6 +157,8 @@ describe('importing a GitHub repository', () => {
     expect(projects.total).toBe(1);
     expect(projects.items.map((project) => project.id)).toEqual([first.project.id]);
     expect(await services.sources.listAllGithubSources()).toHaveLength(1);
+    /* A refused duplicate must not have reached GitHub at all: only the first import synced. */
+    expect(harness.provider.calls).toBe(1);
   });
 
   it('reports a partial first synchronisation honestly instead of claiming success', async () => {
@@ -269,6 +277,8 @@ describe('importing a GitHub repository', () => {
     expect(failure.details.issues).toEqual(['Invalid GitHub owner']);
 
     expect((await services.projects.list()).total).toBe(0);
+    /* "Before touching the database" also means before touching the network. */
+    expect(harness.provider.calls).toBe(0);
     expect(await services.sources.listAllGithubSources()).toHaveLength(0);
   });
 });

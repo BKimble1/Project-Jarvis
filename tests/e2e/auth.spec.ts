@@ -33,8 +33,26 @@ test.describe('access', () => {
         await expect(page.getByText(affordance)).toHaveCount(0);
       }
 
-      /* The dashboard's data must not have been rendered before the redirect. */
-      await expect(page.getByRole('heading', { name: 'Where we are' })).toHaveCount(0);
+      /*
+       * Asserting on the page *after* the redirect proves nothing about the redirect itself, so
+       * the un-followed response is inspected directly.
+       *
+       * Its body is not worth asserting on: in development Next serves the whole client bundle
+       * with the redirect, so every string in the application appears in it regardless of what
+       * was rendered. What matters is that the server redirected rather than answering, and that
+       * the data behind the page is refused to the same anonymous caller.
+       */
+      const unfollowed = await context.request.get('/dashboard', { maxRedirects: 0 });
+      expect(unfollowed.status(), 'the dashboard must redirect, not answer').toBe(307);
+      expect(unfollowed.headers()['location']).toContain('/signin');
+
+      for (const endpoint of ['/api/projects', '/api/export']) {
+        const refused = await context.request.get(endpoint);
+        expect(refused.status(), `${endpoint} must refuse an anonymous caller`).toBe(401);
+        expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
+          'unauthorized',
+        );
+      }
     } finally {
       await context.close();
     }

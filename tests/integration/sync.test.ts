@@ -149,9 +149,7 @@ describe('project synchronisation', () => {
     const first = await services.sync.syncProject(project.id);
     const before = await services.evidence.list({ projectId: project.id });
 
-    /* `fetchedAt` is stamped from the wall clock inside the repository, so a short real wait
-       keeps the "re-observed" comparison deterministic rather than timer-resolution dependent. */
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    /* `fetchedAt` comes from the service's injected clock, so advancing it is enough. */
     advanceHours(1);
     const second = await services.sync.syncProject(project.id);
     const after = await services.evidence.list({ projectId: project.id });
@@ -371,30 +369,36 @@ describe('project synchronisation', () => {
   it('isolates failures in syncAll so one broken repository never blocks the next', async () => {
     const { services, provider } = harness;
     const alpha = await seedProject({ name: 'Alpha', repo: 'alpha' });
-    /* `syncAll` visits sources in creation order, so the two are seeded a tick apart to make
-       which project meets the failing snapshot deterministic. */
-    await new Promise((resolve) => setTimeout(resolve, 10));
     const beta = await seedProject({ name: 'Beta', repo: 'beta' });
 
-    provider.snapshots = [
+    /*
+     * Keyed by repository rather than queued positionally, so which project fails is stated by
+     * the test rather than decided by the order `syncAll` happens to visit sources in.
+     */
+    provider.snapshotsByRepo.set(
+      'test-owner/alpha',
       failedSnapshot('GitHub rejected the credential.'),
+    );
+    provider.snapshotsByRepo.set(
+      'test-owner/beta',
       okSnapshot(githubEvidence(beta.project.id, beta.source.id)),
-    ];
+    );
 
     const outcomes = await services.sync.syncAll('scheduled');
 
     expect(provider.calls).toBe(2);
+    expect([...provider.requested].sort()).toEqual(['test-owner/alpha', 'test-owner/beta']);
     expect(outcomes).toHaveLength(2);
-    expect(outcomes.map((outcome) => outcome.projectId)).toEqual([
-      alpha.project.id,
-      beta.project.id,
-    ]);
-    expect(outcomes.map((outcome) => outcome.projectName)).toEqual(['Alpha', 'Beta']);
-    expect(outcomes[0]?.status).toBe('failed');
-    expect(outcomes[0]?.evidenceWritten).toBe(0);
-    expect(outcomes[0]?.message).toBe('GitHub rejected the credential.');
-    expect(outcomes[1]?.status).toBe('ok');
-    expect(outcomes[1]?.evidenceWritten).toBe(2);
+    expect([...outcomes].map((outcome) => outcome.projectId).sort()).toEqual(
+      [alpha.project.id, beta.project.id].sort(),
+    );
+
+    const byName = new Map(outcomes.map((outcome) => [outcome.projectName, outcome]));
+    expect(byName.get('Alpha')?.status).toBe('failed');
+    expect(byName.get('Alpha')?.evidenceWritten).toBe(0);
+    expect(byName.get('Alpha')?.message).toBe('GitHub rejected the credential.');
+    expect(byName.get('Beta')?.status).toBe('ok');
+    expect(byName.get('Beta')?.evidenceWritten).toBe(2);
 
     expect(await services.evidence.list({ projectId: alpha.project.id })).toHaveLength(0);
     expect(await services.evidence.list({ projectId: beta.project.id })).toHaveLength(2);
@@ -407,6 +411,18 @@ describe('project synchronisation', () => {
 
     expect((await services.sources.findById(alpha.source.id))?.syncStatus).toBe('failed');
     expect((await services.sources.findById(beta.source.id))?.syncStatus).toBe('ok');
+  });
+
+  it('refuses to synchronise a project that does not exist', async () => {
+    const { services, provider } = harness;
+
+    await expect(
+      services.sync.syncProject('00000000-0000-4000-8000-000000000000'),
+    ).rejects.toMatchObject({ code: 'not_found' });
+
+    /* The lookup fails before any provider work, so nothing was fetched and nothing recorded. */
+    expect(provider.calls).toBe(0);
+    expect(await services.runs.listRecent(10)).toHaveLength(0);
   });
 
   it('returns synchronisation history newest first', async () => {
