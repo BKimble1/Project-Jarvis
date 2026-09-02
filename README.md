@@ -105,6 +105,35 @@ Playwright step. Nothing is weakened to make the gate pass; see [docs/TESTING.md
 
 ---
 
+## Known limitations
+
+Stated plainly, because a tool built around not overstating what it knows should not overstate
+what it is.
+
+- **No writes, anywhere.** Jarvis cannot push, branch, comment or open a pull request. That is the
+  point of this phase, not an omission — see [SECURITY.md](docs/SECURITY.md).
+- **GitHub is the only connected source.** App Store Connect, Netlify, Linear and the rest are not
+  integrated, so claims like "waiting for Apple review" stay **Manual** until they are.
+- **Synchronisation is pull-based.** There are no webhooks: evidence can lag by up to the
+  scheduled cadence (two hours by default). Jarvis shows how old its evidence is rather than
+  implying it is live.
+- **History is bounded.** Each synchronisation reads a limited window (90 days by default) and a
+  capped number of rows per category, so a very old repository is summarised, not fully archived.
+- **Partial permissions produce partial answers.** A token without Actions access makes build
+  health **Unknown**, not "fine". That is deliberate, but it does mean the answer is thinner.
+- **Rate limits are real.** Synchronising a large portfolio at once can exhaust GitHub's quota;
+  the failure is safe — prior data is kept and marked stale — but it stays stale until the next run.
+- **Search covers project fields, not evidence.** You can search names, goals, descriptions and
+  tags; there is no full-text search across commits or issues.
+- **One user.** There are no roles, sharing or collaboration, and none are planned for this phase.
+- **The AI narrator only rewords.** Without a key, or when its output is rejected, the briefing is
+  the deterministic one. It is never the difference between knowing something and not.
+- **The local database is single-process.** PGlite is for development and tests; production needs
+  a hosted PostgreSQL.
+
+Everything above is a consequence of a deliberate decision, and each one is visible in the
+interface rather than hidden behind confident prose.
+
 ## Stack
 
 Next.js 15 (App Router) · React 19 · TypeScript (strict) · Tailwind CSS v4 · Zod · Drizzle ORM ·
