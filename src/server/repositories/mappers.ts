@@ -10,6 +10,7 @@ import type {
   ProjectSource,
 } from '@/domain/project';
 import type { Evidence, EvidenceMetadata } from '@/domain/evidence';
+import type { SyncRunRecord } from '@/domain/integrations';
 import type { StatusSnapshot } from '@/domain/status';
 import type {
   activityLog,
@@ -232,8 +233,6 @@ export function toSnapshot(row: Row<typeof statusSnapshots>): StatusSnapshot {
     narrative: row.narrative ?? null,
   };
 }
-
-import type { SyncRunRecord } from '@/domain/integrations';
 
 export type { SyncRunRecord };
 

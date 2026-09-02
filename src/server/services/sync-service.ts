@@ -5,6 +5,7 @@ import type { SyncStatus } from '@/domain/enums';
 import { LockedError, NotFoundError } from '@/domain/errors';
 import type { AppConfig } from '@/server/config/env';
 import { logger as rootLogger, type Logger } from '@/server/logging/logger';
+import type { SyncOutcome } from '@/domain/integrations';
 import type { SourceProvider } from '@/server/providers/types';
 import type { SyncRunRecord } from '@/server/repositories/mappers';
 import type {
@@ -27,8 +28,6 @@ import type {
  *  - **Single-flight.** A project-scoped lock prevents two concurrent syncs of the same project;
  *    the lock expires so a killed invocation cannot wedge anything.
  */
-
-import type { SyncOutcome } from '@/domain/integrations';
 
 export type { SyncOutcome };
 
