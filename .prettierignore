@@ -1,0 +1,9 @@
+node_modules
+.next
+out
+coverage
+playwright-report
+test-results
+drizzle/**/*.sql
+package-lock.json
+.jarvis-data

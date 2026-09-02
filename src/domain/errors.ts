@@ -1,0 +1,139 @@
+/**
+ * A single, consistent error taxonomy.
+ *
+ * Every layer throws `JarvisError` (or a subclass). Route handlers convert it into an HTTP
+ * response through `toErrorResponse`, so no stack traces, provider payloads or secrets ever
+ * reach the browser.
+ */
+
+export type JarvisErrorCode =
+  | 'unauthorized'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'validation_failed'
+  | 'rate_limited'
+  | 'upstream_unavailable'
+  | 'upstream_forbidden'
+  | 'upstream_not_found'
+  | 'timeout'
+  | 'configuration_error'
+  | 'locked'
+  | 'internal';
+
+const STATUS_BY_CODE: Record<JarvisErrorCode, number> = {
+  unauthorized: 401,
+  forbidden: 403,
+  not_found: 404,
+  conflict: 409,
+  validation_failed: 422,
+  rate_limited: 429,
+  upstream_unavailable: 502,
+  upstream_forbidden: 502,
+  upstream_not_found: 404,
+  timeout: 504,
+  configuration_error: 500,
+  locked: 423,
+  internal: 500,
+};
+
+export interface JarvisErrorOptions {
+  /** Machine-readable details safe to show to the owner (never provider payloads). */
+  readonly details?: Readonly<Record<string, unknown>>;
+  readonly cause?: unknown;
+  /** True when retrying the same operation later could reasonably succeed. */
+  readonly retryable?: boolean;
+}
+
+export class JarvisError extends Error {
+  readonly code: JarvisErrorCode;
+  readonly httpStatus: number;
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly retryable: boolean;
+
+  constructor(code: JarvisErrorCode, message: string, options: JarvisErrorOptions = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = 'JarvisError';
+    this.code = code;
+    this.httpStatus = STATUS_BY_CODE[code];
+    this.details = options.details ?? {};
+    this.retryable = options.retryable ?? (code === 'timeout' || code === 'upstream_unavailable');
+  }
+}
+
+export class UnauthorizedError extends JarvisError {
+  constructor(message = 'Authentication required.') {
+    super('unauthorized', message);
+    this.name = 'UnauthorizedError';
+  }
+}
+
+export class ForbiddenError extends JarvisError {
+  constructor(message = 'This Jarvis instance is private.') {
+    super('forbidden', message);
+    this.name = 'ForbiddenError';
+  }
+}
+
+export class NotFoundError extends JarvisError {
+  constructor(what = 'Resource') {
+    super('not_found', `${what} was not found.`);
+    this.name = 'NotFoundError';
+  }
+}
+
+export class ValidationError extends JarvisError {
+  constructor(message: string, details?: Readonly<Record<string, unknown>>) {
+    super('validation_failed', message, details ? { details } : {});
+    this.name = 'ValidationError';
+  }
+}
+
+export class ConfigurationError extends JarvisError {
+  constructor(message: string) {
+    super('configuration_error', message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+export class ConflictError extends JarvisError {
+  constructor(message: string, details?: Readonly<Record<string, unknown>>) {
+    super('conflict', message, details ? { details } : {});
+    this.name = 'ConflictError';
+  }
+}
+
+export class LockedError extends JarvisError {
+  constructor(message = 'This project is already synchronising.') {
+    super('locked', message);
+    this.name = 'LockedError';
+  }
+}
+
+export function isJarvisError(value: unknown): value is JarvisError {
+  return value instanceof JarvisError;
+}
+
+export interface ErrorResponseBody {
+  readonly error: { readonly code: JarvisErrorCode; readonly message: string; readonly details?: Readonly<Record<string, unknown>> };
+}
+
+/** Convert any thrown value into a safe, structured response body plus a status code. */
+export function toErrorResponse(error: unknown): { status: number; body: ErrorResponseBody } {
+  if (isJarvisError(error)) {
+    return {
+      status: error.httpStatus,
+      body: {
+        error: {
+          code: error.code,
+          message: error.message,
+          ...(Object.keys(error.details).length > 0 ? { details: error.details } : {}),
+        },
+      },
+    };
+  }
+  return {
+    status: 500,
+    body: { error: { code: 'internal', message: 'An unexpected error occurred.' } },
+  };
+}
