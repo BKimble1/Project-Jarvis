@@ -2060,6 +2060,16 @@ export const knowledgeItems = pgTable(
     useCount: integer('use_count').notNull().default(0),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     confidence: text('confidence').$type<KnowledgeConfidence>(),
+    /**
+     * How sensitive this memory is.
+     *
+     * The column that makes "private owner memory is never available to a wallboard" enforceable
+     * rather than aspirational: retrieval clamps every audience to a ceiling, and the display
+     * audience's ceiling is fixed below `private` in code where no request parameter can raise it.
+     * Defaults to `private`, because a memory about the owner is personal until they say otherwise
+     * and the safe default for a thing you forgot to classify is the restrictive one.
+     */
+    sensitivity: text('sensitivity').$type<Sensitivity>().notNull().default('private'),
     searchVector: tsvector('search_vector').generatedAlwaysAs(
       sql`to_tsvector('english', "statement" || ' ' || coalesce("detail", ''))`,
     ),
@@ -2071,6 +2081,7 @@ export const knowledgeItems = pgTable(
     index('knowledge_items_project_idx').on(table.projectId),
     index('knowledge_items_source_idx').on(table.sourceId),
     index('knowledge_items_review_idx').on(table.reviewAt),
+    index('knowledge_items_sensitivity_idx').on(table.sensitivity),
     index('knowledge_items_search_idx').using('gin', table.searchVector),
   ],
 );

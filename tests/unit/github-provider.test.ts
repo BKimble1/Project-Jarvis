@@ -549,9 +549,12 @@ describe('read-only guarantee', () => {
     expect([...new Set(endpoints)].sort()).toEqual([
       'actions.listWorkflowRunsForRepo',
       'checks.listForRef',
+      'git.getBlob',
       'issues.listForRepo',
       'pulls.list',
       'repos.get',
+      'repos.getCommit',
+      'repos.getContent',
       'repos.listCommits',
       'repos.listDeploymentStatuses',
       'repos.listDeployments',

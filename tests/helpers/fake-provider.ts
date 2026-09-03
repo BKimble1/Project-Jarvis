@@ -4,6 +4,7 @@ import type { ProjectSource } from '@/domain/project';
 import type {
   FetchContext,
   ProviderHealth,
+  RepositoryFile,
   RepositorySummary,
   SourceProvider,
   SourceSnapshot,
@@ -32,8 +33,18 @@ export class FakeSourceProvider implements SourceProvider {
   snapshotsByRepo = new Map<string, SourceSnapshot>();
   /** Every `owner/repo` asked for, in order, so a test can assert what was and was not called. */
   requested: string[] = [];
+  /**
+   * Files keyed by `owner/repo:path`, checked by `fetchFile`.
+   *
+   * An unknown key returns null, the same way the real provider answers for a path that does not
+   * exist, so a test that forgets to script a file sees the missing-file path rather than a throw.
+   */
+  files = new Map<string, RepositoryFile>();
+  /** Every `owner/repo:path` asked for, in order. */
+  requestedFiles: string[] = [];
   describeError: Error | null = null;
   listError: Error | null = null;
+  fileError: Error | null = null;
 
   isConfigured(): boolean {
     return this.configured;
@@ -59,6 +70,24 @@ export class FakeSourceProvider implements SourceProvider {
     if (this.describeError) throw this.describeError;
     const found = this.repositories.find((item) => item.owner === owner && item.repo === repo);
     return found ?? makeRepositorySummary({ owner, repo });
+  }
+
+  /** Scripts one file. The key is the same `owner/repo:path` shape `fetchFile` looks up. */
+  setFile(key: string, file: RepositoryFile): void {
+    this.files.set(key, file);
+  }
+
+  async fetchFile(input: {
+    readonly owner: string;
+    readonly repo: string;
+    readonly path: string;
+    readonly ref?: string;
+    readonly maxBytes?: number;
+  }): Promise<RepositoryFile | null> {
+    if (this.fileError) throw this.fileError;
+    const key = `${input.owner}/${input.repo}:${input.path}`;
+    this.requestedFiles.push(key);
+    return this.files.get(key) ?? null;
   }
 
   async fetchSnapshot(source: ProjectSource, _context: FetchContext): Promise<SourceSnapshot> {
@@ -91,6 +120,28 @@ export function makeRepositorySummary(
     updatedAt: new Date().toISOString(),
     url: `https://github.com/${owner}/${repo}`,
     permissions: { admin: false, push: false, pull: true },
+    ...overrides,
+  };
+}
+
+export function makeRepositoryFile(overrides: Partial<RepositoryFile> = {}): RepositoryFile {
+  const owner = overrides.owner ?? 'test-owner';
+  const repo = overrides.repo ?? 'aurora';
+  const path = overrides.path ?? 'docs/architecture.md';
+  const commitSha = overrides.commitSha ?? 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+  const text = overrides.text ?? '# Architecture\n\nAurora is a fixture.\n';
+  return {
+    owner,
+    repo,
+    path,
+    requestedRef: 'main',
+    commitSha,
+    blobSha: 'b7e23ec29af22b0b4e41da31e868d57226121c84',
+    text,
+    byteSize: Buffer.byteLength(text, 'utf8'),
+    lineCount: text.split('\n').length,
+    truncated: false,
+    htmlUrl: `https://github.com/${owner}/${repo}/blob/${commitSha}/${path}`,
     ...overrides,
   };
 }

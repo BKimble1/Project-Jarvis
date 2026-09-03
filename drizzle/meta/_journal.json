@@ -36,6 +36,13 @@
       "when": 1788464836320,
       "tag": "0004_knowledge_revisions",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788465977811,
+      "tag": "0005_memory_sensitivity",
+      "breakpoints": true
     }
   ]
 }

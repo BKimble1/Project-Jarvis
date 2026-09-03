@@ -37,6 +37,30 @@ export interface FetchLimits {
   readonly timeoutMs: number;
 }
 
+/**
+ * One text file, read at one exact commit.
+ *
+ * The commit and blob SHAs are what make this citable: a branch name moves, so a passage quoted
+ * from "main" quietly becomes wrong, while a passage quoted from a commit stays true forever.
+ */
+export interface RepositoryFile {
+  readonly owner: string;
+  readonly repo: string;
+  readonly path: string;
+  /** The ref the owner asked for: a branch, tag or SHA. */
+  readonly requestedRef: string;
+  /** The commit the content was read at. Never a branch name — a branch moves, a citation must not. */
+  readonly commitSha: string;
+  /** The git blob SHA of these exact bytes at that commit. */
+  readonly blobSha: string;
+  readonly text: string;
+  readonly byteSize: number;
+  readonly lineCount: number;
+  readonly truncated: boolean;
+  /** A github.com URL for the file at that exact commit. Safe to show. */
+  readonly htmlUrl: string | null;
+}
+
 export interface FetchContext {
   readonly projectId: string;
   readonly sourceId: string;
@@ -63,5 +87,17 @@ export interface SourceProvider {
   }): Promise<readonly RepositorySummary[]>;
   /** Confirms a specific repository is reachable before it is imported. */
   describeRepository(owner: string, repo: string): Promise<RepositorySummary>;
+  /**
+   * Read one text file at an exact ref.
+   *
+   * Read-only, single file, never a tree listing. Returns null when the path does not exist.
+   */
+  fetchFile(input: {
+    readonly owner: string;
+    readonly repo: string;
+    readonly path: string;
+    readonly ref?: string;
+    readonly maxBytes?: number;
+  }): Promise<RepositoryFile | null>;
   checkHealth(): Promise<ProviderHealth>;
 }

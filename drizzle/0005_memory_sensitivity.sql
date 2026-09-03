@@ -1,0 +1,2 @@
+ALTER TABLE "knowledge_items" ADD COLUMN IF NOT EXISTS "sensitivity" text DEFAULT 'private' NOT NULL;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "knowledge_items_sensitivity_idx" ON "knowledge_items" USING btree ("sensitivity");

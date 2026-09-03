@@ -1,7 +1,7 @@
 import type { EvidenceInput } from '@/domain/evidence';
 import type { SourceCapability } from '@/domain/enums';
 import type { GithubSourceState, ProjectSource } from '@/domain/project';
-import { ConfigurationError } from '@/domain/errors';
+import { ConfigurationError, ValidationError } from '@/domain/errors';
 import type { AppConfig } from '@/server/config/env';
 import { getConfig } from '@/server/config/env';
 import { logger as rootLogger, type Logger } from '@/server/logging/logger';
@@ -10,6 +10,7 @@ import type {
   FetchContext,
   ProviderHealth,
   RateLimitState,
+  RepositoryFile,
   RepositorySummary,
   SourceProvider,
   SourceSnapshot,
@@ -161,6 +162,133 @@ export class GitHubSourceProvider implements SourceProvider {
     } catch (error) {
       throw translateGithubError(error, client.rateLimit());
     }
+  }
+
+  /**
+   * Read one text file at an exact ref.
+   *
+   * The ref is resolved to a commit **first**, and the content is then requested at that commit
+   * rather than at the ref the caller named. Doing it in this order means the blob and the commit
+   * provably describe one instant: if the branch moves between the two calls, the second call still
+   * reads the commit the first one resolved. The other order returns bytes from one commit and a
+   * SHA from another, and the citation that results is quietly wrong.
+   */
+  async fetchFile(input: {
+    readonly owner: string;
+    readonly repo: string;
+    readonly path: string;
+    readonly ref?: string;
+    readonly maxBytes?: number;
+  }): Promise<RepositoryFile | null> {
+    const path = assertRepositoryFilePath(input.path);
+    const maxBytes = input.maxBytes ?? DEFAULT_FILE_MAX_BYTES;
+    const requestedRef = input.ref?.trim() ? input.ref.trim() : 'HEAD';
+    const client = this.clientFactory();
+
+    let commitSha: string;
+    let payload: unknown;
+    try {
+      const commit = await client.octokit.rest.repos.getCommit({
+        owner: input.owner,
+        repo: input.repo,
+        ref: requestedRef,
+      });
+      const resolved = str(commit.data, 'sha');
+      if (resolved === null) {
+        throw new GithubApiError(
+          'malformed',
+          'GitHub returned a commit record without a SHA, so the file could not be pinned to it.',
+          client.rateLimit(),
+        );
+      }
+      commitSha = resolved;
+
+      const response = await client.octokit.rest.repos.getContent({
+        owner: input.owner,
+        repo: input.repo,
+        path,
+        ref: commitSha,
+      });
+      payload = response.data;
+    } catch (error) {
+      const translated = translateGithubError(error, client.rateLimit());
+      /* The path, the ref or the repository does not exist. That is an answer, not a failure. */
+      if (translated.kind === 'not_found') return null;
+      throw translated;
+    }
+
+    /* A directory answers with an array of entries. This reads one file; it never lists a tree. */
+    if (Array.isArray(payload)) {
+      throw new ValidationError(
+        `${path} is a directory in ${input.owner}/${input.repo}. Jarvis reads one file at a time.`,
+      );
+    }
+    const file = obj(payload);
+    const type = str(file, 'type');
+    if (type !== 'file') {
+      throw new ValidationError(
+        `${path} is ${type === null ? 'not a file' : `a ${type}`} in ${input.owner}/${input.repo}. Jarvis reads regular files, not submodules or symlinks.`,
+      );
+    }
+
+    /*
+     * `sha` on a contents payload is the **blob** SHA — the identity of these bytes — not the
+     * commit's. They are both 40 hex characters and mixing them up produces a citation that points
+     * at nothing, so they are read from different responses and never from each other.
+     */
+    const blobSha = str(file, 'sha');
+    if (blobSha === null) {
+      throw new GithubApiError(
+        'malformed',
+        'GitHub returned file contents without a blob SHA.',
+        client.rateLimit(),
+      );
+    }
+
+    const declaredSize = num(file, 'size') ?? 0;
+    let encoded = inlineContent(file, declaredSize);
+    if (encoded === null) {
+      /*
+       * Over 1 MB the Contents API answers `encoding: "none"` with an empty body, and the bytes
+       * are only available from the blob API. The declared size is checked before that second
+       * request is made: `maxBytes` decides how much text is returned, but it must not be what
+       * decides to pull tens of megabytes across the wire first, so a file past the hard ceiling
+       * is refused unread rather than downloaded and then cut down.
+       */
+      if (declaredSize > MAX_FETCHABLE_FILE_BYTES) {
+        throw new ValidationError(
+          `${path} is ${formatBytes(declaredSize)}. Jarvis reads repository files up to ${formatBytes(MAX_FETCHABLE_FILE_BYTES)}.`,
+        );
+      }
+      encoded = await readBlob(client, input.owner, input.repo, blobSha, path);
+    }
+
+    const raw = Buffer.from(encoded, 'base64');
+    const truncated = raw.byteLength > maxBytes;
+    /* Cut on a byte boundary, then drop the replacement character a split character leaves behind. */
+    const text = truncated
+      ? raw.subarray(0, maxBytes).toString('utf8').replace(/\uFFFD+$/, '')
+      : raw.toString('utf8');
+
+    /* A NUL byte means these are not characters. Indexing them would store a page of nonsense. */
+    if (text.includes('\u0000')) {
+      throw new ValidationError(`${path} is a binary file. Jarvis reads text files only.`);
+    }
+
+    return {
+      owner: input.owner,
+      repo: input.repo,
+      path,
+      requestedRef,
+      commitSha,
+      blobSha,
+      text,
+      byteSize: Buffer.byteLength(text, 'utf8'),
+      lineCount: text.length === 0 ? 0 : text.split('\n').length,
+      truncated,
+      /* The read was made at the commit, so GitHub's own link already names it rather than a branch. */
+      htmlUrl: str(file, 'html_url'),
+    };
   }
 
   async fetchSnapshot(source: ProjectSource, context: FetchContext): Promise<SourceSnapshot> {
@@ -491,6 +619,101 @@ function failedSnapshot(
   };
 }
 
+/**
+ * How much text one read returns by default. Past it the file is truncated, not refused, and
+ * `truncated` says so. Callers that want more, or less, pass their own `maxBytes`.
+ */
+const DEFAULT_FILE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * How many bytes Jarvis will pull over the wire for one file, whatever `maxBytes` says.
+ *
+ * A separate limit because the two questions are different: how much of a document to read is the
+ * caller's business, while downloading a 90 MB blob in order to keep the first megabyte of it is
+ * nobody's. The number matches the ceiling the parsers enforce, so a file that would be refused
+ * once read is refused before it is fetched.
+ */
+const MAX_FETCHABLE_FILE_BYTES = 12 * 1024 * 1024;
+
+/**
+ * The path must name a file inside the repository and nothing else.
+ *
+ * `..` segments, a leading `/` and backslashes are refused rather than normalised. A caller that
+ * asked for `docs/../../etc/passwd` asked for the wrong thing, and quietly reinterpreting it as
+ * some other path is how a read escapes the repository it was scoped to.
+ */
+function assertRepositoryFilePath(value: string): string {
+  const path = value.trim();
+  if (path.length === 0) {
+    throw new ValidationError('A file path is required to read a file from a repository.');
+  }
+  if (path.startsWith('/')) {
+    throw new ValidationError(
+      `"${path}" starts with "/". A repository file path is relative to the repository root.`,
+    );
+  }
+  if (path.includes('\\')) {
+    throw new ValidationError(`"${path}" contains a backslash. Repository paths use "/".`);
+  }
+  if (path.split('/').some((segment) => segment === '..')) {
+    throw new ValidationError(
+      `"${path}" contains a ".." segment. A file is read from inside the repository, never above it.`,
+    );
+  }
+  return path;
+}
+
+/**
+ * The base64 the Contents API inlined, or null when it declined to.
+ *
+ * A file over 1 MB comes back with `encoding: "none"` and an empty body; an *empty* file also
+ * comes back with an empty body. The two must not be confused — one needs a second request, the
+ * other has already been read in full.
+ */
+function inlineContent(file: Record<string, unknown>, declaredSize: number): string | null {
+  if (str(file, 'encoding') !== 'base64') return null;
+  const content = str(file, 'content') ?? '';
+  if (content.trim().length === 0 && declaredSize > 0) return null;
+  return content;
+}
+
+/**
+ * The bytes of a file the Contents API declined to inline.
+ *
+ * The blob API has its own ceiling. When it also answers without base64 content the honest result
+ * is a refusal — an empty string here would look like a file that was successfully read and found
+ * to be blank.
+ */
+async function readBlob(
+  client: GithubClient,
+  owner: string,
+  repo: string,
+  blobSha: string,
+  path: string,
+): Promise<string> {
+  let payload: unknown;
+  try {
+    const response = await client.octokit.rest.git.getBlob({ owner, repo, file_sha: blobSha });
+    payload = response.data;
+  } catch (error) {
+    throw translateGithubError(error, client.rateLimit());
+  }
+  const blob = obj(payload);
+  const encoded = str(blob, 'encoding') === 'base64' ? str(blob, 'content') : null;
+  if (encoded === null) {
+    throw new ValidationError(
+      `${path} is too large for GitHub to return its contents, so Jarvis could not read it.`,
+    );
+  }
+  return encoded;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function obj(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 }
@@ -498,6 +721,11 @@ function obj(value: unknown): Record<string, unknown> {
 function num(payload: unknown, key: string): number | null {
   const value = obj(payload)[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function str(payload: unknown, key: string): string | null {
+  const value = obj(payload)[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 function bool(payload: unknown, key: string): boolean | null {

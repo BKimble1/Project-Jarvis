@@ -172,6 +172,15 @@ export interface KnowledgeRevision {
   /** 1-based, monotonic per source. What a person calls "version 3". */
   readonly revisionNumber: number;
   readonly state: RevisionState;
+  /**
+   * Whether this is the revision citations and retrieval currently resolve to.
+   *
+   * At most one revision per source may carry this, and that is enforced by a partial unique
+   * index rather than by careful sequencing in application code. It is on the domain type because
+   * it is the observable form of that guarantee: a caller asking "which revision is live?" should
+   * read a field, not infer it from `activatedAt` being the newest non-null timestamp.
+   */
+  readonly isActive: boolean;
   readonly contentHash: string;
   readonly byteHash: string | null;
   readonly byteSize: number;

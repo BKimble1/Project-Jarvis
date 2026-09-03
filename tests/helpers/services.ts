@@ -4,6 +4,8 @@ import type { BriefingNarrator } from '@/server/briefing/types';
 import { createTestDatabase } from './test-db';
 import { testConfig } from './test-config';
 import { FakeSourceProvider } from './fake-provider';
+import { FakeUrlFetcher } from './fake-url-fetcher';
+import type { EmbeddingProvider } from '@/domain/embedding';
 
 /**
  * A fully wired service graph backed by a migrated in-memory PostgreSQL database and a fake
@@ -12,6 +14,8 @@ import { FakeSourceProvider } from './fake-provider';
 export interface TestHarness {
   readonly services: Services;
   readonly provider: FakeSourceProvider;
+  /** Scripted pages for URL ingestion. The real SSRF guard has its own suite. */
+  readonly urlFetcher: FakeUrlFetcher;
   readonly config: AppConfig;
   readonly close: () => Promise<void>;
 }
@@ -21,15 +25,26 @@ export async function createHarness(
     config?: AppConfig;
     narrator?: BriefingNarrator;
     clock?: () => Date;
+    /**
+     * The embedding provider.
+     *
+     * Omitted means none, which is the production default and is reported as `lexical_only`.
+     * A test that wants the semantic channel passes one explicitly, so no test can accidentally
+     * assert hybrid behaviour it did not ask for.
+     */
+    embeddings?: EmbeddingProvider | null;
   } = {},
 ): Promise<TestHarness> {
   const { db, close } = await createTestDatabase();
   const config = options.config ?? testConfig();
   const provider = new FakeSourceProvider();
+  const urlFetcher = new FakeUrlFetcher();
   const services = buildServices(db, config, {
     provider,
+    urlFetcher,
+    ...(options.embeddings !== undefined ? { embeddings: options.embeddings } : {}),
     ...(options.narrator ? { narrator: options.narrator } : {}),
     ...(options.clock ? { clock: options.clock } : {}),
   });
-  return { services, provider, config, close };
+  return { services, provider, urlFetcher, config, close };
 }

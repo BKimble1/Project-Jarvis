@@ -154,6 +154,15 @@ const rawSchema = z.object({
    */
   JARVIS_KNOWLEDGE_URL_ALLOWLIST: z.string().trim().optional(),
   JARVIS_KNOWLEDGE_MAX_SOURCES: positiveInt(2_000, 100_000),
+  /**
+   * The semantic retrieval provider.
+   *
+   * `none` is the default and is a valid, honestly-reported configuration: full-text search works
+   * and nothing claims to be semantic. `deterministic` enables a local hashed-trigram index — a
+   * genuine second channel that finds near-spellings, costing nothing and reaching no network.
+   */
+  JARVIS_KNOWLEDGE_EMBEDDINGS: z.enum(['none', 'deterministic']).default('none'),
+  JARVIS_KNOWLEDGE_EMBEDDING_DIMENSIONS: positiveInt(256, 4_096),
 
   /* ----------------------------------------------------------- scheduling */
   JARVIS_SCHEDULER_ENABLED: bool(true),
@@ -285,6 +294,8 @@ export interface AppConfig {
   readonly knowledge: {
     readonly urlAllowList: readonly string[];
     readonly maxSources: number;
+    readonly embeddingProvider: 'none' | 'deterministic';
+    readonly embeddingDimensions: number;
   };
   readonly scheduling: {
     readonly enabled: boolean;
@@ -572,6 +583,8 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
     knowledge: {
       urlAllowList: knowledgeHosts,
       maxSources: env.JARVIS_KNOWLEDGE_MAX_SOURCES,
+      embeddingProvider: env.JARVIS_KNOWLEDGE_EMBEDDINGS,
+      embeddingDimensions: env.JARVIS_KNOWLEDGE_EMBEDDING_DIMENSIONS,
     },
     scheduling: {
       enabled: env.JARVIS_SCHEDULER_ENABLED,

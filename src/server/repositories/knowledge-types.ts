@@ -19,6 +19,7 @@ import type {
   SourceState,
 } from '@/domain/knowledge-source';
 import type { AnswerClaim, AnswerCoverage, AnswerMethod, AnswerScope } from '@/domain/answer';
+import type { Sensitivity } from '@/domain/retrieval';
 import type { MissionSuggestion } from '@/domain/answer';
 
 /**
@@ -46,6 +47,13 @@ export interface SourceCreateInput {
   readonly truncated?: boolean;
   readonly addedBy: string;
   readonly retainUntil?: Date | null;
+
+  /* ---------------------------------------------------------------- 4B */
+  /** Who may retrieve from this source. The single authority for authorization. */
+  readonly scope?: KnowledgeScope;
+  readonly sensitivity?: Sensitivity;
+  /** Whether the origin can be read again. A note cannot; a URL or repository file can. */
+  readonly refreshable?: boolean;
 }
 
 export interface SourcePatch {
@@ -64,6 +72,10 @@ export interface SourcePatch {
   readonly retainUntil?: Date | null;
   readonly projectId?: string | null;
   readonly tags?: readonly string[];
+  readonly scope?: KnowledgeScope;
+  readonly sensitivity?: Sensitivity;
+  readonly activeRevisionId?: string | null;
+  readonly lastRefreshedAt?: Date | null;
 }
 
 export interface SourceListFilter {

@@ -82,6 +82,9 @@ export class DrizzleKnowledgeSourceRepository implements SourceRepositoryKnowled
         truncated: input.truncated ?? false,
         addedBy: input.addedBy,
         retainUntil: input.retainUntil ?? null,
+        ...(input.scope !== undefined ? { scope: input.scope } : {}),
+        ...(input.sensitivity !== undefined ? { sensitivity: input.sensitivity } : {}),
+        ...(input.refreshable !== undefined ? { refreshable: input.refreshable } : {}),
       })
       .returning();
     if (!row) throw new NotFoundError('Knowledge source');
@@ -153,6 +156,12 @@ export class DrizzleKnowledgeSourceRepository implements SourceRepositoryKnowled
         ...(patch.retainUntil !== undefined ? { retainUntil: patch.retainUntil } : {}),
         ...(patch.projectId !== undefined ? { projectId: patch.projectId } : {}),
         ...(patch.tags !== undefined ? { tags: [...patch.tags] } : {}),
+        ...(patch.scope !== undefined ? { scope: patch.scope } : {}),
+        ...(patch.sensitivity !== undefined ? { sensitivity: patch.sensitivity } : {}),
+        ...(patch.activeRevisionId !== undefined
+          ? { activeRevisionId: patch.activeRevisionId }
+          : {}),
+        ...(patch.lastRefreshedAt !== undefined ? { lastRefreshedAt: patch.lastRefreshedAt } : {}),
         updatedAt: new Date(),
       })
       .where(eq(knowledgeSources.id, id))

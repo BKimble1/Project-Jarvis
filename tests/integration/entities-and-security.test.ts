@@ -1053,6 +1053,8 @@ describe('read-only guarantee', () => {
       'category',
       'checkHealth',
       'describeRepository',
+      /* Phase 4B: reads one text file at an exact commit. A GET, and on the read credential. */
+      'fetchFile',
       'fetchSnapshot',
       'isConfigured',
       'listAvailableRepositories',

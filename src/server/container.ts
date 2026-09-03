@@ -105,6 +105,13 @@ import type {
   RateLimitRepository,
   UsageRepository,
 } from './repositories/accounting-types';
+import { DrizzleRevisionRepository } from './repositories/revision-drizzle';
+import { DrizzleRetrievalRepository } from './repositories/retrieval-drizzle';
+import { ParserRegistry } from './knowledge/parsers/registry';
+import { SafeUrlFetcher, type UrlFetcher } from './knowledge/url-fetcher';
+import { IngestionService } from './knowledge/ingestion-service';
+import { RetrievalService } from './knowledge/retrieval-service';
+import { DeterministicEmbeddingProvider, type EmbeddingProvider } from '@/domain/embedding';
 import { QualificationService } from './qualification/qualification-service';
 import { MissionOrchestrator } from './missions/orchestrator';
 import { TaskWorkerService } from './missions/task-worker-service';
@@ -227,12 +234,35 @@ export interface Services {
   readonly audit: AuditRepository;
   readonly deletionReceipts: DeletionReceiptRepository;
   readonly qualificationService: QualificationService;
+
+  /* Prompt 4B: knowledge ingestion and retrieval. */
+  readonly revisions: DrizzleRevisionRepository;
+  readonly retrievalRepo: DrizzleRetrievalRepository;
+  readonly parsers: ParserRegistry;
+  readonly urlFetcher: UrlFetcher;
+  readonly embeddings: EmbeddingProvider | null;
+  readonly ingestion: IngestionService;
+  readonly retrieval: RetrievalService;
 }
 
 export interface BuildServicesOverrides {
   readonly provider?: SourceProvider;
   readonly narrator?: BriefingNarrator;
   readonly clock?: () => Date;
+  /**
+   * Replaces the outbound URL fetcher.
+   *
+   * Tests script responses through this rather than reaching the network. It cannot weaken the
+   * SSRF guard for production, which lives inside the default implementation.
+   */
+  readonly urlFetcher?: UrlFetcher;
+  /**
+   * Replaces the embedding provider.
+   *
+   * `null` is meaningful and is the default: it means no semantic channel, which the interface
+   * reports as `lexical_only` rather than pretending to be hybrid.
+   */
+  readonly embeddings?: EmbeddingProvider | null;
 }
 
 export function buildServices(
@@ -450,6 +480,46 @@ export function buildServices(
   const audit = new DrizzleAuditRepository(db);
   const deletionReceipts = new DrizzleDeletionReceiptRepository(db);
 
+  /* ------------------------------------------------------ Prompt 4B */
+  const revisions = new DrizzleRevisionRepository(db);
+  const retrievalRepo = new DrizzleRetrievalRepository(db);
+  const parsers = new ParserRegistry();
+  const urlFetcher = overrides.urlFetcher ?? new SafeUrlFetcher();
+
+  /*
+   * The embedding provider.
+   *
+   * Absent by default, and that absence is reported honestly rather than hidden: with no provider
+   * the system searches text only and says so. The deterministic provider is a real second channel
+   * — hashed character trigrams, so it finds near-spellings full-text search misses — and it is
+   * free, offline and reproducible, which makes it the right default for a single-user deployment
+   * that has not chosen to pay an external service.
+   */
+  const embeddings =
+    overrides.embeddings !== undefined
+      ? overrides.embeddings
+      : config.knowledge.embeddingProvider === 'deterministic'
+        ? new DeterministicEmbeddingProvider(config.knowledge.embeddingDimensions)
+        : null;
+
+  const ingestion = new IngestionService({
+    sources: knowledgeSources,
+    revisions,
+    parsers,
+    urlFetcher,
+    provider,
+    projectSources: sources,
+    embeddings,
+    config,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  const retrieval = new RetrievalService({
+    repository: retrievalRepo,
+    embeddings,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
   const qualificationService = new QualificationService({
     qualification,
     workers: workerRepo,
@@ -544,6 +614,13 @@ export function buildServices(
     audit,
     deletionReceipts,
     qualificationService,
+    revisions,
+    retrievalRepo,
+    parsers,
+    urlFetcher,
+    embeddings,
+    ingestion,
+    retrieval,
   };
 }
 
