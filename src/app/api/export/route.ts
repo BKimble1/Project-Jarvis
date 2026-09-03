@@ -1,3 +1,4 @@
+import { isContentDestroyed } from '@/domain/knowledge';
 import { json, ownerRoute } from '@/server/http/handler';
 
 export const dynamic = 'force-dynamic';
@@ -107,6 +108,24 @@ function assertNoCredentials(payload: unknown, path = 'export', freeForm = false
   }
 }
 
+/**
+ * Refuse to serve an export containing something that was forgotten.
+ *
+ * Forgetting already destroys the statement in the row, so this cannot normally trigger — which
+ * is exactly why it is worth having. It is the assertion that fails if some later change starts
+ * exporting from a path that predates the destruction: a cached projection, a soft-deleted copy,
+ * an archive table added for convenience. "Removed from normal exports" is a property that has to
+ * keep being true as the export grows, and a check is the only form of that promise that does.
+ */
+function assertNothingForgotten(memories: readonly { readonly status: string }[]): void {
+  const leaked = memories.filter((memory) => isContentDestroyed(memory.status as never));
+  if (leaked.length > 0) {
+    throw new Error(
+      `The export would have contained ${leaked.length} forgotten note(s). Forgotten content is not exported.`,
+    );
+  }
+}
+
 export const GET = ownerRoute(async ({ services }) => {
   const projects = await services.projects.listAllForAssessment(true);
   const ids = projects.map((project) => project.id);
@@ -177,13 +196,56 @@ export const GET = ownerRoute(async ({ services }) => {
     services.displays.list(),
     services.appProfiles.list(),
   ]);
+
+  /*
+   * Knowledge, minus what was deliberately removed.
+   *
+   * Forgotten memories are excluded by status rather than by hoping their content is empty, and
+   * deleted sources are excluded by the repository's own default. What replaces them is the
+   * deletion receipts: a record that content was removed, when, and from where — which is the
+   * useful half of an audit trail without being a copy of the thing that was deleted.
+   *
+   * Source rows carry no `bodyText`, because `toKnowledgeSource` has no such field. A document's
+   * full text cannot reach this payload even if a future caller wanted it to.
+   */
+  const [allMemories, knowledgeSources, openConflicts, deletionReceipts] = await Promise.all([
+    services.knowledge.list({ limit: 5000 }),
+    services.knowledgeSources.list({ limit: 2000 }),
+    services.conflicts.list(),
+    services.deletionReceipts.list(500),
+  ]);
+  const memories = allMemories.filter((memory) => !isContentDestroyed(memory.status));
+  assertNothingForgotten(memories);
+
+  const knowledgeRevisions = (
+    await Promise.all(
+      knowledgeSources.map(async (source) => {
+        const revisions = await services.revisions.list(source.id, 50);
+        return revisions.map((revision) => ({
+          id: revision.id,
+          sourceId: revision.sourceId,
+          number: revision.revisionNumber,
+          state: revision.state,
+          isActive: revision.isActive,
+          contentHash: revision.contentHash,
+          parser: `${revision.parserName}@${revision.parserVersion}`,
+          chunker: revision.chunkerVersion,
+          charCount: revision.charCount,
+          chunkCount: revision.chunkCount,
+          provenance: revision.provenance,
+          fetchedAt: revision.fetchedAt,
+          activatedAt: revision.activatedAt,
+        }));
+      }),
+    )
+  ).flat();
   const releaseApprovals = (
     await Promise.all(ids.map((projectId) => services.releaseApprovals.listForProject(projectId)))
   ).flat();
 
   const payload = {
     exportedAt: new Date().toISOString(),
-    version: 3,
+    version: 4,
     /*
      * The controller's *shape*, from `describe()`, which reports whether a credential is
      * configured and never what it is. There is no other accessor that could return one.
@@ -195,6 +257,15 @@ export const GET = ownerRoute(async ({ services }) => {
     /* `DisplayDevice` carries a token prefix for recognition, never a token or its hash. */
     displays,
     appProfiles,
+    knowledge: {
+      memories,
+      sources: knowledgeSources,
+      revisions: knowledgeRevisions,
+      conflicts: openConflicts,
+      /* What was removed, and from where. Never what it said. */
+      deletionReceipts,
+      forgottenCount: allMemories.length - memories.length,
+    },
     projects: await Promise.all(
       [...aggregates.values()].map(async (aggregate) => ({
         ...aggregate,
@@ -211,7 +282,7 @@ export const GET = ownerRoute(async ({ services }) => {
 
   await services.activity.record({
     kind: 'data_exported',
-    summary: `Exported ${projects.length} project${projects.length === 1 ? '' : 's'}, ${missions.length} mission${missions.length === 1 ? '' : 's'} and ${playbooks.length} playbook${playbooks.length === 1 ? '' : 's'}.`,
+    summary: `Exported ${projects.length} project${projects.length === 1 ? '' : 's'}, ${missions.length} mission${missions.length === 1 ? '' : 's'}, ${playbooks.length} playbook${playbooks.length === 1 ? '' : 's'} and ${memories.length} note${memories.length === 1 ? '' : 's'}.`,
   });
 
   return json(payload, {

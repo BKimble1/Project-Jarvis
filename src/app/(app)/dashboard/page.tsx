@@ -205,14 +205,21 @@ async function DashboardContent({
             ) : (
               'No synchronisation has run yet.'
             )}{' '}
-            {/* The phone's bottom bar has room for five destinations and this is not one of them,
-                so the reading surface it belongs to carries the way in. */}
+            {/* Neither of these is on the phone's bottom bar, so the dashboard carries the way
+                in — see OFF_THE_TAB_BAR in the app shell. */}
             ·{' '}
             <Link
               href="/changes"
               className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
             >
               What changed
+            </Link>{' '}
+            ·{' '}
+            <Link
+              href="/knowledge"
+              className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
+            >
+              What Jarvis knows
             </Link>
           </p>
         </div>

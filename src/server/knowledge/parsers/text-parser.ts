@@ -1,6 +1,7 @@
 import {
   PARSER_LIMITS,
   ParseError,
+  assertNotBinary,
   canonicaliseText,
   type CanonicalBlock,
   type KnowledgeParser,
@@ -32,6 +33,8 @@ export class PlainTextParser implements KnowledgeParser {
   }
 
   async parse(input: ParserInput): Promise<ParsedDocument> {
+    /* The name and the declared type both said plain text. Check the bytes before believing them. */
+    assertNotBinary(input.bytes, 'plain text');
     const decoded = decodeUtf8(input.bytes);
     const truncated = decoded.length > input.maxChars;
     const canonicalText = canonicaliseText(truncated ? decoded.slice(0, input.maxChars) : decoded);

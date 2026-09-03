@@ -1127,7 +1127,8 @@ describe('Multi-agent factory HTTP handlers', () => {
     const payload = await body(response);
     const serialised = JSON.stringify(payload);
 
-    expect(payload.version).toBe(3);
+    /* Version 4 since 4B, when the export gained what Jarvis knows. */
+    expect(payload.version).toBe(4);
     expect(payload.missions[0].graphs.length).toBeGreaterThan(0);
     expect(payload.missions[0].tasks.length).toBeGreaterThan(0);
     expect(payload.playbooks.length).toBeGreaterThanOrEqual(9);

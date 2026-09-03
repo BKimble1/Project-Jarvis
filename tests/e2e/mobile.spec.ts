@@ -25,11 +25,14 @@ test.describe('the phone layout', () => {
     }
 
     /*
-     * Five tabs is the most that stays tappable, so "What changed" is not one of them. It must
-     * still be reachable from a phone: the dashboard carries the way in.
+     * Reading and management surfaces stay off the bottom bar so the tabs that carry a decision
+     * do not shrink. Both must still be reachable from a phone, and the dashboard carries the way
+     * in — this asserts the second half, which is the half that silently rots.
      */
     await expect(tabs.getByRole('link', { name: 'Changed' })).toHaveCount(0);
+    await expect(tabs.getByRole('link', { name: 'Knows' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'What changed' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'What Jarvis knows' })).toBeVisible();
 
     /* Comfortably tappable, and still there after the page is scrolled to its end. */
     const home = await tabs.getByRole('link', { name: 'Home' }).boundingBox();

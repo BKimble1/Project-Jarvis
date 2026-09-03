@@ -252,15 +252,19 @@ describe('HTTP route handlers', () => {
 
     const payload = await body(response);
     /*
-     * Version 3 since Prompt 3: the same project payload and mission history, plus the factory's
-     * own record — task graphs, tasks, reviews, findings, receipts, playbooks, CI dispatch
-     * requests, release approvals, app profiles and paired displays. The version moved because
-     * the payload genuinely gained top-level keys; the guarantee below is unchanged.
+     * Version 4 since Prompt 4B: everything version 3 carried, plus what Jarvis knows — memories,
+     * sources, revisions, conflicts and deletion receipts. The version moves whenever the payload
+     * genuinely gains top-level keys, which is what makes this assertion useful: it fails when
+     * the export grows, forcing whoever grew it to re-read the guarantee below rather than
+     * discovering later that something new slipped past it.
      */
-    expect(payload.version).toBe(3);
+    expect(payload.version).toBe(4);
     expect(Array.isArray(payload.missions)).toBe(true);
     expect(Array.isArray(payload.playbooks)).toBe(true);
     expect(Array.isArray(payload.displays)).toBe(true);
+    expect(Array.isArray(payload.knowledge.memories)).toBe(true);
+    expect(Array.isArray(payload.knowledge.sources)).toBe(true);
+    expect(Array.isArray(payload.knowledge.deletionReceipts)).toBe(true);
     expect(payload.projects).toHaveLength(1);
     expect(payload.projects[0].project.name).toBe('Aurora');
     expect(payload.projects[0].evidence[0].title).toBe('Add the evidence timeline');

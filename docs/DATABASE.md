@@ -58,6 +58,18 @@ project, all carrying `provenance` and `source_system`, all cascading on project
 | `sync_locks`       | Cooperative per-project locks with an expiry, so a killed invocation cannot wedge a project.                                                                                                                |
 | `activity_log`     | The audit spine: created, updated, status/goal/phase changed, blocker added/resolved, decision recorded, sync started/completed/failed, briefing generated, archived/restored, exported, retention applied. |
 
+### Knowledge
+
+`knowledge_sources` (the configured origin — a note, a file, an approved URL, a repository file;
+carries scope, sensitivity and whether it can be re-read, and never a client-supplied storage
+path), `knowledge_revisions` (the exact content at one instant — citations resolve here, not to a
+source), `knowledge_blocks` (canonical parsed blocks with their line ranges),
+`knowledge_chunks` (retrievable passages), `knowledge_embeddings` (unit-normalised `real[]`
+vectors for chunks *or* memories, with the model, dimensions and indexing version that produced
+them), `knowledge_ingestion_jobs` (observable, retryable pipeline work), `knowledge_items`
+(memories, with origin, status and sensitivity), `knowledge_conflicts` (statements that appear to
+disagree — recorded as questions, never resolved automatically).
+
 ### Application
 
 `sessions` (opaque token hashes only), `oauth_states` (single-use, short-lived), `app_settings`
@@ -77,6 +89,21 @@ Indexes exist for the queries the product actually runs:
 - `project_sources`: a partial unique index on `(lower(owner), lower(repo))` where
   `kind = 'github_repo'`, which enforces duplicate-import prevention in the database rather than
   only in application code.
+- `knowledge_revisions`: **a partial unique index on `(source_id) where is_active`**. This is what
+  makes "exactly one revision is live" a database guarantee rather than a hopeful sequence of
+  statements — if two refreshes race, the second one's update violates the index and its
+  transaction rolls back. Plus `(source_id, content_hash)` so re-reading unchanged content is a
+  no-op, and `(source_id, revision_number)`.
+- `knowledge_chunks`: a generated `tsvector` over the passage text, indexed with GIN. Two lexical
+  channels query it — `english` for stemmed recall, `simple` so an exact identifier like
+  `E_AUTH_401` survives.
+- `knowledge_items`: a generated `tsvector` over `statement || detail`, indexed with GIN. Because
+  it is *generated*, clearing those columns when a memory is forgotten updates the index without a
+  second write — which is what makes "unreachable through every path" checkable.
+- `knowledge_embeddings`: unique on `(chunk_id, model, indexing_version)` and on
+  `(item_id, model, indexing_version)`, each partial on the relevant id being non-null, with a
+  `CHECK` that exactly one of the two is set. Vectors from different indexing versions are never
+  compared.
 
 ## Conventions
 
@@ -91,6 +118,18 @@ Indexes exist for the queries the product actually runs:
 Settings → _Your data_ applies a retention window to snapshots and activity. **Evidence is never
 deleted by retention**, so historical claims keep their sources. The scheduled sync also purges
 expired sessions and OAuth states.
+
+Knowledge has its own two destructive paths, and they differ from retention in that the owner asks
+for them explicitly:
+
+- **Deleting a source** destroys its text, chunks, blocks, embeddings and revisions. The source row
+  survives holding no content, so the fact that it existed stays auditable.
+- **Forgetting a memory** clears the statement, detail, excerpts, tags and source reference, and
+  deletes every embedding of the item. The row survives as a tombstone.
+
+Both write a deletion receipt naming *where* content was removed from. Neither receipt nor audit
+event contains what was removed — an audit trail holding the forgotten sentence would be a copy,
+and a hash-chained log cannot be rewritten later to take it back out.
 
 ## Backups
 

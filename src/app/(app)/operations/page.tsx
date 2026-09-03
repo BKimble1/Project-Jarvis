@@ -4,7 +4,9 @@ import { AGENT_ROLE_LABELS, type AgentRole } from '@/domain/agent-role';
 import { formatTokens, staleTasks } from '@/domain/capacity';
 import { MISSION_STATE_LABELS } from '@/domain/mission';
 import { ACTIVE_TASK_STATES, TASK_STATE_LABELS, type MissionTask } from '@/domain/mission-task';
+import { CHUNKER_VERSION } from '@/domain/knowledge-chunker';
 import { QUALIFICATION_LEVEL_LABELS } from '@/domain/qualification';
+import { RANKING_VERSION, buildScopeFilter } from '@/domain/retrieval';
 import { requireOwnerPage } from '@/server/auth/guard';
 import { getServices } from '@/server/container';
 import { CapacityControls } from '@/components/operations/capacity-controls';
@@ -31,14 +33,30 @@ export default async function OperationsPage() {
   await requireOwnerPage('/operations');
   const services = await getServices();
 
-  const [posture, limits, activeTasks, missions, workers, qualification] = await Promise.all([
-    services.orchestrator.posture(),
-    services.orchestrator.limits(),
-    services.tasks.listActive(),
-    services.missionRepo.listOpen(),
-    services.workerRepo.list(),
-    services.qualificationService.status(),
-  ]);
+  const [posture, limits, activeTasks, missions, workers, qualification, ingestion] =
+    await Promise.all([
+      services.orchestrator.posture(),
+      services.orchestrator.limits(),
+      services.tasks.listActive(),
+      services.missionRepo.listOpen(),
+      services.workerRepo.list(),
+      services.qualificationService.status(),
+      services.revisions.jobSummary(),
+    ]);
+
+  /*
+   * Index health, computed from the same scope filter retrieval would use rather than from a
+   * global count. A coverage number taken across everything would say "98% embedded" while the
+   * 2% that is missing is the only project being asked about.
+   */
+  const embeddings = services.embeddings;
+  const coverage = embeddings
+    ? await services.retrievalRepo.coverage({
+        scope: buildScopeFilter({ audience: 'owner', scopes: ['global', 'project'] }),
+        model: embeddings.model,
+        indexingVersion: embeddings.indexingVersion,
+      })
+    : null;
 
   const nowIso = new Date().toISOString();
   const stalled = staleTasks(activeTasks, nowIso);
@@ -230,6 +248,59 @@ export default async function OperationsPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-sm">Reading and indexing</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 pt-0">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-4">
+            <Ceiling label="Queued" value={ingestion.queued} />
+            <Ceiling label="Running" value={ingestion.running} />
+            <Ceiling label="Failed" value={ingestion.failed} />
+            <Ceiling
+              label="Embedded"
+              value={coverage ? `${coverage.ready}/${coverage.total}` : 'not configured'}
+            />
+          </dl>
+
+          {/*
+            The parser versions, shown because a chunk's line numbers are only reproducible
+            against the parser that produced them — a version change is a legitimate reason for
+            the same document to chunk differently, and it should be visible rather than inferred.
+          */}
+          <p className="text-xs text-[var(--color-text-subtle)]">
+            Parsers:{' '}
+            {services.parsers
+              .list()
+              .map((parser) => `${parser.name}@${parser.version}`)
+              .join(', ')}{' '}
+            · chunker {CHUNKER_VERSION} · ranking {RANKING_VERSION}
+          </p>
+
+          <p className="text-xs text-[var(--color-text-subtle)]">
+            {embeddings
+              ? `Semantic index: ${embeddings.model} at ${embeddings.dimensions} dimensions, ignoring similarity below ${embeddings.minSimilarity}.`
+              : 'No semantic index is configured. Search is full-text only, and says so.'}
+          </p>
+
+          {ingestion.failed > 0 ? (
+            <div className="flex flex-col gap-1">
+              {ingestion.recent
+                .filter((job) => job.state === 'failed')
+                .slice(0, 5)
+                .map((job) => (
+                  <p key={job.id} className="text-xs text-[var(--color-critical-text)]">
+                    <Link href={`/knowledge/sources/${job.sourceId}`} className="hover:underline">
+                      {job.kind}
+                    </Link>{' '}
+                    — {job.failureMessage}
+                  </p>
+                ))}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-sm">Ceilings</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3 pt-0">
@@ -288,7 +359,14 @@ function Tile({
   );
 }
 
-function Ceiling({ label, value }: { label: string; value: number }) {
+/**
+ * One labelled figure.
+ *
+ * `value` accepts a string as well as a number so a figure that is genuinely not a number —
+ * "not configured", "12/40" — can be shown as itself rather than being coerced into a misleading
+ * zero.
+ */
+function Ceiling({ label, value }: { label: string; value: number | string }) {
   return (
     <div>
       <dt className="text-xs text-[var(--color-text-subtle)]">{label}</dt>

@@ -17,6 +17,8 @@
  */
 import { z } from 'zod';
 
+import { JarvisError } from './errors';
+
 /* ------------------------------------------------------------------ blocks */
 
 export const BLOCK_KINDS = [
@@ -153,13 +155,34 @@ export const PARSE_FAILURE_LABELS: Record<ParseFailureCode, string> = {
   empty: 'There was no text in the file',
 };
 
-export class ParseError extends Error {
-  constructor(
-    readonly code: ParseFailureCode,
-    message: string,
-  ) {
-    super(message);
+/**
+ * A file Jarvis could not read, and why.
+ *
+ * A `JarvisError` rather than a plain one, because every reason in `ParseFailureCode` is a fact
+ * about the *file* — it is encrypted, it is a scan, it is not the format it claims to be. None of
+ * them is a server fault, so none of them should surface as a 500 or be logged as a defect. The
+ * messages are already written for a person to read and contain no path, no stack and no bytes,
+ * so they are safe to return as-is.
+ *
+ * `timeout` is the one exception in kind: reading took too long, which may succeed on a retry, so
+ * it carries the retryable status rather than the client-error one.
+ */
+export class ParseError extends JarvisError {
+  /**
+   * Why the file could not be read.
+   *
+   * Named `parseCode` rather than `code` because `JarvisError.code` already means "which HTTP
+   * shape is this", and two different taxonomies sharing one field name is how a caller ends up
+   * comparing an `unsupported_type` against a `validation_failed` and always getting false.
+   */
+  readonly parseCode: ParseFailureCode;
+
+  constructor(parseCode: ParseFailureCode, message: string) {
+    super(parseCode === 'timeout' ? 'timeout' : 'validation_failed', message, {
+      details: { parseFailure: parseCode },
+    });
     this.name = 'ParseError';
+    this.parseCode = parseCode;
   }
 }
 
@@ -247,3 +270,70 @@ export const uploadMetadataSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
 });
 export type UploadMetadataInput = z.infer<typeof uploadMetadataSchema>;
+
+/* ------------------------------------------------------- content sniffing */
+
+/**
+ * Magic numbers that mean "this is not a text document, whatever it is called".
+ *
+ * Kept deliberately short and unambiguous: every entry is a signature that no plain-text or
+ * Markdown file can legitimately begin with. The point is not to identify what a file *is* — that
+ * is a rabbit hole with no bottom — but to catch the specific case where a filename and a declared
+ * content type agree with each other and both disagree with the bytes.
+ *
+ * `%PDF-` is here even though PDFs are a supported upload, because a PDF arriving as `.md` means
+ * the declared type is wrong; it should be uploaded as a PDF and read by the PDF parser, which
+ * extracts pages, rather than decoded as if its container syntax were prose.
+ */
+const BINARY_SIGNATURES: readonly { readonly label: string; readonly bytes: readonly number[] }[] =
+  Object.freeze([
+    { label: 'a PDF', bytes: [0x25, 0x50, 0x44, 0x46, 0x2d] },
+    { label: 'a ZIP archive (or a document based on one)', bytes: [0x50, 0x4b, 0x03, 0x04] },
+    { label: 'a ZIP archive', bytes: [0x50, 0x4b, 0x05, 0x06] },
+    { label: 'a gzip archive', bytes: [0x1f, 0x8b] },
+    { label: 'a Linux executable', bytes: [0x7f, 0x45, 0x4c, 0x46] },
+    { label: 'a Windows executable', bytes: [0x4d, 0x5a] },
+    { label: 'a Mach-O executable', bytes: [0xcf, 0xfa, 0xed, 0xfe] },
+    { label: 'a Java class file', bytes: [0xca, 0xfe, 0xba, 0xbe] },
+    { label: 'a PNG image', bytes: [0x89, 0x50, 0x4e, 0x47] },
+    { label: 'a JPEG image', bytes: [0xff, 0xd8, 0xff] },
+    { label: 'a GIF image', bytes: [0x47, 0x49, 0x46, 0x38] },
+    { label: 'a RAR archive', bytes: [0x52, 0x61, 0x72, 0x21] },
+    { label: 'a 7-Zip archive', bytes: [0x37, 0x7a, 0xbc, 0xaf] },
+    { label: 'an XZ archive', bytes: [0xfd, 0x37, 0x7a, 0x58] },
+    { label: 'an SQLite database', bytes: [0x53, 0x51, 0x4c, 0x69, 0x74, 0x65] },
+  ]);
+
+/** What the bytes actually look like, or null if nothing recognisable. */
+export function detectBinarySignature(bytes: Uint8Array): string | null {
+  for (const signature of BINARY_SIGNATURES) {
+    if (bytes.length < signature.bytes.length) continue;
+    let matches = true;
+    for (let index = 0; index < signature.bytes.length; index += 1) {
+      if (bytes[index] !== signature.bytes[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return signature.label;
+  }
+  return null;
+}
+
+/**
+ * Refuse content that is not what its name and type claim.
+ *
+ * Called by the text parsers before decoding. A filename extension is a claim and a content type
+ * is a claim; the first few bytes are evidence, and where they disagree the evidence wins. This
+ * is the check that stops "rename it to .md" from being a way to get arbitrary bytes stored as
+ * searchable prose.
+ */
+export function assertNotBinary(bytes: Uint8Array, expecting: string): void {
+  const signature = detectBinarySignature(bytes);
+  if (signature) {
+    throw new ParseError(
+      'unsupported_type',
+      `That file is named as ${expecting} but its contents are ${signature}. Jarvis reads what a file is, not what it is called.`,
+    );
+  }
+}

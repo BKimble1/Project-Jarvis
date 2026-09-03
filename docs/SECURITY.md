@@ -72,9 +72,58 @@ open — a misconfigured deployment fails safe.
 
 ## Server-side request forgery
 
-Owner-supplied URLs (project links) are validated to `http`/`https`, stored as data, and rendered
-only as anchors. The server never fetches them. The only outbound hosts are the GitHub API base URL
-and, when configured, the Anthropic API.
+Owner-supplied URLs on a project are validated to `http`/`https`, stored as data, and rendered only
+as anchors. The server never fetches those.
+
+Since Phase 4B there is one place the server *does* fetch an owner-supplied URL — importing a web
+page into knowledge — and it is treated as a security boundary rather than as a feature:
+
+- `http`/`https` only. Every other scheme is refused, `file:` and `gopher:` included.
+- Embedded credentials (`https://user:pass@host`) are refused outright.
+- The hostname is resolved and **every returned address** is checked, not just the first. Blocked:
+  loopback, link-local, private ranges, carrier-grade NAT, the cloud metadata address, multicast
+  and reserved space — in IPv4, IPv6, and IPv4-mapped IPv6 form.
+- IPv4 is canonicalised with `inet_aton` semantics, so decimal, octal, hex and short forms all
+  resolve to the same address before it is checked. `0x7f.1`, `2130706433` and `127.1` are all
+  loopback and all refused.
+- DNS is **pinned**: the approved address is the one connected to, via Node's `lookup` option. A
+  name that resolves differently between the check and the connection cannot be used to slip past.
+- **Every redirect destination is re-validated** against all of the above. A public URL that
+  redirects to `169.254.169.254` is refused at the hop, not followed.
+- Redirect count, response size, content type and total time are all capped.
+- No application cookie or authorization header is ever forwarded. There is no authenticated
+  crawling.
+- The final URL actually fetched is recorded as provenance, so a citation names where the content
+  came from rather than where it was requested from.
+- The allow-list of hosts comes from configuration and never from a request.
+
+There is deliberately **no endpoint that fetches an arbitrary URL and returns its body**. The only
+caller is ingestion, which stores what it read.
+
+## Knowledge and memory (Phase 4B)
+
+- **Every knowledge write is owner-only**, through `ownerRoute`, which authenticates on the server
+  and rejects cross-origin writes before the handler runs.
+- **Authorisation happens before ranking**, inside the same SQL statement that scores. Nothing
+  retrieves across projects and filters afterwards, so no intermediate — a log line, a cache, a
+  slow-query sample — ever holds a row the caller was not allowed to see.
+- **Audience ceilings are fixed in code.** A wallboard may see `public` and nothing else; an agent
+  may see `internal`; neither can be raised by any request field. `buildScopeFilter` clamps down
+  and never up.
+- **An agent's inference never becomes memory on its own.** A mission may propose; only the owner
+  approves, and the proposer is refused even if it presents as the owner (checked on identity, not
+  only on actor kind).
+- **Uploads are verified against their bytes.** The declared content type and the extension must
+  agree, and the parsers then check the file's actual signature — so renaming a ZIP to `.md` is
+  refused rather than stored as searchable prose. Nothing unpacks an archive. No client-supplied
+  storage path exists.
+- **Retrieved text is data, never authority.** `Evidence` has no field through which a document
+  could grant a tool, change a scope or approve anything — not filtered, absent. The text is
+  returned intact rather than scrubbed, because a document may legitimately discuss prompt
+  injection and an attacker can always rephrase; the guarantee is structural.
+- **Forgetting destroys.** Statement, detail, excerpts, tags, source reference and every embedding
+  go. What remains is a receipt saying a deletion happened and where content was removed from —
+  never what it said.
 
 ## Transport and headers
 

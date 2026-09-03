@@ -542,6 +542,63 @@ describe('memory lifecycle', () => {
     });
   });
 
+  /* ------------------------------------------------------------ audiences */
+
+  describe('who can see what', () => {
+    const rememberAt = async (sensitivity: 'public' | 'internal' | 'private', text: string) =>
+      harness.services.memoryService.remember(
+        { scope: 'global', category: 'fact', statement: text, tags: [], sensitivity },
+        OWNER,
+      );
+
+    it('never shows private memory to a wallboard, whatever the request asks for', async () => {
+      await rememberAt('private', `The bank details are ${CANARY}.`);
+      await rememberAt('public', `The office opens at nine. ${OTHER_CANARY}`);
+
+      /*
+       * The display audience asking for the highest ceiling there is. `buildScopeFilter` clamps
+       * it rather than honouring it, and the clamp is in code with no request parameter that can
+       * reach it — which is what makes "a wallboard never shows private material" a property
+       * rather than a policy.
+       */
+      const displayScope = buildScopeFilter({
+        audience: 'display',
+        scopes: ['global'],
+        projectIds: [],
+        sensitivityCeiling: 'private',
+      });
+      expect(displayScope.sensitivityCeiling).toBe('public');
+
+      const found = await search(CANARY, displayScope);
+      expect(found.evidence).toHaveLength(0);
+      expect(JSON.stringify(found)).not.toContain(CANARY);
+
+      /* Public material still reaches it, so the check is not simply blocking everything. */
+      const allowed = await search(OTHER_CANARY, displayScope);
+      expect(allowed.evidence.length).toBeGreaterThan(0);
+
+      /* And the owner, asking the same question, does see it. */
+      const owner = await search(CANARY, ownerScope());
+      expect(owner.evidence.length).toBeGreaterThan(0);
+    });
+
+    it('never gives an agent private memory, even asking for its own project', async () => {
+      await rememberAt('private', `A private preference about ${CANARY}.`);
+      await rememberAt('internal', `A working note about ${OTHER_CANARY}.`);
+
+      const agentScope = buildScopeFilter({
+        audience: 'agent',
+        scopes: ['global'],
+        projectIds: [],
+        sensitivityCeiling: 'private',
+      });
+      expect(agentScope.sensitivityCeiling).toBe('internal');
+
+      expect((await search(CANARY, agentScope)).evidence).toHaveLength(0);
+      expect((await search(OTHER_CANARY, agentScope)).evidence.length).toBeGreaterThan(0);
+    });
+  });
+
   /* ---------------------------------------------------------- explaining */
 
   describe('explaining why something is remembered', () => {

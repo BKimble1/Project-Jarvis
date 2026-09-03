@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   Activity,
   BellRing,
+  BookOpen,
   FolderKanban,
   History,
   LayoutDashboard,
@@ -28,11 +29,21 @@ const NAV: readonly NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', shortLabel: 'Home', Icon: LayoutDashboard },
   { href: '/projects', label: 'Projects', shortLabel: 'Projects', Icon: FolderKanban },
   { href: '/missions', label: 'Missions', shortLabel: 'Missions', Icon: Rocket },
+  { href: '/knowledge', label: 'Knowledge', shortLabel: 'Knows', Icon: BookOpen },
   { href: '/operations', label: 'Operations', shortLabel: 'Ops', Icon: Activity },
   { href: '/attention', label: 'What needs me', shortLabel: 'Needs me', Icon: BellRing },
   { href: '/changes', label: 'What changed', shortLabel: 'Changed', Icon: History },
   { href: '/settings', label: 'Settings', shortLabel: 'Settings', Icon: Settings },
 ];
+
+/**
+ * Destinations the phone's bottom bar leaves out.
+ *
+ * Named once so the filter and the dashboard's own links cannot drift apart: anything listed here
+ * has to be reachable from the dashboard, because the tab bar is the only navigation a phone
+ * shows by default.
+ */
+const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge']);
 
 /**
  * Application chrome.
@@ -116,15 +127,17 @@ export function AppShell({
       </div>
 
       {/*
-        Five tabs is the most that stays comfortably tappable at 320px, so the bottom bar shows
-        the five destinations that are acted on and leaves "What changed" to the sidebar and the
-        dashboard, where it is a reading surface rather than a decision surface.
+        The bottom bar carries the destinations that are *acted on*; reading and management
+        surfaces live in the sidebar and are reached from the dashboard on a phone. At 320px each
+        tab has about 53px, which is already the point where a label starts to truncate — so
+        "What changed" and "Knowledge" stay off it rather than shrinking the tabs that carry a
+        decision. Both remain one tap away from the dashboard.
       */}
       <nav
         aria-label="Main"
         className="fixed inset-x-0 bottom-0 z-30 flex border-t border-[var(--color-border)] bg-[var(--color-surface)]/97 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
       >
-        {NAV.filter((item) => item.href !== '/changes').map(({ href, shortLabel, Icon }) => (
+        {NAV.filter((item) => !OFF_THE_TAB_BAR.has(item.href)).map(({ href, shortLabel, Icon }) => (
           <Link
             key={href}
             href={href}

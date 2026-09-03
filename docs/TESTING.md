@@ -183,6 +183,44 @@ The suite is organised around the claims the product makes, not around file stru
 - Display pairing shows the token once, never again, and stops working when revoked.
 - The export carries the factory's record and no credential of any kind.
 
+**Knowledge and memory (Phase 4B)**
+
+- Citations survive a re-read: an unchanged refresh creates no revision, a changed one creates a
+  new revision and the old one's chunks stay resolvable.
+- Exactly one revision is active under six concurrent refreshes — a database guarantee, asserted
+  under real concurrency rather than in principle.
+- Project A cannot retrieve Project B's material. Asserted with unique canary strings rather than
+  with counts: a count-based test passes while one of the results is the wrong project's.
+- A wallboard never receives private material and an agent never receives it either, however the
+  request is phrased.
+- A proposal cannot approve itself — refused on actor kind, and refused again on actor identity
+  when a proposer presents as the owner.
+- Forgetting removes the text from the row, the generated full-text index, the vector index, a raw
+  scan of every text column, the whole audit trail and the export. A later indexing pass does not
+  re-embed the tombstone.
+- Retrieved text cannot grant authority: it comes back intact (not scrubbed), the evidence object
+  has no field through which it could act, and rendering places it inside a fence that names it as
+  data.
+- An upload is judged by its bytes: a PDF, ZIP, ELF or PNG named `.md` with a matching declared
+  type is refused, and a `.pdf` claiming `text/plain` is refused before a row is created.
+- Search reports its mode honestly. With no provider configured it says "Full-text only" rather
+  than describing text search as hybrid, and the semantic channel returns nothing when nothing is
+  actually near.
+
+**Non-vacuity, checked by mutation**
+
+A green suite proves nothing until the assertions are known to bite. Each of these was broken
+deliberately, the failure observed, and the code restored:
+
+| mutation | tests that failed |
+|----------|-------------------|
+| `isActive` hard-coded true in the revision mapper | refresh keeps exactly one active revision |
+| the semantic similarity floor removed | an unrelated query returns no semantic candidates |
+| the display audience ceiling raised to `private` | a wallboard never sees private memory |
+| the project clause replaced with `or true` | the four project-isolation tests |
+| chunk overlap reverted to character slicing | four locator-containment assertions |
+| a regex scrubber added to the prompt renderer | retrieved text is returned intact |
+
 **The multi-agent smoke test**
 
 `tests/integration/multi-agent-smoke.test.ts` is the one that matters most. It uses a real

@@ -1,6 +1,7 @@
 import {
   PARSER_LIMITS,
   ParseError,
+  assertNotBinary,
   canonicaliseText,
   type CanonicalBlock,
   type KnowledgeParser,
@@ -40,6 +41,8 @@ export class MarkdownParser implements KnowledgeParser {
   }
 
   async parse(input: ParserInput): Promise<ParsedDocument> {
+    /* The name and the declared type both said Markdown. Check the bytes before believing them. */
+    assertNotBinary(input.bytes, 'Markdown');
     const decoded = decodeUtf8(input.bytes);
     const truncated = decoded.length > input.maxChars;
     const canonicalText = canonicaliseText(truncated ? decoded.slice(0, input.maxChars) : decoded);

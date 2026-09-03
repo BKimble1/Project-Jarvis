@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import type { KnowledgeScope } from './knowledge';
+import type { Sensitivity } from './retrieval';
+
 /**
  * Documents Jarvis has been given, and the rules for turning one into citable evidence.
  *
@@ -218,6 +221,22 @@ export interface KnowledgeSource {
   /** The original filename, URL or note title. Safe for display. */
   readonly origin: string;
   readonly projectId: string | null;
+  /** Where this applies. Global, one project, or one mission — checked before retrieval ranks. */
+  readonly scope: KnowledgeScope;
+  /** How sensitive the material is. The display audience never sees anything above `public`. */
+  readonly sensitivity: Sensitivity;
+  /**
+   * Whether the origin can be read again.
+   *
+   * A note has no origin to re-read, so it is never refreshable; a URL or a repository file is.
+   * On the type rather than derived from `kind` at each call site, because the interface has to
+   * decide whether to offer a Refresh button and deriving that in three places is how the three
+   * places disagree.
+   */
+  readonly refreshable: boolean;
+  /** The revision citations and retrieval currently resolve to. Null while the first one builds. */
+  readonly activeRevisionId: string | null;
+  readonly lastRefreshedAt: string | null;
   /** SHA-256 of the stored bytes or text. The identity that makes deduplication real. */
   readonly contentHash: string;
   readonly byteSize: number;
@@ -450,3 +469,75 @@ export function describeSource(source: KnowledgeSource): string {
   if (source.truncated) parts.push('truncated');
   return parts.join(' · ');
 }
+
+/* ------------------------------------------------------------ API schemas */
+
+/**
+ * What the owner may ask Jarvis to read.
+ *
+ * A discriminated union rather than one permissive object, because the three origins have
+ * genuinely different safety properties and a shared shape would let a field from one leak into
+ * another — a `url` on a note request, a `path` on a URL request. Each variant carries exactly
+ * what its own ingestion path needs.
+ *
+ * Note what none of them carries: a storage path, a repository owner/name pair, or a content
+ * type asserted by the caller. Storage location is decided server-side; a repository is resolved
+ * from the project's existing connection; the parser decides the type from the bytes.
+ */
+const scopeAndSensitivity = {
+  scope: z.enum(['global', 'project', 'mission', 'preference', 'operational']),
+  projectId: z.string().uuid().nullish(),
+  sensitivity: z.enum(['public', 'internal', 'private']).default('internal'),
+  title: z.string().trim().min(1).max(200),
+  tags: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
+};
+
+export const addNoteSchema = z.object({
+  kind: z.literal('note'),
+  ...scopeAndSensitivity,
+  text: z.string().min(1).max(SOURCE_LIMITS.maxTextChars),
+});
+
+export const addUrlSchema = z.object({
+  kind: z.literal('web_url'),
+  ...scopeAndSensitivity,
+  /* Shape only. Whether this URL may actually be fetched is decided by the SSRF guard. */
+  url: z.string().trim().url().max(2000),
+});
+
+export const addRepositoryFileSchema = z.object({
+  kind: z.literal('repository_doc'),
+  ...scopeAndSensitivity,
+  /*
+   * Required, not nullable. The repository is resolved from this project's own connection, so a
+   * request without a project has no repository to read from — and the only way to answer "which
+   * repository?" without one would be to take an owner/repo pair from the request, which is
+   * exactly the escalation this design refuses.
+   */
+  projectId: z.string().uuid(),
+  /*
+   * A path inside that repository. No owner or repo field: accepting one would turn "read this
+   * project's docs" into "read anything the token can see".
+   */
+  path: z.string().trim().min(1).max(400),
+  ref: z.string().trim().min(1).max(200).nullish(),
+});
+
+export const addSourceSchema = z.discriminatedUnion('kind', [
+  addNoteSchema,
+  addUrlSchema,
+  addRepositoryFileSchema,
+]);
+export type AddSourceRequest = z.infer<typeof addSourceSchema>;
+
+/** The metadata half of an upload. The bytes arrive as multipart, never as base64 in JSON. */
+export const uploadMetadataSchema = z.object({
+  ...scopeAndSensitivity,
+});
+
+export const sourceListQuerySchema = z.object({
+  projectId: z.string().uuid().nullish(),
+  states: z.array(z.enum(SOURCE_STATES)).optional(),
+  kinds: z.array(z.enum(SOURCE_KINDS)).optional(),
+  limit: z.number().int().min(1).max(200).default(100),
+});

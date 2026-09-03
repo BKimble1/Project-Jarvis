@@ -545,10 +545,10 @@ export class MemoryService {
 
     const now = this.clock();
     if (input.resolution === 'keep_left' && conflict.rightId) {
-      await this.archiveLoser(conflict.rightId, conflict.leftId, now);
+      await this.archiveLoser(conflict.rightId, conflict.leftId);
     }
     if (input.resolution === 'keep_right' && conflict.rightId) {
-      await this.archiveLoser(conflict.leftId, conflict.rightId, now);
+      await this.archiveLoser(conflict.leftId, conflict.rightId);
     }
 
     const resolved = await this.options.conflicts.resolve(
@@ -733,7 +733,15 @@ export class MemoryService {
     });
   }
 
-  private async archiveLoser(loserId: string, winnerId: string, now: Date): Promise<void> {
+  /**
+   * Retire the side the owner did not choose.
+   *
+   * `superseded`, not `forgotten`: the words stay readable and the link to the winner is
+   * recorded. Choosing between two statements is not the same act as deleting one, and a
+   * conflict resolution that quietly destroyed the loser would make answering a conflict
+   * something to be nervous about.
+   */
+  private async archiveLoser(loserId: string, winnerId: string): Promise<void> {
     const loser = await this.options.memories.findById(loserId);
     if (!loser || loser.status !== 'active') return;
     await this.options.memories.patch(loserId, {
@@ -741,8 +749,8 @@ export class MemoryService {
       supersededById: winnerId,
       supersededReason: 'You chose the other statement when they disagreed.',
     });
+    /* Not retrievable any more, so its vector goes with its status. */
     await this.options.revisions.deleteMemoryEmbeddings(loserId);
-    void now;
   }
 
   /** One audit append, shaped so no call site has to remember which fields matter. */

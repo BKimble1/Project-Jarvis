@@ -14,7 +14,7 @@ import {
   type RevisionProvenance,
 } from '@/domain/knowledge-revision';
 import type { SourceFailureCode, SourceKind } from '@/domain/knowledge-source';
-import { safeFilename } from '@/domain/knowledge-source';
+import { resolveUploadKind, safeFilename } from '@/domain/knowledge-source';
 import type { Sensitivity } from '@/domain/retrieval';
 import type { AppConfig } from '@/server/config/env';
 import type { SourceProvider } from '@/server/providers/types';
@@ -105,7 +105,22 @@ export class IngestionService {
     });
   }
 
-  /** An uploaded file. The kind is decided by the parser registry, not by the filename. */
+  /**
+   * An uploaded file.
+   *
+   * The kind is **derived**, never taken from the caller. Three checks run in order, each strictly
+   * stronger than the last:
+   *
+   *  1. `resolveUploadKind` compares the declared content type against the extension and refuses
+   *     when they disagree — a `.pdf` sent as `text/plain` is either a mistake or an attempt.
+   *  2. Anything neither of them recognises is refused outright rather than guessed at. "Probably
+   *     text" is how a parser ends up reading a zip.
+   *  3. The parsers then check the bytes themselves, so a file whose name and type agree with each
+   *     other and disagree with its contents is caught where the claims run out.
+   *
+   * The caller's `kind` is deliberately ignored rather than validated: a field that is never read
+   * cannot be the one a future change starts trusting.
+   */
   async addUpload(
     input: AddSourceInput & {
       readonly bytes: Uint8Array;
@@ -121,7 +136,19 @@ export class IngestionService {
     }
 
     const filename = safeFilename(input.filename);
-    const source = await this.createSource({ ...input, origin: filename, refreshable: false });
+    const kind = resolveUploadKind({ contentType: input.contentType, filename: input.filename });
+    if (!kind) {
+      throw new ValidationError(
+        'Jarvis reads Markdown, plain text and PDF. That file is either a different kind, or its name and its type disagree about which.',
+      );
+    }
+
+    const source = await this.createSource({
+      ...input,
+      kind,
+      origin: filename,
+      refreshable: false,
+    });
     return this.ingestBytes({
       sourceId: source.id,
       bytes: input.bytes,
@@ -445,7 +472,7 @@ export class IngestionService {
         limitations,
       };
     } catch (error) {
-      const code = error instanceof ParseError ? error.code : 'ingest_failed';
+      const code = error instanceof ParseError ? error.parseCode : 'ingest_failed';
       const message = error instanceof Error ? error.message : 'Ingestion failed.';
 
       await this.options.sources.patch(input.sourceId, {
