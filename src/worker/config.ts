@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { ConfigurationError } from '@/domain/errors';
+import { WORKER_VERSION } from '@/domain/worker-protocol';
 
 /**
  * Worker configuration.
@@ -91,7 +92,12 @@ export interface WorkerConfig {
   readonly diagnostics: readonly string[];
 }
 
-export const WORKER_VERSION = '2.0.0';
+/*
+ * Re-exported from `@/domain` so the worker and the control plane cannot disagree about which
+ * build is current. The constant is defined there; this line only keeps the existing import
+ * sites working.
+ */
+export { WORKER_VERSION };
 
 export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const parsed = schema.safeParse(source);

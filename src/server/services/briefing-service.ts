@@ -11,7 +11,7 @@ import { NotFoundError } from '@/domain/errors';
 import { assessProject } from '@/server/status/engine';
 import { assessPortfolio } from '@/server/status/portfolio';
 import { diffSnapshots } from '@/server/status/diff';
-import { buildPortfolioNarrative } from '@/server/briefing/deterministic';
+import { DeterministicNarrator, buildPortfolioNarrative } from '@/server/briefing/deterministic';
 import { buildNarrationPayload, type BriefingNarrator } from '@/server/briefing/types';
 import type {
   ActivityLogService,
@@ -21,6 +21,15 @@ import type {
 } from '@/server/repositories/types';
 import type { MissionRepository, WorkerRepository } from '@/server/repositories/mission-types';
 import type { TaskRepository } from '@/server/repositories/factory-types';
+
+/**
+ * The fallback narrator, instantiated once.
+ *
+ * Stateless and pure, so one instance is enough and there is nothing to configure. Held here
+ * rather than injected because it is not a choice — it is what Jarvis says when it may not use a
+ * model, and a deployment cannot opt out of being able to say something.
+ */
+const DETERMINISTIC = new DeterministicNarrator();
 import { buildMissionSignals } from '@/server/status/missions';
 import { deriveWorkerHealth } from '@/domain/worker';
 import type { ProjectAssessment as Assessment } from '@/domain/status';
@@ -203,9 +212,18 @@ export class BriefingService {
    * Full project briefing. Persists a snapshot when the fingerprint changes (or when the owner
    * explicitly regenerates), and refreshes the project's denormalised freshness/attention flags.
    */
+  /**
+   * Brief one project.
+   *
+   * `deterministicOnly` forces the built-in narrator even when a model narrator is configured. It
+   * exists for the activation lock: an unattended run that is not qualified to use a model still
+   * produces a briefing — the deterministic one — rather than producing nothing. Degrading the
+   * capability is the right failure here; withholding the briefing entirely would punish the
+   * owner for a qualification gap that has nothing to do with whether the facts are true.
+   */
   async briefProject(
     projectId: string,
-    options: { regenerate?: boolean } = {},
+    options: { regenerate?: boolean; deterministicOnly?: boolean } = {},
   ): Promise<ProjectBriefing> {
     const aggregate = await this.deps.projects.aggregate(projectId);
     if (!aggregate) throw new NotFoundError('Project');
@@ -238,7 +256,8 @@ export class BriefingService {
     }
 
     const payload = buildNarrationPayload(aggregate.project, assessment, evidence);
-    const narration = await this.deps.narrator.narrateProject(payload);
+    const narrator = options.deterministicOnly ? DETERMINISTIC : this.deps.narrator;
+    const narration = await narrator.narrateProject(payload);
 
     await this.deps.snapshots.save({
       projectId,

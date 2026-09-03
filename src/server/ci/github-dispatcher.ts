@@ -41,7 +41,15 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  private headers(): Record<string, string> {
+  /*
+   * Hard privates, not TypeScript ones.
+   *
+   * `private` is erased at runtime, so a `private` method still sits on the prototype and a cast
+   * reaches it. `#call` takes an arbitrary path and init — it is every forbidden dispatcher
+   * method at once for anyone holding this object — so it has to be genuinely unreachable rather
+   * than merely discouraged by the type checker.
+   */
+  #headers(): Record<string, string> {
     return {
       accept: 'application/vnd.github+json',
       authorization: `Bearer ${this.options.token}`,
@@ -50,17 +58,17 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
     };
   }
 
-  private url(path: string): string {
+  #url(path: string): string {
     return `${this.options.apiUrl.replace(/\/+$/, '')}${path}`;
   }
 
-  private async call(path: string, init: RequestInit = {}): Promise<Response> {
+  async #call(path: string, init: RequestInit = {}): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 20_000);
     try {
-      return await this.fetchImpl(this.url(path), {
+      return await this.fetchImpl(this.#url(path), {
         ...init,
-        headers: { ...this.headers(), ...(init.headers as Record<string, string> | undefined) },
+        headers: { ...this.#headers(), ...(init.headers as Record<string, string> | undefined) },
         signal: controller.signal,
       });
     } finally {
@@ -81,7 +89,7 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
     ref: string;
     inputs: Readonly<Record<string, string>>;
   }): Promise<{ ok: boolean; status: number; detail: string }> {
-    const response = await this.call(
+    const response = await this.#call(
       `/repos/${input.repositoryFullName}/actions/workflows/${encodeURIComponent(input.workflowFile)}/dispatches`,
       {
         method: 'POST',
@@ -106,7 +114,7 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
     ref: string;
     since: string;
   }): Promise<{ id: string; url: string; status: string; conclusion: string | null } | null> {
-    const response = await this.call(
+    const response = await this.#call(
       `/repos/${input.repositoryFullName}/actions/workflows/${encodeURIComponent(input.workflowFile)}/runs?per_page=10`,
     );
     if (!response.ok) return null;
@@ -135,7 +143,7 @@ export class GithubWorkflowDispatcher implements WorkflowDispatcher {
    * never enough to use it.
    */
   async declaredSecretNames(repositoryFullName: string): Promise<readonly string[]> {
-    const response = await this.call(`/repos/${repositoryFullName}/actions/secrets?per_page=100`);
+    const response = await this.#call(`/repos/${repositoryFullName}/actions/secrets?per_page=100`);
     if (!response.ok) return [];
     const body = (await response.json().catch(() => null)) as {
       secrets?: { name: string }[];

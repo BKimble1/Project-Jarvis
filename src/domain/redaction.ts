@@ -85,6 +85,9 @@ export function containsSecret(value: string): boolean {
  * Also bounds the structure: deeply nested or very large details from a worker are truncated
  * rather than stored, so an event row can never become a denial-of-service vector.
  */
+/** Key names whose *string* values are dropped whatever they look like. */
+const SECRET_KEY = /(secret|token|password|api[_-]?key|credential|private[_-]?key)/i;
+
 export function redactDeep(value: unknown, depth = 0): unknown {
   if (depth > 8) return '[truncated]';
   if (typeof value === 'string') return redactSecrets(value.slice(0, 8000));
@@ -95,8 +98,18 @@ export function redactDeep(value: unknown, depth = 0): unknown {
   if (typeof value === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
-      /* A key whose *name* says "secret" has its value dropped whatever the value looks like. */
-      if (/(secret|token|password|api[_-]?key|credential|private[_-]?key)/i.test(key)) {
+      /*
+       * A key whose *name* says "secret" has its value dropped — but only when the value could
+       * be one.
+       *
+       * The name rule alone was too broad in a way that quietly destroyed data: `outputTokens`
+       * matches /token/, so every completion receipt stored its usage as "[redacted]" and the
+       * accounting built on those figures was reading a string where a count should be. A number
+       * or a boolean cannot be a credential in this system — every secret it handles is a string
+       * — so numbers and booleans keep their values and everything else under a secret-sounding
+       * key is dropped, including whole nested objects.
+       */
+      if (SECRET_KEY.test(key) && typeof item !== 'number' && typeof item !== 'boolean') {
         result[key] = REDACTED;
         continue;
       }

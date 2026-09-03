@@ -71,7 +71,7 @@ export class GitHubRestDelivery implements GitHubDelivery {
      * `draft: true` is hard-coded. There is no code path in Jarvis that opens a ready-for-review
      * pull request, and no parameter that would let one be requested.
      */
-    const response = await this.request('POST', `/repos/${input.owner}/${input.repo}/pulls`, {
+    const response = await this.#request('POST', `/repos/${input.owner}/${input.repo}/pulls`, {
       title: input.title,
       body: input.body,
       head: input.head,
@@ -93,11 +93,11 @@ export class GitHubRestDelivery implements GitHubDelivery {
     number: number,
     body: string,
   ): Promise<void> {
-    await this.request('PATCH', `/repos/${owner}/${repo}/pulls/${number}`, { body });
+    await this.#request('PATCH', `/repos/${owner}/${repo}/pulls/${number}`, { body });
   }
 
   async checkStatus(owner: string, repo: string, ref: string): Promise<CheckStatus> {
-    const response = await this.request(
+    const response = await this.#request(
       'GET',
       `/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}/check-runs`,
     );
@@ -136,10 +136,20 @@ export class GitHubRestDelivery implements GitHubDelivery {
   }
 
   async comment(owner: string, repo: string, number: number, body: string): Promise<void> {
-    await this.request('POST', `/repos/${owner}/${repo}/issues/${number}/comments`, { body });
+    await this.#request('POST', `/repos/${owner}/${repo}/issues/${number}/comments`, { body });
   }
 
-  private async request(
+  /**
+   * The one place an HTTP call is made, and a **hard** private.
+   *
+   * `private` in TypeScript is erased: the method still sits on the prototype and anything
+   * holding the object can reach it with a cast. That matters here more than almost anywhere
+   * else, because this method takes an arbitrary method and path — it is every forbidden
+   * operation at once for anyone who can call it. `#request` is not on the prototype at all, so
+   * the four-method boundary this class documents is now a property of the runtime rather than
+   * of the type checker.
+   */
+  async #request(
     method: 'GET' | 'POST' | 'PATCH',
     path: string,
     body?: Record<string, unknown>,

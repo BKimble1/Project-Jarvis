@@ -28,6 +28,16 @@ interface Step {
 const argv = new Set(process.argv.slice(2));
 const skipE2e = argv.has('--skip-e2e') || process.env.JARVIS_SKIP_E2E === 'true';
 
+/*
+ * Recording the result into the qualification ladder is opt-in.
+ *
+ * A green run on a laptop says nothing about a production deployment, so the suite outcome is
+ * written to whichever database this process is configured for and only when asked. The CI job
+ * that verifies a deployment passes `--record`; a developer running the gate locally does not,
+ * and their green run therefore cannot lift production's qualification.
+ */
+const record = argv.has('--record');
+
 const BOLD = '\u001b[1m';
 const RED = '\u001b[31m';
 const GREEN = '\u001b[32m';
@@ -99,6 +109,42 @@ async function main(): Promise<void> {
   const seconds = Math.round((Date.now() - started) / 1000);
   console.log(`\n${GREEN}\u2713 All checks passed in ${seconds}s.${RESET}`);
   if (skipE2e) console.log('  (end-to-end tests were skipped)');
+
+  if (record) {
+    const { getConfig } = await import('@/server/config/env');
+    const { getDb } = await import('@/server/db/client');
+    const { buildServices } = await import('@/server/container');
+    const config = getConfig();
+    const services = buildServices(await getDb(), config);
+    await services.qualificationService.recordSuite({
+      kind: 'automated',
+      passed: true,
+      detail: `The full gate passed in ${seconds}s${skipE2e ? ', without the end-to-end step' : ''}.`,
+      testCount: null,
+    });
+    /*
+     * The simulated rung too, and honestly: the multi-agent smoke test runs inside the
+     * integration project this gate just passed. It drives the real orchestrator, the real
+     * routes, real workers and real git, replacing only the model and GitHub — which is exactly
+     * what "ran with replacement providers" means.
+     */
+    await services.qualificationService.recordSuite({
+      kind: 'simulated',
+      passed: true,
+      detail:
+        'The multi-agent smoke test passed as part of the integration suite: real orchestrator, real routes, real workers, real git, with the model and GitHub replaced.',
+      testCount: null,
+    });
+    console.log(
+      `  Recorded the automated and simulated suites as passing${config.qualification.buildRef ? ` for build ${config.qualification.buildRef}` : ''}.`,
+    );
+  } else {
+    console.log(
+      '\n  This did not change the qualification ladder. To record it against a deployment:\n' +
+        '    npm run verify -- --record        (writes to the configured database)\n' +
+        '    npm run qualify                   (shows what has actually been proved)',
+    );
+  }
 }
 
 void main();

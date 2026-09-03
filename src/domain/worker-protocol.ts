@@ -24,6 +24,31 @@ import { WORKER_REPORTED_STATUSES } from './worker';
  * authenticated worker is still an untrusted client.
  */
 
+/* ------------------------------------------------------------------ version */
+
+/**
+ * The worker build this control plane expects.
+ *
+ * It lives in `@/domain` rather than in the worker's own configuration so that both sides read
+ * the same constant. A version string held on one side and compared on the other is a version
+ * string that drifts the first time somebody edits only one file.
+ */
+export const WORKER_VERSION = '2.0.0';
+
+/**
+ * Compatible means the same major.
+ *
+ * A minor difference is a worker that gained a capability the control plane does not use yet, and
+ * that is fine. A major difference means the two disagree about what a report *means*, which is
+ * the case where continuing quietly is worse than refusing.
+ */
+export function isCompatibleWorkerVersion(version: string | null | undefined): boolean {
+  if (!version) return false;
+  const theirs = version.trim().split('.')[0];
+  const ours = WORKER_VERSION.split('.')[0];
+  return theirs !== undefined && theirs === ours;
+}
+
 /* ---------------------------------------------------------------- heartbeat */
 
 export const workerHeartbeatSchema = z.object({

@@ -121,6 +121,71 @@ const rawSchema = z.object({
   JARVIS_CI_REFS: z.string().trim().optional(),
   JARVIS_CI_MAX_DISPATCHES_PER_HOUR: positiveInt(4, 60),
 
+  /* ------------------------------------------- Prompt 4: completion */
+
+  /**
+   * Where live qualification is allowed to happen.
+   *
+   * An allow-list, not a permission. Jarvis may have read access to fifty repositories; exactly
+   * none of them become a place to rehearse a real write until they are named here.
+   */
+  JARVIS_QUALIFICATION_REPOS: z.string().trim().optional(),
+
+  /**
+   * Backups.
+   *
+   * `JARVIS_BACKUP_TARGET` is a *label* — "neon-pitr", "nightly-s3" — never a connection string.
+   * Jarvis has no reason to hold backup credentials and therefore no field for them.
+   */
+  JARVIS_BACKUP_CONFIGURED: bool(false),
+  JARVIS_BACKUP_TARGET: z.string().trim().optional(),
+  JARVIS_BACKUP_RESTORE_TESTED_AT: z.string().trim().optional(),
+
+  /** The commit this build came from, so a qualification can name what it qualified. */
+  JARVIS_BUILD_REF: z.string().trim().optional(),
+
+  /* ------------------------------------------------------------ knowledge */
+  /**
+   * Hosts a URL may be fetched from.
+   *
+   * Empty means URL ingestion is off. Fetching arbitrary URLs on my behalf is a request-forgery
+   * primitive, and the SSRF guard in `domain/knowledge-source.ts` is the second line rather than
+   * the first.
+   */
+  JARVIS_KNOWLEDGE_URL_ALLOWLIST: z.string().trim().optional(),
+  JARVIS_KNOWLEDGE_MAX_SOURCES: positiveInt(2_000, 100_000),
+
+  /* ----------------------------------------------------------- scheduling */
+  JARVIS_SCHEDULER_ENABLED: bool(true),
+  /** The zone a new schedule defaults to. Always an IANA name; never an offset. */
+  JARVIS_DEFAULT_TIME_ZONE: z.string().trim().default('UTC'),
+
+  /* -------------------------------------------------------- notifications */
+  /**
+   * Web push (VAPID).
+   *
+   * The public key is meant to reach the browser — that is what it is for. The private key is a
+   * credential and is never sent anywhere, never logged and never included in an export.
+   */
+  JARVIS_PUSH_PUBLIC_KEY: z.string().trim().optional(),
+  JARVIS_PUSH_PRIVATE_KEY: z.string().trim().optional(),
+  JARVIS_PUSH_SUBJECT: z.string().trim().optional(),
+
+  /* --------------------------------------------------------------- limits */
+  JARVIS_RATE_LIMIT_ENABLED: bool(true),
+  JARVIS_RATE_LIMIT_PER_MINUTE: positiveInt(240, 20_000),
+  JARVIS_ASK_RATE_LIMIT_PER_HOUR: positiveInt(120, 5_000),
+  JARVIS_MAX_REQUEST_BYTES: positiveInt(1_000_000, 20_000_000),
+  JARVIS_MAX_UPLOAD_BYTES: positiveInt(12_000_000, 64_000_000),
+
+  /* ------------------------------------------------------------ retention */
+  JARVIS_RETENTION_USAGE_DAYS: positiveInt(730, 3650),
+  JARVIS_RETENTION_NOTIFICATION_DAYS: positiveInt(120, 3650),
+  JARVIS_RETENTION_ANSWER_DAYS: positiveInt(365, 3650),
+  JARVIS_RETENTION_VOICE_DAYS: positiveInt(90, 3650),
+  /** Audit records are kept longest, and the sweeper refuses to go below this floor. */
+  JARVIS_RETENTION_AUDIT_DAYS: positiveInt(1095, 3650),
+
   JARVIS_DEMO_MODE: bool(false),
   JARVIS_ALLOW_DEMO_IN_PRODUCTION: bool(false),
 
@@ -201,7 +266,44 @@ export interface AppConfig {
     readonly timeoutMs: number;
     readonly lockTtlSeconds: number;
   };
-  readonly retention: { readonly snapshotDays: number; readonly activityDays: number };
+  readonly retention: {
+    readonly snapshotDays: number;
+    readonly activityDays: number;
+    readonly usageDays: number;
+    readonly notificationDays: number;
+    readonly answerDays: number;
+    readonly voiceDays: number;
+    readonly auditDays: number;
+  };
+  readonly qualification: {
+    readonly sandboxRepositories: readonly string[];
+    readonly buildRef: string | null;
+    readonly backupConfigured: boolean;
+    readonly backupTarget: string | null;
+    readonly backupRestoreTestedAt: string | null;
+  };
+  readonly knowledge: {
+    readonly urlAllowList: readonly string[];
+    readonly maxSources: number;
+  };
+  readonly scheduling: {
+    readonly enabled: boolean;
+    readonly defaultTimeZone: string;
+  };
+  readonly push: {
+    /** Meant for the browser. The private key below is not, and never leaves this process. */
+    readonly publicKey: string | null;
+    readonly privateKey: string | null;
+    readonly subject: string;
+    readonly configured: boolean;
+  };
+  readonly limits: {
+    readonly rateLimitEnabled: boolean;
+    readonly requestsPerMinute: number;
+    readonly asksPerHour: number;
+    readonly maxRequestBytes: number;
+    readonly maxUploadBytes: number;
+  };
   readonly logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** Non-fatal configuration problems surfaced on the Settings screen. */
   readonly warnings: readonly string[];
@@ -328,6 +430,60 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
       ? env.JARVIS_TEST_AUTH_SECRET
       : null;
 
+  /* ------------------------------------------------------- qualification */
+  const qualificationRepos = splitList(env.JARVIS_QUALIFICATION_REPOS).map((entry) =>
+    entry.toLowerCase(),
+  );
+  const buildRef =
+    env.JARVIS_BUILD_REF?.trim() ||
+    process.env.COMMIT_REF?.trim() ||
+    process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
+    null;
+
+  /*
+   * A restore date that is not a date is worse than no date: it reads as evidence of a drill
+   * that may never have happened. An unparseable value is dropped and warned about.
+   */
+  let restoreTestedAt: string | null = null;
+  if (env.JARVIS_BACKUP_RESTORE_TESTED_AT) {
+    const parsedDate = new Date(env.JARVIS_BACKUP_RESTORE_TESTED_AT);
+    if (Number.isNaN(parsedDate.getTime())) {
+      warnings.push('JARVIS_BACKUP_RESTORE_TESTED_AT is not a valid date and has been ignored.');
+    } else {
+      restoreTestedAt = parsedDate.toISOString();
+    }
+  }
+  if (env.JARVIS_BACKUP_CONFIGURED && !restoreTestedAt) {
+    warnings.push(
+      'Backups are configured but no restore has been recorded. An untested backup is a belief, not a control.',
+    );
+  }
+
+  /* ------------------------------------------------------------ knowledge */
+  const knowledgeHosts = splitList(env.JARVIS_KNOWLEDGE_URL_ALLOWLIST).map((entry) =>
+    entry
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/.*$/, ''),
+  );
+
+  /* ----------------------------------------------------------- scheduling */
+  let defaultTimeZone = env.JARVIS_DEFAULT_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: defaultTimeZone });
+  } catch {
+    warnings.push(
+      `JARVIS_DEFAULT_TIME_ZONE "${defaultTimeZone}" is not a zone this platform knows; using UTC.`,
+    );
+    defaultTimeZone = 'UTC';
+  }
+
+  /* -------------------------------------------------------------- push */
+  const pushConfigured = Boolean(env.JARVIS_PUSH_PUBLIC_KEY && env.JARVIS_PUSH_PRIVATE_KEY);
+  if (!pushConfigured) {
+    warnings.push('Web push is not configured; notifications are delivered in-app only.');
+  }
+
   return {
     nodeEnv: env.NODE_ENV,
     isProduction,
@@ -400,6 +556,39 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
     retention: {
       snapshotDays: env.JARVIS_RETENTION_SNAPSHOT_DAYS,
       activityDays: env.JARVIS_RETENTION_ACTIVITY_DAYS,
+      usageDays: env.JARVIS_RETENTION_USAGE_DAYS,
+      notificationDays: env.JARVIS_RETENTION_NOTIFICATION_DAYS,
+      answerDays: env.JARVIS_RETENTION_ANSWER_DAYS,
+      voiceDays: env.JARVIS_RETENTION_VOICE_DAYS,
+      auditDays: env.JARVIS_RETENTION_AUDIT_DAYS,
+    },
+    qualification: {
+      sandboxRepositories: qualificationRepos,
+      buildRef,
+      backupConfigured: env.JARVIS_BACKUP_CONFIGURED,
+      backupTarget: env.JARVIS_BACKUP_TARGET ?? null,
+      backupRestoreTestedAt: restoreTestedAt,
+    },
+    knowledge: {
+      urlAllowList: knowledgeHosts,
+      maxSources: env.JARVIS_KNOWLEDGE_MAX_SOURCES,
+    },
+    scheduling: {
+      enabled: env.JARVIS_SCHEDULER_ENABLED,
+      defaultTimeZone,
+    },
+    push: {
+      publicKey: pushConfigured ? (env.JARVIS_PUSH_PUBLIC_KEY as string) : null,
+      privateKey: pushConfigured ? (env.JARVIS_PUSH_PRIVATE_KEY as string) : null,
+      subject: env.JARVIS_PUSH_SUBJECT ?? `${baseUrl}`,
+      configured: pushConfigured,
+    },
+    limits: {
+      rateLimitEnabled: env.JARVIS_RATE_LIMIT_ENABLED,
+      requestsPerMinute: env.JARVIS_RATE_LIMIT_PER_MINUTE,
+      asksPerHour: env.JARVIS_ASK_RATE_LIMIT_PER_HOUR,
+      maxRequestBytes: env.JARVIS_MAX_REQUEST_BYTES,
+      maxUploadBytes: env.JARVIS_MAX_UPLOAD_BYTES,
     },
     logLevel: env.LOG_LEVEL,
     warnings,

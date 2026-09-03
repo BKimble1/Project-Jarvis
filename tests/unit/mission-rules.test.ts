@@ -751,6 +751,25 @@ describe('redaction', () => {
     expect((output.nested as Record<string, unknown>).token).toBe('[redacted]');
   });
 
+  it('keeps a numeric count whose key merely contains "token"', () => {
+    /*
+     * `outputTokens` matches the secret-key pattern, and dropping it turned every completion
+     * receipt's usage into the string "[redacted]" — data loss disguised as caution. A number
+     * cannot be a credential here, so numbers and booleans survive the name rule and only
+     * strings and nested objects under a secret-sounding key are dropped.
+     */
+    const output = redactDeep({
+      usage: { outputTokens: 1200, inputTokens: 8000, estimatedCostUsd: null },
+      apiKey: 'sk-ant-api03-something',
+      credentials: { user: 'someone' },
+    }) as Record<string, Record<string, unknown> | string>;
+
+    expect((output.usage as Record<string, unknown>).outputTokens).toBe(1200);
+    expect((output.usage as Record<string, unknown>).inputTokens).toBe(8000);
+    expect(output.apiKey).toBe('[redacted]');
+    expect(output.credentials).toBe('[redacted]');
+  });
+
   it('bounds deep and wide structures rather than storing them', () => {
     let deep: unknown = 'leaf';
     for (let index = 0; index < 12; index += 1) deep = { next: deep };

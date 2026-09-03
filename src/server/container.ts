@@ -105,6 +105,7 @@ import type {
   RateLimitRepository,
   UsageRepository,
 } from './repositories/accounting-types';
+import { QualificationService } from './qualification/qualification-service';
 import { MissionOrchestrator } from './missions/orchestrator';
 import { TaskWorkerService } from './missions/task-worker-service';
 import { PlaybookService } from './playbooks/playbook-service';
@@ -225,6 +226,7 @@ export interface Services {
   readonly rateLimits: RateLimitRepository;
   readonly audit: AuditRepository;
   readonly deletionReceipts: DeletionReceiptRepository;
+  readonly qualificationService: QualificationService;
 }
 
 export interface BuildServicesOverrides {
@@ -448,6 +450,21 @@ export function buildServices(
   const audit = new DrizzleAuditRepository(db);
   const deletionReceipts = new DrizzleDeletionReceiptRepository(db);
 
+  const qualificationService = new QualificationService({
+    qualification,
+    workers: workerRepo,
+    settings,
+    preferences: notificationPreferences,
+    push,
+    provider,
+    missions: missionRepo,
+    receipts,
+    sources,
+    config,
+    db,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
   const router = new StatusQueryRouter({
     projects,
     briefings,
@@ -526,6 +543,7 @@ export function buildServices(
     rateLimits,
     audit,
     deletionReceipts,
+    qualificationService,
   };
 }
 

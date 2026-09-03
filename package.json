@@ -27,7 +27,8 @@
     "verify": "tsx scripts/verify.ts",
     "verify:ci": "tsx scripts/verify.ts --skip-e2e",
     "worker": "tsx scripts/worker.ts",
-    "worker:health": "tsx scripts/worker-health.ts"
+    "worker:health": "tsx scripts/worker-health.ts",
+    "qualify": "tsx scripts/qualify.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

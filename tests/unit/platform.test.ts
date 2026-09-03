@@ -337,6 +337,7 @@ describe('buildConfig', () => {
       'GitHub OAuth is not configured; sign-in is unavailable.',
       'ANTHROPIC_API_KEY is not set; Jarvis uses the deterministic narrator.',
       'CRON_SECRET is not set (min 16 chars); scheduled synchronisation is disabled.',
+      'Web push is not configured; notifications are delivered in-app only.',
     ]);
   });
 
@@ -355,6 +356,9 @@ describe('describeConfigHealth', () => {
     ANTHROPIC_API_KEY: 'sk-ant-api03-not-a-real-key-value',
     CRON_SECRET: 'cron-secret-value-0001',
     DATABASE_URL: 'postgresql://jarvis:db-password@db.example.com/jarvis',
+    /* The VAPID private key is a credential and must not appear in the health report either. */
+    JARVIS_PUSH_PUBLIC_KEY: 'BPushPublicKeyValue0123456789',
+    JARVIS_PUSH_PRIVATE_KEY: 'push-private-key-value-0123456789',
   } as const;
 
   it('reports that credentials exist without ever exposing one', () => {

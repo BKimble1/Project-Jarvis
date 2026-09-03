@@ -4,6 +4,7 @@ import { AGENT_ROLE_LABELS, type AgentRole } from '@/domain/agent-role';
 import { formatTokens, staleTasks } from '@/domain/capacity';
 import { MISSION_STATE_LABELS } from '@/domain/mission';
 import { ACTIVE_TASK_STATES, TASK_STATE_LABELS, type MissionTask } from '@/domain/mission-task';
+import { QUALIFICATION_LEVEL_LABELS } from '@/domain/qualification';
 import { requireOwnerPage } from '@/server/auth/guard';
 import { getServices } from '@/server/container';
 import { CapacityControls } from '@/components/operations/capacity-controls';
@@ -30,12 +31,13 @@ export default async function OperationsPage() {
   await requireOwnerPage('/operations');
   const services = await getServices();
 
-  const [posture, limits, activeTasks, missions, workers] = await Promise.all([
+  const [posture, limits, activeTasks, missions, workers, qualification] = await Promise.all([
     services.orchestrator.posture(),
     services.orchestrator.limits(),
     services.tasks.listActive(),
     services.missionRepo.listOpen(),
     services.workerRepo.list(),
+    services.qualificationService.status(),
   ]);
 
   const nowIso = new Date().toISOString();
@@ -62,6 +64,28 @@ export default async function OperationsPage() {
           What Jarvis is doing right now, and how much of what you allowed it is using.
         </p>
       </header>
+
+      {/*
+        * Placed above everything, because it is the sentence that qualifies every other number on
+        * this page. "Four agents working" means something different when nothing beyond the test
+        * suite has been proved.
+        */}
+      <Link
+        href="/operations/qualification"
+        className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-sm hover:border-[var(--color-accent)]"
+      >
+        <span className="font-medium">
+          Qualified to: {QUALIFICATION_LEVEL_LABELS[qualification.verdict.level]}
+        </span>
+        <span className="text-xs text-[var(--color-text-muted)]">
+          {qualification.requalification?.required
+            ? 'Something changed underneath the last run — it needs re-checking.'
+            : qualification.verdict.blocking.length > 0
+              ? `${qualification.verdict.blocking.length} check${qualification.verdict.blocking.length === 1 ? '' : 's'} between here and ${QUALIFICATION_LEVEL_LABELS[qualification.verdict.nextLevel ?? qualification.verdict.level]}`
+              : 'Everything below this rung has been established.'}
+        </span>
+        <span className="ml-auto text-xs text-[var(--color-accent-text)]">See what was proved</span>
+      </Link>
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="Right now">
         <Tile
