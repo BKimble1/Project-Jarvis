@@ -121,62 +121,70 @@ export function deriveChunks(input: {
 
   const chunks: DerivedChunk[] = [];
   let truncated = false;
-  let previous: { text: string; startLine: number } | null = null;
+  let previousBlocks: readonly CanonicalBlock[] | null = null;
 
   for (const group of groups) {
     if (chunks.length >= maxChunks) {
       truncated = true;
       break;
     }
-
-    const body = group.blocks.map((block) => block.text).join('\n\n');
-    const first = group.blocks[0];
-    const last = group.blocks[group.blocks.length - 1];
-    if (!first || !last || body.trim().length === 0) continue;
+    if (group.blocks.length === 0) continue;
 
     /*
-     * Overlap is a suffix of the previous chunk, and the reported start line moves back to where
-     * that suffix actually began. Claiming the later line while holding the earlier text is the
-     * bug this file exists to not repeat.
+     * Overlap repeats whole **blocks**, never a character slice.
+     *
+     * A slice of the previous chunk's text cannot be located: it starts somewhere inside an
+     * earlier block, and the chunk would either claim a line range that excludes text it holds
+     * (the original defect) or a range whose start is guesswork. Repeating the previous group's
+     * final block instead makes the range exact by construction — the chunk begins where that
+     * block begins — and gives the reader a whole paragraph of context rather than 160 arbitrary
+     * characters, which is better bridging anyway.
      */
-    let text = body;
-    let startLine = first.startLine;
-    let hasOverlap = false;
-    if (previous && overlapChars > 0 && group.continuesPrevious) {
-      const tail = previous.text.slice(-overlapChars);
-      const tailStart = Math.max(previous.startLine, first.startLine - countLines(tail));
-      text = `${tail}\n\n${body}`;
-      startLine = Math.min(startLine, tailStart);
-      hasOverlap = true;
+    const carried: CanonicalBlock[] = [];
+    if (previousBlocks && overlapChars > 0 && group.continuesPrevious) {
+      const tail = previousBlocks[previousBlocks.length - 1];
+      if (tail && tail.text.length <= overlapChars * 3) carried.push(tail);
     }
 
-    const ordinal = chunks.length;
+    const included = [...carried, ...group.blocks];
+    const body = included.map((block) => block.text).join('\n\n');
+    const first = included[0];
+    const last = included[included.length - 1];
+    if (!first || !last || body.trim().length === 0) {
+      previousBlocks = group.blocks;
+      continue;
+    }
+
+    const startLine = Math.min(...included.map((block) => block.startLine));
+    const endLine = Math.max(...included.map((block) => block.endLine));
+
     chunks.push({
-      ordinal,
+      ordinal: chunks.length,
       stableKey: chunkStableKey({
         chunkerVersion: CHUNKER_VERSION,
         startLine,
-        endLine: last.endLine,
+        endLine,
         pageNumber: first.pageNumber,
-        text,
+        text: body,
       }),
-      text,
-      headingPath: first.headingPath,
+      text: body,
+      headingPath: group.blocks[0]?.headingPath ?? first.headingPath,
       pageNumber: first.pageNumber,
       startLine,
-      endLine: last.endLine,
+      endLine,
       locator: describeBlockLocator({
         pageNumber: first.pageNumber,
-        headingPath: first.headingPath,
+        headingPath: group.blocks[0]?.headingPath ?? first.headingPath,
         startLine,
-        endLine: last.endLine,
+        endLine,
         filePath,
       }),
-      charCount: text.length,
-      blockOrdinals: group.blocks.map((block) => block.ordinal),
-      hasOverlap,
+      charCount: body.length,
+      /* Every block whose text is in this chunk, carried overlap included. */
+      blockOrdinals: included.map((block) => block.ordinal),
+      hasOverlap: carried.length > 0,
     });
-    previous = { text: body, startLine: first.startLine };
+    previousBlocks = group.blocks;
   }
 
   return { chunks, chunkerVersion: CHUNKER_VERSION, droppedDuplicates, truncated };
@@ -314,10 +322,6 @@ export function chunkStableKey(input: {
     .update(parts.map((part) => `${part.length}:${part}`).join('|'), 'utf8')
     .digest('hex')
     .slice(0, 32);
-}
-
-function countLines(value: string): number {
-  return value.split('\n').length - 1;
 }
 
 /** Whitespace- and case-insensitive, so boilerplate is caught despite trivial variation. */

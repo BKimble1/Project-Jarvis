@@ -2,7 +2,7 @@
   "name": "project-jarvis",
   "version": "0.1.0",
   "private": true,
-  "description": "Jarvis \u2014 a private, single-user project registry and evidence-based portfolio status brain.",
+  "description": "Jarvis — a private, single-user project registry and evidence-based portfolio status brain.",
   "type": "module",
   "engines": {
     "node": ">=20.11.0"
@@ -54,6 +54,7 @@
     "drizzle-orm": "^0.45.2",
     "lucide-react": "^1.39.0",
     "next": "^15.5.25",
+    "pdfjs-dist": "^5.7.284",
     "pg": "^8.23.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
