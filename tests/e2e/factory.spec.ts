@@ -170,10 +170,7 @@ test.describe('a wall display', () => {
 
     /* Revoking takes effect on the next refresh, without touching the device. */
     await page.goto('/settings');
-    await page
-      .locator('li', { hasText: name })
-      .getByRole('button', { name: 'Revoke' })
-      .click();
+    await page.locator('li', { hasText: name }).getByRole('button', { name: 'Revoke' }).click();
     await expect(page.locator('li', { hasText: name }).getByText('Revoked')).toBeVisible({
       timeout: 15_000,
     });
