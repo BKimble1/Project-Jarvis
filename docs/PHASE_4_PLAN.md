@@ -88,6 +88,61 @@ addition breaks all of them. `MISSION_INTENTS` is a hand-maintained list with no
 **Decision.** Additive optional fields only, and the new intent is added to the switch in the same
 commit as the enum, with a test that asserts it routes.
 
+### 6. A 403 to a worker kills the worker
+
+`ControlPlaneError.fatal` is `status === 401 || status === 403`, and the worker's main loop sets
+`stopped = true` and breaks on a fatal error. `assertActivationAllowed` throws `ForbiddenError`,
+which the route wrappers turn into a 403.
+
+So calling the activation lock — or a budget check — on a worker-facing route would **stop the
+worker process** rather than refuse one task. This is the single most dangerous trap in the area
+and it is invisible from either side alone.
+
+**Decision.** The activation lock lives on the _scheduler's_ dispatch path, which is control-plane
+internal. Any worker-facing refusal (budget exhausted, capability unqualified) is a **structured
+refusal in a 200 body** — the same shape the write-lease route already uses for "another task
+holds the lease", which is prior art for exactly this.
+
+### 7. The capacity gate that already exists is dead code
+
+`MissionOrchestrator.canStart` has zero call sites. So do `canStartTask` and its eleven rules
+R-CAP1–R-CAP11 — which means `maxMissionOutputTokens` and `maxMissionRuntimeMs`, the only existing
+mission-level _usage_ ceilings, are enforced nowhere. It looks like the scheduling gate and is not
+one; a budget check placed there would enforce nothing.
+
+Worse, the numbers a budget would be built on are wrong:
+
+- Task usage is **replace, not accumulate**. `reportTaskState` overwrites five columns with the
+  worker's latest snapshot, and `claimNext` increments `attempt` without resetting them — so a
+  retry's report overwrites the previous attempt's numbers and retried work **undercounts**. That
+  is precisely the "mission costs four times its cap while every task stays under it" failure.
+- `mission_runs.usage_*` is never written on the task path, so per-agent-run attribution — the
+  thing `MissionRun.taskId`/`role`/`repairRound` exists to support — is not actually recorded.
+- `cacheReadTokens` is dropped between the route schema and the task columns, so estimates that
+  price cached input separately come out systematically high.
+- Repair tasks are created with `maxOutputTokens: null` and an unclamped time limit, so repair
+  rounds are the one part of a graph with no token ceiling at all.
+
+**Decision.** Budgets are built on an **append-only `usage_records` table**, never on
+`sum(task.usage.*)`, because the append-only table does not inherit the undercount. The
+enforcement point is a real predicate inside the atomic claim statement plus a pre-claim check —
+outside the statement alone inherits the race the statement exists to prevent. `canStartTask` gets
+wired up in the same change rather than left as a second dead gate, and the four defects above are
+fixed rather than worked around.
+
+### 8. Two guards that claim to be asserted are not
+
+`FORBIDDEN_DISPATCHER_METHODS` carries the doc comment "Asserted at runtime in the test suite by
+walking the prototype". Nothing imports it. The write client's method list is unguarded, so a
+fourth method could be added with no test failing — hope in a comment, which is what that file
+warns against.
+
+`findForbiddenDisplayKeys` matches **exact key names only**, so `pull_request_url`, `prUrl`,
+`repoFullName`, `sha`, `head` and `authToken` all pass a scan that is documented as catching them.
+
+**Decision.** Both are fixed with real assertions in 4J. A guard that does not run is worse than no
+guard, because it is cited as a reason not to look.
+
 ## Qualification: the spine
 
 Everything else hangs off `src/domain/qualification.ts`, because the honest answer to "can Jarvis
