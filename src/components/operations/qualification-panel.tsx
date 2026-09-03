@@ -121,7 +121,7 @@ export function QualificationPanel({
                 id="qualification-sandbox"
                 value={sandbox}
                 onChange={(event) => setSandbox(event.target.value)}
-                className="rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+                className="rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
               >
                 {sandboxAllowed.map((repository) => (
                   <option key={repository} value={repository}>
@@ -169,7 +169,7 @@ export function QualificationPanel({
             value={missionId}
             onChange={(event) => setMissionId(event.target.value)}
             placeholder="Mission id"
-            className="min-w-[18rem] flex-1 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 font-mono text-xs"
+            className="min-w-[18rem] flex-1 rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 font-mono text-xs"
           />
           <label className="sr-only" htmlFor="qualification-live-kind">
             What it proves
@@ -178,7 +178,7 @@ export function QualificationPanel({
             id="qualification-live-kind"
             value={liveKind}
             onChange={(event) => setLiveKind(event.target.value as 'live_read' | 'live_write')}
-            className="rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+            className="rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
           >
             <option value="live_read">Read-only audit</option>
             <option value="live_write">Draft pull request</option>
@@ -218,7 +218,7 @@ export function QualificationPanel({
             onChange={(event) =>
               setAttestKind(event.target.value as 'recoveryDrill' | 'securityReview')
             }
-            className="rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+            className="rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
           >
             <option value="recoveryDrill">Recovery drill</option>
             <option value="securityReview">Security review</option>
@@ -232,7 +232,7 @@ export function QualificationPanel({
             onChange={(event) => setAttestNote(event.target.value)}
             rows={2}
             placeholder="Restored last night's backup into a scratch database and ran the migrations."
-            className="min-w-[18rem] flex-1 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
+            className="min-w-[18rem] flex-1 rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-sm"
           />
           <Button
             variant="secondary"

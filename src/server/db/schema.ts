@@ -16,6 +16,7 @@ import {
   bigserial,
   boolean,
   customType,
+  real,
   doublePrecision,
   index,
   integer,
@@ -139,6 +140,10 @@ import type {
 import type { CaptureFailureCode, CaptureState, TranscriptIntent } from '@/domain/voice';
 import type { BudgetKind, BudgetScope, CostBasis, UsageKind } from '@/domain/budget';
 import type { ConnectorId, ConnectorState } from '@/domain/connector';
+import type { RevisionProvenance, RevisionState } from '@/domain/knowledge-revision';
+import type { BlockKind } from '@/domain/knowledge-parser';
+import type { EmbeddingState } from '@/domain/embedding';
+import type { Sensitivity } from '@/domain/retrieval';
 
 const now = () => timestamp('placeholder', { withTimezone: true });
 void now; // documentation helper; each column declares its own name below.
@@ -1883,14 +1888,46 @@ export const knowledgeSources = pgTable(
     parsedAt: timestamp('parsed_at', { withTimezone: true }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     retainUntil: timestamp('retain_until', { withTimezone: true }),
+
+    /* ------------------------------------------------------------ Prompt 4B */
+    /**
+     * The revision retrieval currently reads.
+     *
+     * A plain column rather than a foreign key, because the revision it points at is deleted by a
+     * retention sweep long before the source is, and a cascade there would take the source with
+     * it. The authoritative answer is still `knowledge_revisions.is_active`; this is the fast path.
+     */
+    activeRevisionId: uuid('active_revision_id'),
+    /**
+     * Who may retrieve from this source.
+     *
+     * The single authority for authorization. Retrieval joins through to this column rather than
+     * reading the denormalised `project_id` on chunks, so changing a source's scope moves its
+     * content immediately and cannot leave stale rows readable under the old scope.
+     */
+    scope: text('scope').$type<KnowledgeScope>().notNull().default('global'),
+    sensitivity: text('sensitivity').$type<Sensitivity>().notNull().default('internal'),
+    /** Whether the origin can be fetched again. A note cannot; a URL or repository file can. */
+    refreshable: boolean('refreshable').notNull().default(false),
+    lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+    /** An opaque key for the stored original. Never a filesystem path, never sent to a browser. */
+    storageKey: text('storage_key'),
+    originalAvailable: boolean('original_available').notNull().default(false),
   },
   (table) => [
-    uniqueIndex('knowledge_sources_hash_idx')
-      .on(table.contentHash)
-      .where(sql`deleted_at is null`),
+    /*
+     * A lookup index, deliberately NOT unique.
+     *
+     * Phase 4A had a global partial unique index here. It made revisions impossible — a source
+     * could never hold two different contents — and it refused the same public document being
+     * added under two different scopes, which is a legitimate thing to want. Uniqueness now lives
+     * on `knowledge_revisions (source_id, content_hash)`, where it means what it should.
+     */
+    index('knowledge_sources_hash_lookup_idx').on(table.contentHash),
     index('knowledge_sources_project_idx').on(table.projectId),
     index('knowledge_sources_state_idx').on(table.state),
     index('knowledge_sources_kind_idx').on(table.kind),
+    index('knowledge_sources_scope_idx').on(table.scope, table.projectId),
   ],
 );
 
@@ -1919,15 +1956,57 @@ export const knowledgeChunks = pgTable(
     text: text('text').notNull(),
     charCount: integer('char_count').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+
+    /* ------------------------------------------------------------ Prompt 4B */
+    /** The exact revision this passage came from. What a citation resolves to. */
+    revisionId: uuid('revision_id').references(() => knowledgeRevisions.id, {
+      onDelete: 'cascade',
+    }),
+    /** Deterministic identity from chunker version, location and content. Never insertion order. */
+    stableKey: text('stable_key'),
+    chunkerVersion: text('chunker_version'),
+    headingPath: jsonb('heading_path')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    pageNumber: integer('page_number'),
+    startLine: integer('start_line'),
+    endLine: integer('end_line'),
+    blockOrdinals: jsonb('block_ordinals')
+      .$type<number[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /**
+     * A second lexical channel, unstemmed.
+     *
+     * `english` stems, which is what gives "deployment" a hit for "deploy" — and what can bury an
+     * exact identifier. Measured: under `simple`, "deploy" does not match "deployment", while
+     * `E_AUTH_401` survives intact under both. Keeping both channels lets fusion protect exact
+     * identifier matches without giving up morphological recall.
+     */
+    searchVectorExact: tsvector('search_vector_exact').generatedAlwaysAs(
+      sql`to_tsvector('simple', coalesce("heading", '') || ' ' || "text")`,
+    ),
     searchVector: tsvector('search_vector').generatedAlwaysAs(
       sql`to_tsvector('english', coalesce("heading", '') || ' ' || "text")`,
     ),
   },
   (table) => [
-    uniqueIndex('knowledge_chunks_ordinal_idx').on(table.sourceId, table.ordinal),
+    /*
+     * Ordinals are unique per *revision*, not per source. The Phase 4A index assumed one revision
+     * per source and would refuse the second revision's first chunk.
+     */
+    uniqueIndex('knowledge_chunks_revision_ordinal_idx')
+      .on(table.revisionId, table.ordinal)
+      .where(sql`revision_id is not null`),
+    uniqueIndex('knowledge_chunks_stable_key_idx')
+      .on(table.revisionId, table.stableKey)
+      .where(sql`revision_id is not null and stable_key is not null`),
     index('knowledge_chunks_source_idx').on(table.sourceId),
+    index('knowledge_chunks_revision_idx').on(table.revisionId),
     index('knowledge_chunks_project_idx').on(table.projectId),
     index('knowledge_chunks_search_idx').using('gin', table.searchVector),
+    index('knowledge_chunks_search_exact_idx').using('gin', table.searchVectorExact),
   ],
 );
 
@@ -2022,6 +2101,208 @@ export const knowledgeConflicts = pgTable(
     uniqueIndex('knowledge_conflicts_pair_idx').on(table.leftId, table.rightId, table.kind),
     index('knowledge_conflicts_state_idx').on(table.state),
     index('knowledge_conflicts_left_idx').on(table.leftId),
+  ],
+);
+
+/* ------------------------------------------ Prompt 4B: revisions and index */
+
+/**
+ * One exact retrieval of a source's content.
+ *
+ * A source is the origin the owner configured. A **revision** is what came back from it at one
+ * instant, identified by the hash of its canonical text. Citations resolve to a revision, so
+ * refreshing a document creates a new row rather than editing the evidence an older answer cited.
+ *
+ * `is_active` plus the partial unique index below is the whole concurrency story: exactly one
+ * revision per source may be active, enforced by the database rather than by application code, so
+ * two refreshes racing cannot both win. Activation is the last step — a half-indexed revision
+ * cannot be active, because a document Jarvis has only partly read is worse than the older one it
+ * would replace.
+ */
+export const knowledgeRevisions = pgTable(
+  'knowledge_revisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => knowledgeSources.id, { onDelete: 'cascade' }),
+    /** 1-based and monotonic per source. What a person calls "version 3". */
+    revisionNumber: integer('revision_number').notNull(),
+    state: text('state').$type<RevisionState>().notNull().default('pending'),
+    /** SHA-256 over canonical text plus parser identity. The revision's identity. */
+    contentHash: text('content_hash').notNull(),
+    /** SHA-256 of the raw bytes, for noticing that an origin's response changed at all. */
+    byteHash: text('byte_hash'),
+    byteSize: bigint('byte_size', { mode: 'number' }).notNull().default(0),
+    charCount: integer('char_count').notNull().default(0),
+    unitCount: integer('unit_count'),
+    unitKind: text('unit_kind').$type<'page' | 'line'>().notNull().default('line'),
+    blockCount: integer('block_count').notNull().default(0),
+    chunkCount: integer('chunk_count').notNull().default(0),
+    embeddedChunkCount: integer('embedded_chunk_count').notNull().default(0),
+    /** The canonical text every block and chunk location refers into. */
+    canonicalText: text('canonical_text'),
+    parserName: text('parser_name').notNull(),
+    parserVersion: text('parser_version').notNull(),
+    chunkerVersion: text('chunker_version').notNull(),
+    truncated: boolean('truncated').notNull().default(false),
+    /** What the parser could not do. Not an error — an honest limitation, shown to the owner. */
+    limitations: jsonb('limitations')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** Where it came from. No field here can hold a credential; there is no header map. */
+    provenance: jsonb('provenance')
+      .$type<RevisionProvenance>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    failureCode: text('failure_code'),
+    failureMessage: text('failure_message'),
+    isActive: boolean('is_active').notNull().default(false),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    /*
+     * The atomic activation guarantee. Two concurrent refreshes both trying to activate produce a
+     * unique violation for the loser rather than two active revisions and a corpus that answers
+     * from both.
+     */
+    uniqueIndex('knowledge_revisions_active_idx')
+      .on(table.sourceId)
+      .where(sql`is_active`),
+    uniqueIndex('knowledge_revisions_number_idx').on(table.sourceId, table.revisionNumber),
+    /*
+     * Content identity is unique *per source*, not globally. The Phase 4A global unique index on
+     * `knowledge_sources.content_hash` is dropped by this migration: it made revisions impossible
+     * and stopped the same public document existing under two different scopes.
+     */
+    uniqueIndex('knowledge_revisions_content_idx').on(table.sourceId, table.contentHash),
+    index('knowledge_revisions_source_idx').on(table.sourceId),
+    index('knowledge_revisions_state_idx').on(table.state),
+  ],
+);
+
+/**
+ * The canonical structural extraction of a revision.
+ *
+ * Blocks sit between raw text and retrievable chunks because a citation needs structure: "page 4"
+ * and "under ## Deployment, lines 120-138" are answers a flat string cannot give. Keeping them
+ * also means re-chunking with a new chunker version never needs to re-fetch or re-parse.
+ */
+export const knowledgeBlocks = pgTable(
+  'knowledge_blocks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    revisionId: uuid('revision_id')
+      .notNull()
+      .references(() => knowledgeRevisions.id, { onDelete: 'cascade' }),
+    ordinal: integer('ordinal').notNull(),
+    kind: text('kind').$type<BlockKind>().notNull(),
+    text: text('text').notNull(),
+    /** Heading nesting at this point, outermost first. */
+    headingPath: jsonb('heading_path')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    depth: integer('depth'),
+    pageNumber: integer('page_number'),
+    /** 0-based, inclusive, into the revision's canonical text. */
+    startLine: integer('start_line').notNull(),
+    endLine: integer('end_line').notNull(),
+    language: text('language'),
+    charCount: integer('char_count').notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex('knowledge_blocks_ordinal_idx').on(table.revisionId, table.ordinal),
+    index('knowledge_blocks_revision_idx').on(table.revisionId),
+    index('knowledge_blocks_page_idx').on(table.revisionId, table.pageNumber),
+  ],
+);
+
+/**
+ * A vector for one chunk or one memory.
+ *
+ * Stored as unit-normalised `real[]`, so cosine similarity is exactly a dot product and needs no
+ * database extension — every driver (neon, node-postgres, PGlite) runs the same code path.
+ *
+ * `dimensions` is not decoration. Postgres `unnest` over two arrays of different lengths zips to
+ * the longer one and pads with NULL, and `sum()` skips NULLs, so a mismatched query returns a
+ * plausible number instead of an error. Every similarity query filters on this column, and a test
+ * proves a mismatch returns nothing rather than a wrong score.
+ */
+export const knowledgeEmbeddings = pgTable(
+  'knowledge_embeddings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    chunkId: uuid('chunk_id').references(() => knowledgeChunks.id, { onDelete: 'cascade' }),
+    itemId: uuid('item_id').references(() => knowledgeItems.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    dimensions: integer('dimensions').notNull(),
+    /** Bumped when a vector's meaning changes; vectors from two versions are never compared. */
+    indexingVersion: text('indexing_version').notNull(),
+    embedding: real('embedding').array(),
+    state: text('state').$type<EmbeddingState>().notNull().default('pending'),
+    failureMessage: text('failure_message'),
+    attempt: integer('attempt').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('knowledge_embeddings_chunk_idx')
+      .on(table.chunkId, table.model, table.indexingVersion)
+      .where(sql`chunk_id is not null`),
+    uniqueIndex('knowledge_embeddings_item_idx')
+      .on(table.itemId, table.model, table.indexingVersion)
+      .where(sql`item_id is not null`),
+    index('knowledge_embeddings_state_idx').on(table.state),
+    index('knowledge_embeddings_model_idx').on(table.model, table.indexingVersion),
+  ],
+);
+
+/**
+ * Observable, retryable pipeline work.
+ *
+ * Ingestion is not a fire-and-forget promise. A row here is what makes "three imports pending, one
+ * failed" answerable on the Operations screen, and what lets a failure be retried deliberately
+ * rather than by re-uploading the file and hoping.
+ *
+ * `lease_owner`/`lease_expires_at` let a job be claimed without two workers running it at once,
+ * the same shape the mission claim uses.
+ */
+export const knowledgeIngestionJobs = pgTable(
+  'knowledge_ingestion_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => knowledgeSources.id, { onDelete: 'cascade' }),
+    revisionId: uuid('revision_id').references(() => knowledgeRevisions.id, {
+      onDelete: 'cascade',
+    }),
+    kind: text('kind').$type<'ingest' | 'refresh' | 'reindex' | 'embed'>().notNull(),
+    state: text('state')
+      .$type<'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'>()
+      .notNull()
+      .default('queued'),
+    attempt: integer('attempt').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }),
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    failureCode: text('failure_code'),
+    failureMessage: text('failure_message'),
+    requestedBy: text('requested_by').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('knowledge_ingestion_jobs_state_idx').on(table.state, table.nextAttemptAt),
+    index('knowledge_ingestion_jobs_source_idx').on(table.sourceId),
   ],
 );
 
@@ -2710,6 +2991,10 @@ export const schema = {
   knowledgeChunks,
   knowledgeItems,
   knowledgeConflicts,
+  knowledgeRevisions,
+  knowledgeBlocks,
+  knowledgeEmbeddings,
+  knowledgeIngestionJobs,
   answers,
   schedules,
   scheduleExecutions,

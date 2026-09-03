@@ -29,6 +29,13 @@
       "when": 1788454155722,
       "tag": "0003_completion",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788464836320,
+      "tag": "0004_knowledge_revisions",
+      "breakpoints": true
     }
   ]
 }
