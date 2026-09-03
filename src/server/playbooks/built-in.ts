@@ -514,7 +514,7 @@ const WEBSITE_FEATURE: PlaybookDefinition = {
   name: 'Website feature',
   description:
     'A web change with a production build, responsive and accessibility review, and browser smoke checks. Never deploys production.',
-  supportedProjectTypes: ['software'],
+  supportedProjectTypes: ['software', 'website'],
   riskLevel: 'moderate',
   inputs: [
     {
@@ -595,7 +595,7 @@ const IOS_FEATURE: PlaybookDefinition = {
   name: 'iOS feature',
   description:
     'An iOS change aware of entitlements, App Groups, widgets, StoreKit and the privacy manifest. Where the worker is not a Mac, the Xcode build is honestly reported as unavailable and left to CI.',
-  supportedProjectTypes: ['software'],
+  supportedProjectTypes: ['software', 'ios_app'],
   riskLevel: 'moderate',
   inputs: [
     {
@@ -677,7 +677,7 @@ const TESTFLIGHT: PlaybookDefinition = {
   name: 'TestFlight build',
   description:
     'Verify a reviewed commit is releasable, then ask you to approve a TestFlight build for that exact commit. Apple credentials stay in the repository’s own Actions secrets and never enter an agent session.',
-  supportedProjectTypes: ['software'],
+  supportedProjectTypes: ['software', 'ios_app'],
   riskLevel: 'high',
   inputs: [],
   tasks: [
@@ -766,7 +766,7 @@ const NEW_PROJECT: PlaybookDefinition = {
   name: 'New project from a template',
   description:
     'Generate a new project from an approved private template, with its identity confirmed explicitly. Jarvis never creates a public repository and never copies another app’s credentials into a generated file.',
-  supportedProjectTypes: ['software'],
+  supportedProjectTypes: ['software', 'ios_app', 'website'],
   riskLevel: 'moderate',
   inputs: [
     {

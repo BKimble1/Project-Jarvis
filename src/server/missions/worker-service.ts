@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/domain/errors';
 import type { Mission, MissionState } from '@/domain/mission';
 import { isReadOnlyMissionType } from '@/domain/mission';
@@ -86,16 +87,25 @@ export class WorkerService {
 
   /* ---------------------------------------------------------------- enrolment */
 
-  /** Enrol a worker and return its secret — the only time that value exists outside the worker. */
+  /**
+   * Enrol a worker and return its secret — the only time that value exists outside the worker.
+   *
+   * The id is generated here rather than by the database, because the id is *part of the token*
+   * and the token's hash has to be in the row the moment the row exists. Doing it the other way —
+   * insert a placeholder, mint the token, update — writes a row whose `token_hash` is a shared
+   * constant, which collides on the unique index the moment two workers are enrolled at once and,
+   * in between, leaves a half-enrolled worker in the table.
+   */
   async enrol(name: string, maxConcurrency: number): Promise<WorkerEnrolment> {
-    const placeholder = await this.deps.workers.enrol({
+    const id = randomUUID();
+    const { token, hash, prefix } = issueWorkerToken(id);
+    const worker = await this.deps.workers.enrol({
+      id,
       name,
-      tokenHash: 'pending',
-      tokenPrefix: 'pending',
+      tokenHash: hash,
+      tokenPrefix: prefix,
       maxConcurrency,
     });
-    const { token, hash, prefix } = issueWorkerToken(placeholder.id);
-    const worker = await this.deps.workers.rotate(placeholder.id, hash, prefix);
     return { worker, token };
   }
 

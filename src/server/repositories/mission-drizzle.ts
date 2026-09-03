@@ -1134,6 +1134,7 @@ export class DrizzleWorkerRepository implements WorkerRepository {
     const [row] = await this.db
       .insert(workers)
       .values({
+        id: input.id,
         name: input.name,
         tokenHash: input.tokenHash,
         tokenPrefix: input.tokenPrefix,

@@ -233,13 +233,16 @@ export function dispatchIdentity(request: CiDispatchRequest): string {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
-  return [
-    request.repositoryFullName,
-    request.workflowFile,
-    request.ref,
-    request.commitSha,
-    inputs,
-  ].join(' ');
+  /*
+   * Length-prefixed rather than separator-joined. A separator has to be a character that cannot
+   * appear in any component, and the obvious candidate — NUL — is the one character a PostgreSQL
+   * `text` column refuses outright, so an identity built that way could be compared but never
+   * stored. Length prefixes are unambiguous whatever the components contain, and every character
+   * in the result is storable.
+   */
+  return [request.repositoryFullName, request.workflowFile, request.ref, request.commitSha, inputs]
+    .map((part) => `${part.length}:${part}`)
+    .join('|');
 }
 
 /* ------------------------------------------------------ release approvals */
@@ -313,8 +316,14 @@ export function evaluateTestFlightDispatch(input: TestFlightGateInput): TestFlig
     reason,
   });
 
-  if (input.projectType !== 'software') {
-    return no('R-TF1', 'TestFlight only applies to a software project.');
+  /*
+   * `ios_app` is a first-class project type here, and it is *the* type TestFlight exists for.
+   * `software` is admitted too, because an iOS repository is frequently filed as software and
+   * refusing it would send the owner off to retype their project rather than tell them anything
+   * true about this build.
+   */
+  if (input.projectType !== 'software' && input.projectType !== 'ios_app') {
+    return no('R-TF1', 'TestFlight only applies to a software or iOS project.');
   }
   if (!input.repositoryAllowListed) {
     return no('R-TF2', 'That repository is not on the allow-list for external builds.');

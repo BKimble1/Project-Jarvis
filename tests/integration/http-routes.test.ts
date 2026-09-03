@@ -251,9 +251,16 @@ describe('HTTP route handlers', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
 
     const payload = await body(response);
-    /* Version 2 since Prompt 2: the same project payload, plus mission history. */
-    expect(payload.version).toBe(2);
+    /*
+     * Version 3 since Prompt 3: the same project payload and mission history, plus the factory's
+     * own record — task graphs, tasks, reviews, findings, receipts, playbooks, CI dispatch
+     * requests, release approvals, app profiles and paired displays. The version moved because
+     * the payload genuinely gained top-level keys; the guarantee below is unchanged.
+     */
+    expect(payload.version).toBe(3);
     expect(Array.isArray(payload.missions)).toBe(true);
+    expect(Array.isArray(payload.playbooks)).toBe(true);
+    expect(Array.isArray(payload.displays)).toBe(true);
     expect(payload.projects).toHaveLength(1);
     expect(payload.projects[0].project.name).toBe('Aurora');
     expect(payload.projects[0].evidence[0].title).toBe('Add the evidence timeline');
@@ -298,8 +305,26 @@ describe('HTTP route handlers', () => {
       }
     };
     collectKeys(payload);
+
+    /*
+     * Three key names survive the scan, and each one is deliberately *about* a credential rather
+     * than being one:
+     *
+     *  - `credentialConfigured` is a boolean saying whether the CI controller has its own token.
+     *  - `tokenPrefix` is the first eight characters of a worker's or display's id, shown so the
+     *    owner can tell two devices apart. It is not part of the secret and cannot authenticate.
+     *  - `signingSecretNames` is a list of GitHub Actions secret *names*; storing a value there
+     *    is refused at the schema.
+     *
+     * Anything else matching this pattern is a new field that needs thinking about, which is what
+     * this assertion is for.
+     */
+    const ABOUT_A_CREDENTIAL = ['credentialConfigured', 'tokenPrefix', 'signingSecretNames'];
     expect(
-      [...keys].filter((key) => /token|secret|session|oauth|password|credential/i.test(key)),
+      [...keys]
+        .filter((key) => /token|secret|session|oauth|password|credential/i.test(key))
+        .filter((key) => !ABOUT_A_CREDENTIAL.includes(key))
+        .sort(),
     ).toEqual([]);
 
     /* The route's audit side effect is part of the behaviour, not incidental. */

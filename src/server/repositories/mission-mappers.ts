@@ -184,6 +184,10 @@ export function toMissionRun(row: Row<typeof missionRuns>): MissionRun {
     failureMessage: row.failureMessage,
     currentAction: row.currentAction,
     workspacePreserved: row.workspacePreserved,
+    taskId: row.taskId ?? null,
+    role: row.role ?? null,
+    permissionProfileId: row.permissionProfileId ?? null,
+    repairRound: row.repairRound ?? 0,
   };
 }
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AgentRole } from './agent-role';
 import type { MissionFailureCode } from './mission';
 
 /**
@@ -52,6 +53,18 @@ export interface MissionRun {
   readonly failureMessage: string | null;
   readonly currentAction: string | null;
   readonly workspacePreserved: boolean;
+  /**
+   * Which task this run was for, and as what.
+   *
+   * `null` on a Prompt 2 mission-level run — an inspection, or a single-worker execution — which
+   * is what the partial unique index on `mission_runs` distinguishes. On a task run these say
+   * which agent did which piece under which permission profile, which is the whole basis of the
+   * agent timeline and of a receipt that can name who wrote what.
+   */
+  readonly taskId: string | null;
+  readonly role: AgentRole | null;
+  readonly permissionProfileId: string | null;
+  readonly repairRound: number;
 }
 
 export interface RunUsage {
