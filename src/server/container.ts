@@ -185,12 +185,23 @@ export function buildServices(
       ? new AnthropicNarrator({ apiKey: config.ai.apiKey, model: config.ai.model })
       : new DeterministicNarrator());
 
+  /*
+   * Declared here rather than with the rest of the mission repositories, because the briefing
+   * service folds missions into every project assessment and therefore needs them first.
+   */
+  const missionRepo = new DrizzleMissionRepository(db);
+  const workerRepo = new DrizzleWorkerRepository(db);
+  const tasks = new DrizzleTaskRepository(db);
+
   const briefings = new BriefingService({
     projects,
     evidence,
     snapshots,
     activity,
     narrator,
+    missions: missionRepo,
+    tasks,
+    workers: workerRepo,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -210,7 +221,6 @@ export function buildServices(
   const attention = new AttentionService({ projects, briefings });
 
   /* ------------------------------------------------------- Mission Control */
-  const missionRepo = new DrizzleMissionRepository(db);
   const plans = new DrizzlePlanRepository(db);
   const approvals = new DrizzleApprovalRepository(db);
   const clarifications = new DrizzleClarificationRepository(db);
@@ -220,7 +230,6 @@ export function buildServices(
   const permissions = new DrizzlePermissionRepository(db);
   const verifications = new DrizzleVerificationRepository(db);
   const artifacts = new DrizzleArtifactRepository(db);
-  const workerRepo = new DrizzleWorkerRepository(db);
   const idempotency = new DrizzleIdempotencyRepository(db);
 
   const missions = new MissionService({
@@ -245,7 +254,6 @@ export function buildServices(
 
   /* Declared before the worker service, which authorises a task run against its own task. */
   const graphs = new DrizzleTaskGraphRepository(db);
-  const tasks = new DrizzleTaskRepository(db);
 
   const workerService = new WorkerService({
     missions: missionRepo,

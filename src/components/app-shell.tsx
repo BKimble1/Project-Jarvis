@@ -4,6 +4,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
+  Activity,
   BellRing,
   FolderKanban,
   History,
@@ -27,6 +28,7 @@ const NAV: readonly NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', shortLabel: 'Home', Icon: LayoutDashboard },
   { href: '/projects', label: 'Projects', shortLabel: 'Projects', Icon: FolderKanban },
   { href: '/missions', label: 'Missions', shortLabel: 'Missions', Icon: Rocket },
+  { href: '/operations', label: 'Operations', shortLabel: 'Ops', Icon: Activity },
   { href: '/attention', label: 'What needs me', shortLabel: 'Needs me', Icon: BellRing },
   { href: '/changes', label: 'What changed', shortLabel: 'Changed', Icon: History },
   { href: '/settings', label: 'Settings', shortLabel: 'Settings', Icon: Settings },

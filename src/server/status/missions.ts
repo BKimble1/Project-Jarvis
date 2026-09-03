@@ -3,6 +3,8 @@ import type { AttentionReason } from '@/domain/status';
 import type { Claim } from '@/domain/evidence';
 import type { MissionCounts } from '@/domain/mission';
 import type { WorkerHealth } from '@/domain/worker';
+import { ACTIVE_TASK_STATES, type MissionTask } from '@/domain/mission-task';
+import { isWriteRole, type AgentRole } from '@/domain/agent-role';
 
 /**
  * Missions as status evidence.
@@ -20,6 +22,14 @@ export interface MissionSignalInput {
   readonly missions: readonly Mission[];
   /** Worker health by worker id, so a disconnected worker changes the wording rather than the state. */
   readonly workers: ReadonlyMap<string, WorkerHealth>;
+  /**
+   * The tasks of each mission, by mission id.
+   *
+   * Optional, and absent means "no task detail", not "no tasks" — the difference matters, because
+   * the multi-agent sentences below are only added when there is real task data behind them. A
+   * Prompt 2 mission run by a single worker produces exactly the wording it always did.
+   */
+  readonly tasks?: ReadonlyMap<string, readonly MissionTask[]>;
   readonly now: Date;
 }
 
@@ -207,9 +217,132 @@ export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
         rule: 'R-MS13',
       });
     }
+
+    describeAgents(mission, input.tasks?.get(mission.id) ?? null, {
+      attention,
+      currentWork,
+      unknowns,
+    });
   }
 
   return { attention, currentWork, recentlyCompleted, unknowns };
+}
+
+/**
+ * The multi-agent sentences.
+ *
+ * §25 asks the Status Brain to describe a mission that several agents are working on, and the
+ * temptation is to make that sound impressive — "a team of six agents is collaborating". It is
+ * not a team and it is not collaborating; it is a graph of tasks with dependencies, some of which
+ * are running. So the wording says what is true and countable: how many are working, how many are
+ * allowed to write, whether one of them is a reviewer, and whether this is a repair round.
+ *
+ * Every sentence here is a Verified claim, because every one of them is read from a row Jarvis
+ * wrote from a worker's own report — and each carries the rule that produced it.
+ */
+function describeAgents(
+  mission: Mission,
+  tasks: readonly MissionTask[] | null,
+  out: { attention: AttentionReason[]; currentWork: Claim[]; unknowns: string[] },
+): void {
+  if (!tasks || tasks.length === 0) return;
+
+  const live = tasks.filter((task) =>
+    (ACTIVE_TASK_STATES as readonly string[]).includes(task.state),
+  );
+  const done = tasks.filter((task) => task.state === 'succeeded' || task.state === 'skipped');
+  const failed = tasks.filter((task) => task.state === 'failed');
+
+  if (live.length > 0) {
+    const writers = live.filter((task) => isWriteRole(task.role as AgentRole));
+    const reviewing = live.filter(
+      (task) => task.taskType === 'review' || task.state === 'awaiting_review',
+    );
+    const repairing = live.filter((task) => task.repairRound > 0);
+
+    const parts = [
+      `${live.length} agent${live.length === 1 ? '' : 's'} working on “${mission.title}”`,
+      `${done.length} of ${tasks.length} task${tasks.length === 1 ? '' : 's'} finished`,
+    ];
+    if (writers.length === 0) parts.push('none of them can write to the repository');
+    else parts.push(`${writers.length} of them can write`);
+    if (reviewing.length > 0) parts.push('an independent review is under way');
+    if (repairing.length > 0) {
+      parts.push(`this is repair round ${Math.max(...repairing.map((task) => task.repairRound))}`);
+    }
+
+    out.currentWork.push({
+      text: `${parts.join('; ')}.`,
+      provenance: 'verified',
+      evidenceIds: [],
+      rule: 'R-MS14',
+    });
+  }
+
+  /*
+   * A task that stopped because its repair budget ran out is a *stop*, not a failure to retry
+   * harder. Saying which is the difference between an owner who knows to look and one who waits.
+   */
+  const exhausted = failed.filter((task) => task.failureCode === 'repair_limit_reached');
+  if (exhausted.length > 0) {
+    out.attention.push({
+      code: 'decision_required',
+      severity: 'high',
+      summary: `“${mission.title}” used every repair round it was allowed and still does not pass review. Jarvis stopped rather than trying again. Everything it did is preserved.`,
+      provenance: 'verified',
+      evidenceIds: [],
+      rule: 'R-MS15',
+    });
+  }
+
+  const scopeViolations = failed.filter((task) => task.failureCode === 'write_scope_violation');
+  if (scopeViolations.length > 0) {
+    out.attention.push({
+      code: 'decision_required',
+      severity: 'critical',
+      summary: `An agent on “${mission.title}” changed files outside the write set you approved, so Jarvis stopped it and preserved the workspace for you to look at.`,
+      provenance: 'verified',
+      evidenceIds: [],
+      rule: 'R-MS16',
+    });
+  }
+
+  const waitingOnOwner = tasks.filter(
+    (task) => task.state === 'waiting_for_input' || task.state === 'waiting_for_permission',
+  );
+  if (waitingOnOwner.length > 0) {
+    out.attention.push({
+      code: 'decision_required',
+      severity: 'high',
+      summary: `${waitingOnOwner.length} agent${waitingOnOwner.length === 1 ? '' : 's'} on “${mission.title}” ${waitingOnOwner.length === 1 ? 'is' : 'are'} waiting for you before continuing.`,
+      provenance: 'verified',
+      evidenceIds: [],
+      rule: 'R-MS17',
+    });
+  }
+
+  /*
+   * Blocked-but-nothing-running is the state most easily mistaken for progress: the mission is
+   * not finished, no agent is working, and nothing is waiting on the owner either.
+   */
+  if (live.length === 0 && waitingOnOwner.length === 0 && !isFinishedMission(mission)) {
+    const blocked = tasks.filter((task) => task.state === 'blocked');
+    if (blocked.length > 0 && failed.length > 0) {
+      out.unknowns.push(
+        `When “${mission.title}” will continue — ${blocked.length} task(s) are waiting on work that failed, so nothing is running.`,
+      );
+    }
+  }
+}
+
+function isFinishedMission(mission: Mission): boolean {
+  return (
+    mission.state === 'completed' ||
+    mission.state === 'failed' ||
+    mission.state === 'cancelled' ||
+    mission.state === 'stopped' ||
+    mission.state === 'pull_request_ready'
+  );
 }
 
 function describeFailure(mission: Mission): string {

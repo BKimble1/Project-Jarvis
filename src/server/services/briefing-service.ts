@@ -19,6 +19,11 @@ import type {
   ProjectRepository,
   SnapshotRepository,
 } from '@/server/repositories/types';
+import type { MissionRepository, WorkerRepository } from '@/server/repositories/mission-types';
+import type { TaskRepository } from '@/server/repositories/factory-types';
+import { buildMissionSignals } from '@/server/status/missions';
+import { deriveWorkerHealth } from '@/domain/worker';
+import type { ProjectAssessment as Assessment } from '@/domain/status';
 
 /**
  * The Status Brain's public entry point.
@@ -36,6 +41,18 @@ export interface BriefingServiceDeps {
   readonly snapshots: SnapshotRepository;
   readonly activity: ActivityLogService;
   readonly narrator: BriefingNarrator;
+  /**
+   * Missions and their tasks, folded into every project assessment.
+   *
+   * Optional, because a briefing of a project with no missions is a complete briefing, and
+   * because the unit tests for the deterministic engine construct this service without a mission
+   * store. When they are present, what Jarvis is *doing* to a project becomes part of what Jarvis
+   * *says* about it — which is the point of §25: a project with three agents working on it should
+   * not read as though nothing is happening.
+   */
+  readonly missions?: MissionRepository;
+  readonly tasks?: TaskRepository;
+  readonly workers?: WorkerRepository;
   readonly clock?: () => Date;
   /** How much evidence the engine considers. Bounded so a large project stays fast. */
   readonly evidenceWindowDays?: number;
@@ -70,7 +87,78 @@ export class BriefingService {
     const aggregate = await this.deps.projects.aggregate(projectId);
     if (!aggregate) throw new NotFoundError('Project');
     const evidence = await this.loadEvidence(projectId);
-    return assessProject({ aggregate, evidence, now: this.clock() });
+    const assessment = assessProject({ aggregate, evidence, now: this.clock() });
+    return this.withMissions(projectId, assessment);
+  }
+
+  /**
+   * Fold what Jarvis is doing to a project into what Jarvis says about it.
+   *
+   * Missions are deliberately merged *after* the deterministic engine rather than fed into it.
+   * The engine's job is to assess evidence about the project; a mission is Jarvis's own activity,
+   * which is a different kind of fact with a different provenance story — it is Verified because
+   * Jarvis wrote the row, not because a source reported it. Keeping them separate means the
+   * engine's rules stay about evidence, and mission claims keep their own rule ids.
+   *
+   * A no-op when no mission store is configured, and a no-op when the project has no missions.
+   */
+  private async withMissions(
+    projectId: string,
+    assessment: ProjectAssessment,
+  ): Promise<ProjectAssessment> {
+    if (!this.deps.missions) return assessment;
+
+    const missions = await this.deps.missions.listByProject(projectId, 25);
+    const open = missions.filter(
+      (mission) => mission.finishedAt === null || mission.state === 'pull_request_ready',
+    );
+    const recent = missions.filter((mission) => mission.finishedAt !== null);
+    const relevant = [...open, ...recent].slice(0, 20);
+    if (relevant.length === 0) return assessment;
+
+    const workerHealth = new Map(
+      (this.deps.workers ? await this.deps.workers.list() : []).map((worker) => [
+        worker.id,
+        deriveWorkerHealth(worker, this.clock()),
+      ]),
+    );
+
+    const tasks = new Map<
+      string,
+      readonly Awaited<ReturnType<TaskRepository['listByMission']>>[number][]
+    >();
+    if (this.deps.tasks) {
+      for (const mission of relevant) {
+        const list = await this.deps.tasks.listByMission(mission.id);
+        if (list.length > 0) tasks.set(mission.id, [...list]);
+      }
+    }
+
+    const signals = buildMissionSignals({
+      missions: relevant,
+      workers: workerHealth,
+      tasks,
+      now: this.clock(),
+    });
+
+    const merged: Assessment = {
+      ...assessment,
+      currentWork: [...assessment.currentWork, ...signals.currentWork],
+      recentlyCompleted: [...assessment.recentlyCompleted, ...signals.recentlyCompleted],
+      decisionsNeeded: [
+        ...assessment.decisionsNeeded,
+        ...signals.attention.map((reason) => ({
+          text: reason.summary,
+          provenance: reason.provenance,
+          evidenceIds: reason.evidenceIds,
+          rule: reason.rule,
+        })),
+      ],
+      attention: [...assessment.attention, ...signals.attention],
+      needsAttention: assessment.needsAttention || signals.attention.length > 0,
+      unknowns: [...assessment.unknowns, ...signals.unknowns],
+    };
+    return merged;
   }
 
   async assessMany(projectIds: readonly string[]): Promise<ReadonlyMap<string, ProjectAssessment>> {
@@ -94,7 +182,13 @@ export class BriefingService {
 
     const now = this.clock();
     for (const [id, aggregate] of aggregates) {
-      result.set(id, assessProject({ aggregate, evidence: byProject.get(id) ?? [], now }));
+      result.set(
+        id,
+        await this.withMissions(
+          id,
+          assessProject({ aggregate, evidence: byProject.get(id) ?? [], now }),
+        ),
+      );
     }
     return result;
   }
@@ -111,7 +205,10 @@ export class BriefingService {
     if (!aggregate) throw new NotFoundError('Project');
     const evidence = await this.loadEvidence(projectId);
     const now = this.clock();
-    const assessment = assessProject({ aggregate, evidence, now });
+    const assessment = await this.withMissions(
+      projectId,
+      assessProject({ aggregate, evidence, now }),
+    );
 
     await this.deps.projects.setDerivedState(projectId, {
       freshness: assessment.freshness.state,

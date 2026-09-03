@@ -203,4 +203,11 @@
     -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
   }
+
+  /* The wallboard's mission column, which scrolls when more is running than fits on the wall. */
+  .jarvis-scroll-y {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
 }

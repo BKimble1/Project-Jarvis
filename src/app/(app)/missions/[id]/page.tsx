@@ -14,6 +14,9 @@ import {
   MissionTypePill,
 } from '@/components/mission/mission-pills';
 import { PlanReview } from '@/components/mission/plan-review';
+import { ReceiptPanel } from '@/components/mission/receipt-panel';
+import { ReviewPanel } from '@/components/mission/review-panel';
+import { TaskGraphPanel } from '@/components/mission/task-graph-panel';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { RelativeTime } from '@/components/relative-time';
 
@@ -41,6 +44,20 @@ export default async function MissionPage({ params }: { params: Promise<{ id: st
 
   const { mission } = detail;
   const project = mission.projectId ? await services.projects.findById(mission.projectId) : null;
+
+  /*
+   * The factory's own view of this mission. Loaded on the server alongside everything else so a
+   * refresh shows one consistent moment rather than a page assembled from several.
+   */
+  const [graph, reviews, findings, playbooks] = await Promise.all([
+    services.orchestrator.tryView(id),
+    services.reviews.listByMission(id),
+    services.reviews.listFindings(id),
+    services.playbookService.list(),
+  ]);
+  /* Rebuilt on read rather than served from the stored copy, so it reflects what is true now. */
+  const receipt =
+    mission.approvedGraphVersion !== null ? await services.orchestrator.buildReceipt(id) : null;
   const gate = assessProjectGate(
     project
       ? { status: project.status, archived: project.archivedAt !== null, name: project.name }
@@ -142,6 +159,23 @@ export default async function MissionPage({ params }: { params: Promise<{ id: st
         requiresOverride={gate.requiresOverride && mission.executionOverrideAt === null}
         overrideNotice={gate.notice}
       />
+
+      <TaskGraphPanel
+        missionId={mission.id}
+        initial={graph}
+        planApproved={mission.approvedPlanVersion !== null}
+        approvedGraphVersion={mission.approvedGraphVersion}
+        playbooks={playbooks.map((playbook) => ({
+          key: playbook.key,
+          name: playbook.name,
+          description: playbook.description,
+          enabled: playbook.enabled,
+        }))}
+      />
+
+      <ReviewPanel missionId={mission.id} reviews={reviews} findings={findings} />
+
+      {receipt ? <ReceiptPanel receipt={receipt} /> : null}
 
       {detail.artifacts.length > 0 ? (
         <Card>

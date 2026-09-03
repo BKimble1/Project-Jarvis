@@ -32,7 +32,33 @@ function fingerprint(definition: PlaybookDefinition): string {
 }
 
 export class PlaybookService {
+  /** One seed per process, remembered as the promise so concurrent readers share it. */
+  private seeding: Promise<void> | null = null;
+
   constructor(private readonly deps: PlaybookServiceDeps) {}
+
+  /**
+   * Make sure the built-ins exist before anyone reads the list.
+   *
+   * Seeding is on the read path rather than at server startup, and that is a deliberate second
+   * choice: `instrumentation.ts` is the natural home for it, but Next.js builds that file for the
+   * edge runtime as well as for Node, and following the import into the database client breaks the
+   * build. Doing it here costs one guarded pass per process, is idempotent by fingerprint, and
+   * keeps the database out of the bundler's graph entirely.
+   *
+   * A failure is swallowed. A database that is not ready is not a reason for the playbooks page to
+   * 500 — `seedBuiltIns` logs what it rejected, and the next read tries again.
+   */
+  private async ensureSeeded(): Promise<void> {
+    this.seeding ??= this.seedBuiltIns().then(
+      () => undefined,
+      () => {
+        /* Allow a later read to retry rather than caching the failure forever. */
+        this.seeding = null;
+      },
+    );
+    await this.seeding;
+  }
 
   /**
    * Put the built-ins in place.
@@ -70,6 +96,7 @@ export class PlaybookService {
   }
 
   async list(): Promise<readonly (Playbook & { definition: PlaybookDefinition })[]> {
+    await this.ensureSeeded();
     return this.deps.playbooks.list();
   }
 
@@ -78,6 +105,7 @@ export class PlaybookService {
   }
 
   async preview(key: string, version?: number): Promise<PlaybookVersion> {
+    await this.ensureSeeded();
     const found = version
       ? await this.deps.playbooks.version(key, version)
       : await this.deps.playbooks.latestVersion(key);

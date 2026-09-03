@@ -50,6 +50,32 @@ export const FINDING_CATEGORIES = [
 ] as const;
 export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 
+/** Owner-facing wording. Plain, and never softer than the finding itself. */
+export const FINDING_SEVERITY_LABELS: Record<FindingSeverity, string> = {
+  critical: 'Critical',
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+  informational: 'For information',
+};
+
+export const FINDING_CATEGORY_LABELS: Record<FindingCategory, string> = {
+  correctness: 'Correctness',
+  regression_risk: 'Regression risk',
+  security: 'Security',
+  data_safety: 'Data safety',
+  migration_safety: 'Migration safety',
+  test_coverage: 'Test coverage',
+  error_handling: 'Error handling',
+  performance: 'Performance',
+  accessibility: 'Accessibility',
+  user_experience: 'User experience',
+  documentation: 'Documentation',
+  scope: 'Out of scope',
+  unintended_change: 'Unintended change',
+  evidence_gap: 'Evidence gap',
+};
+
 export const FINDING_STATES = [
   /** Recorded, not yet triaged by deterministic policy. */
   'open',

@@ -7,6 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { DataControls } from '@/components/settings-controls';
+import { DisplayManager } from '@/components/operations/display-manager';
+import { PlaybookList } from '@/components/operations/playbook-list';
 import { RelativeTime } from '@/components/relative-time';
 
 export const dynamic = 'force-dynamic';
@@ -21,12 +23,16 @@ export const metadata: Metadata = { title: 'Settings' };
 export default async function SettingsPage() {
   const health = describeConfigHealth();
   const services = await getServices();
-  const [session, providerHealth, runs, storedRetention] = await Promise.all([
-    readSession(),
-    services.provider.isConfigured() ? services.provider.checkHealth() : Promise.resolve(null),
-    services.runs.listRecent(5),
-    services.settings.get<{ snapshotDays: number; activityDays: number }>('retention'),
-  ]);
+  const [session, providerHealth, runs, storedRetention, displays, playbooks, ci] =
+    await Promise.all([
+      readSession(),
+      services.provider.isConfigured() ? services.provider.checkHealth() : Promise.resolve(null),
+      services.runs.listRecent(5),
+      services.settings.get<{ snapshotDays: number; activityDays: number }>('retention'),
+      services.displays.list(),
+      services.playbookService.list(),
+      Promise.resolve(services.ci.describe()),
+    ]);
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
@@ -213,6 +219,58 @@ export default async function SettingsPage() {
             snapshotDays={storedRetention?.snapshotDays ?? health.retention.snapshotDays}
             activityDays={storedRetention?.activityDays ?? health.retention.activityDays}
           />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Playbooks</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <PlaybookList playbooks={playbooks} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Wall displays</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <DisplayManager devices={displays} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">External builds</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 pt-0 text-sm">
+          {/*
+           * Presence only, as everywhere else on this page. `describe()` reports whether the CI
+           * controller has a credential of its own; there is no accessor anywhere that returns
+           * one, so a screenshot of this card cannot leak anything.
+           */}
+          <Row label="CI controller" value={ci.enabled ? 'Enabled' : 'Off'} ok={ci.enabled} />
+          <Row
+            label="Its own credential"
+            value={ci.credentialConfigured ? 'Configured' : 'Not configured'}
+            ok={ci.credentialConfigured}
+          />
+          <Row
+            label="Repositories it may build"
+            value={ci.repositories.length > 0 ? ci.repositories.join(', ') : 'None'}
+            ok={ci.repositories.length > 0}
+          />
+          <Row
+            label="Workflows it may run"
+            value={ci.workflows.length > 0 ? ci.workflows.join(', ') : 'None'}
+            ok={ci.workflows.length > 0}
+          />
+          <p className="text-xs text-[var(--color-text-muted)]">
+            Jarvis never holds Apple signing credentials. A TestFlight build runs in GitHub Actions
+            using secrets only that workflow can read, it is approved by you for one exact commit,
+            and a workflow starting is not the same as a build reaching testers.
+          </p>
         </CardContent>
       </Card>
     </div>
