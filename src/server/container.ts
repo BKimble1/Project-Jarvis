@@ -55,6 +55,56 @@ import type {
   TaskRepository,
   WriteLeaseRepository,
 } from './repositories/factory-types';
+import {
+  DrizzleAnswerRepository,
+  DrizzleChunkRepository,
+  DrizzleConflictRepository,
+  DrizzleKnowledgeRepository,
+  DrizzleKnowledgeSourceRepository,
+} from './repositories/knowledge-drizzle';
+import type {
+  AnswerRepository,
+  ChunkRepository,
+  ConflictRepository,
+  KnowledgeRepository,
+  SourceRepositoryKnowledge,
+} from './repositories/knowledge-types';
+import {
+  DrizzleBriefingRepository,
+  DrizzleNotificationRepository,
+  DrizzlePreferenceRepository,
+  DrizzlePushRepository,
+  DrizzleQualificationRepository,
+  DrizzleScheduleRepository,
+  DrizzleVoiceRepository,
+} from './repositories/automation-drizzle';
+import type {
+  BriefingRepository,
+  NotificationRepository,
+  PreferenceRepository,
+  PushRepository,
+  QualificationRepository,
+  ScheduleRepository,
+  VoiceRepository,
+} from './repositories/automation-types';
+import {
+  DrizzleAuditRepository,
+  DrizzleBudgetRepository,
+  DrizzleConnectorRepository,
+  DrizzleDeletionReceiptRepository,
+  DrizzlePriceRepository,
+  DrizzleRateLimitRepository,
+  DrizzleUsageRepository,
+} from './repositories/accounting-drizzle';
+import type {
+  AuditRepository,
+  BudgetRepository,
+  ConnectorRepository,
+  DeletionReceiptRepository,
+  PriceRepository,
+  RateLimitRepository,
+  UsageRepository,
+} from './repositories/accounting-types';
 import { MissionOrchestrator } from './missions/orchestrator';
 import { TaskWorkerService } from './missions/task-worker-service';
 import { PlaybookService } from './playbooks/playbook-service';
@@ -154,6 +204,27 @@ export interface Services {
   readonly playbookService: PlaybookService;
   readonly ci: CiController;
   readonly displays: DisplayAuth;
+
+  /* Prompt 4: knowledge, automation and accounting. */
+  readonly knowledgeSources: SourceRepositoryKnowledge;
+  readonly chunks: ChunkRepository;
+  readonly knowledge: KnowledgeRepository;
+  readonly conflicts: ConflictRepository;
+  readonly answers: AnswerRepository;
+  readonly qualification: QualificationRepository;
+  readonly schedules: ScheduleRepository;
+  readonly briefingRecords: BriefingRepository;
+  readonly notifications: NotificationRepository;
+  readonly notificationPreferences: PreferenceRepository;
+  readonly push: PushRepository;
+  readonly voice: VoiceRepository;
+  readonly usage: UsageRepository;
+  readonly budgets: BudgetRepository;
+  readonly prices: PriceRepository;
+  readonly connectors: ConnectorRepository;
+  readonly rateLimits: RateLimitRepository;
+  readonly audit: AuditRepository;
+  readonly deletionReceipts: DeletionReceiptRepository;
 }
 
 export interface BuildServicesOverrides {
@@ -356,6 +427,27 @@ export function buildServices(
 
   const displays = new DisplayAuth(displayDevices);
 
+  /* ---------------------------------------------------------------- Prompt 4 */
+  const knowledgeSources = new DrizzleKnowledgeSourceRepository(db);
+  const chunks = new DrizzleChunkRepository(db);
+  const knowledge = new DrizzleKnowledgeRepository(db);
+  const conflicts = new DrizzleConflictRepository(db);
+  const answerRepo = new DrizzleAnswerRepository(db);
+  const qualification = new DrizzleQualificationRepository(db);
+  const scheduleRepo = new DrizzleScheduleRepository(db);
+  const briefingRecords = new DrizzleBriefingRepository(db);
+  const notificationRepo = new DrizzleNotificationRepository(db);
+  const notificationPreferences = new DrizzlePreferenceRepository(db);
+  const push = new DrizzlePushRepository(db);
+  const voice = new DrizzleVoiceRepository(db);
+  const usage = new DrizzleUsageRepository(db);
+  const budgetRepo = new DrizzleBudgetRepository(db);
+  const prices = new DrizzlePriceRepository(db);
+  const connectorRepo = new DrizzleConnectorRepository(db);
+  const rateLimits = new DrizzleRateLimitRepository(db);
+  const audit = new DrizzleAuditRepository(db);
+  const deletionReceipts = new DrizzleDeletionReceiptRepository(db);
+
   const router = new StatusQueryRouter({
     projects,
     briefings,
@@ -415,6 +507,25 @@ export function buildServices(
     playbookService,
     ci,
     displays,
+    knowledgeSources,
+    chunks,
+    knowledge,
+    conflicts,
+    answers: answerRepo,
+    qualification,
+    schedules: scheduleRepo,
+    briefingRecords,
+    notifications: notificationRepo,
+    notificationPreferences,
+    push,
+    voice,
+    usage,
+    budgets: budgetRepo,
+    prices,
+    connectors: connectorRepo,
+    rateLimits,
+    audit,
+    deletionReceipts,
   };
 }
 

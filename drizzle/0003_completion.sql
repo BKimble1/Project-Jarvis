@@ -519,6 +519,7 @@ END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "answers_generated_idx" ON "answers" USING btree ("generated_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "answers_scope_idx" ON "answers" USING btree ("scope");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "audit_events_id_idx" ON "audit_events" USING btree ("id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "audit_events_previous_hash_idx" ON "audit_events" USING btree ("previous_hash") WHERE previous_hash is not null;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_events_occurred_idx" ON "audit_events" USING btree ("occurred_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_events_action_idx" ON "audit_events" USING btree ("action");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_events_actor_idx" ON "audit_events" USING btree ("actor");--> statement-breakpoint

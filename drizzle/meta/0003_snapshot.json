@@ -1,5 +1,5 @@
 {
-  "id": "de87ffa7-a17b-46c8-9fde-d3ffe0f1f4dd",
+  "id": "b39269f5-a2cc-4d6a-8863-c851780cdb1a",
   "prevId": "e61b7590-6e7f-4fc4-a408-fc12d21660a1",
   "version": "7",
   "dialect": "postgresql",
@@ -408,6 +408,22 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "audit_events_previous_hash_idx": {
+          "name": "audit_events_previous_hash_idx",
+          "columns": [
+            {
+              "expression": "previous_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "previous_hash is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

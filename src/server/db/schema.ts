@@ -2583,6 +2583,15 @@ export const auditEvents = pgTable(
   },
   (table) => [
     uniqueIndex('audit_events_id_idx').on(table.id),
+    /*
+     * Two records cannot claim the same predecessor. The append path already serialises with an
+     * advisory lock, so this index should never fire — which is exactly why it is worth having:
+     * if the lock is ever removed or bypassed, a fork becomes a loud failure rather than a chain
+     * that quietly verifies against only one of its two branches.
+     */
+    uniqueIndex('audit_events_previous_hash_idx')
+      .on(table.previousHash)
+      .where(sql`previous_hash is not null`),
     index('audit_events_occurred_idx').on(table.occurredAt),
     index('audit_events_action_idx').on(table.action),
     index('audit_events_actor_idx').on(table.actor),
