@@ -85,6 +85,16 @@ export const ACTIVITY_LABELS: Record<ActivityKind, string> = {
   project_restored: 'Project restored',
   data_exported: 'Data exported',
   data_retention_applied: 'Retention applied',
+  ci_dispatch_requested: 'Workflow run requested',
+  ci_dispatch_refused: 'Workflow run refused',
+  ci_dispatch_sent: 'Workflow dispatched',
+  release_approved: 'TestFlight build approved',
+  release_revoked: 'TestFlight approval revoked',
+  display_paired: 'Display paired',
+  display_revoked: 'Display revoked',
+  playbook_installed: 'Playbook installed',
+  playbook_disabled: 'Playbook disabled',
+  capacity_changed: 'Capacity changed',
 };
 
 /** Project types that never show repository panels. */

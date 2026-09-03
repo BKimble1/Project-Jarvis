@@ -330,6 +330,13 @@ function buildPatch(patch: MissionStatePatch): Record<string, unknown> {
   assign('claimedByWorkerId', 'claimedByWorkerId');
   assign('currentPlanVersion', 'currentPlanVersion');
   assign('approvedPlanVersion', 'approvedPlanVersion');
+  assign('currentGraphVersion', 'currentGraphVersion');
+  assign('approvedGraphVersion', 'approvedGraphVersion');
+  assign('playbookKey', 'playbookKey');
+  assign('playbookVersion', 'playbookVersion');
+  assign('integrationBranch', 'integrationBranch');
+  assign('repairRoundsUsed', 'repairRoundsUsed');
+  assign('receiptId', 'receiptId');
   assign('workingBranch', 'workingBranch');
   assign('baseBranch', 'baseBranch');
   assign('baseSha', 'baseSha');

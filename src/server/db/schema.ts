@@ -69,6 +69,35 @@ import type {
   VerificationOutcome,
 } from '@/domain/mission-run';
 import type { WorkerStatus } from '@/domain/worker';
+import type { AgentRole } from '@/domain/agent-role';
+import type {
+  TaskFailureCode,
+  TaskState,
+  TaskType,
+  WorkspaceRequirement,
+} from '@/domain/mission-task';
+import type { TaskGraphState } from '@/domain/task-graph';
+import type {
+  FindingCategory,
+  FindingConfidence,
+  FindingSeverity,
+  FindingState,
+  ReviewVerdict,
+} from '@/domain/mission-review';
+import type { CompletionReceiptContent } from '@/domain/completion-receipt';
+import type { PlaybookDefinition } from '@/domain/playbook';
+import type {
+  CiDispatchPurpose,
+  CiDispatchState,
+  ReleaseApprovalState,
+} from '@/domain/ci-dispatch';
+import type { DisplayScope } from '@/domain/display-device';
+import type {
+  AppPlatform,
+  IconState,
+  PrivacySensitiveApi,
+  SubscriptionModel,
+} from '@/domain/app-profile';
 
 const now = () => timestamp('placeholder', { withTimezone: true });
 void now; // documentation helper; each column declares its own name below.
@@ -664,6 +693,16 @@ export const missions = pgTable(
     currentPlanVersion: integer('current_plan_version'),
     approvedPlanVersion: integer('approved_plan_version'),
 
+    /* Prompt 3: the task graph is versioned and approved exactly like the plan. */
+    currentGraphVersion: integer('current_graph_version'),
+    approvedGraphVersion: integer('approved_graph_version'),
+    playbookKey: text('playbook_key'),
+    playbookVersion: integer('playbook_version'),
+    integrationBranch: text('integration_branch'),
+    repairRoundsUsed: integer('repair_rounds_used').notNull().default(0),
+    /** Set once the mission has a completion receipt. Its absence means "not delivery-ready". */
+    receiptId: uuid('receipt_id'),
+
     executionOverrideAt: timestamp('execution_override_at', { withTimezone: true }),
     executionOverrideReason: text('execution_override_reason'),
 
@@ -812,6 +851,17 @@ export const missionRuns = pgTable(
     kind: text('kind').$type<RunKind>().notNull(),
     state: text('state').$type<RunState>().notNull().default('starting'),
     planVersion: integer('plan_version'),
+    /*
+     * Prompt 3: a run may belong to one task of a task graph.
+     *
+     * Null keeps the Prompt 2 shape exactly — a mission-level inspection or execution run — so
+     * nothing that worked before has to know tasks exist. The worker protocol is unchanged: a run
+     * id is still the unit of authorisation, it simply now has an optional owner.
+     */
+    taskId: uuid('task_id'),
+    role: text('role').$type<AgentRole>(),
+    permissionProfileId: text('permission_profile_id'),
+    repairRound: integer('repair_round').notNull().default(0),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     lastEventAt: timestamp('last_event_at', { withTimezone: true }),
@@ -844,10 +894,24 @@ export const missionRuns = pgTable(
     lastEventSeq: bigint('last_event_seq', { mode: 'number' }).notNull().default(0),
   },
   (table) => [
-    uniqueIndex('mission_runs_attempt_idx').on(table.missionId, table.attempt, table.kind),
+    /*
+     * Two partial indexes rather than one relaxed one.
+     *
+     * Prompt 2's guarantee — one run per (mission, attempt, kind) — still holds exactly, for
+     * mission-level runs. Widening the original index to include `task_id` would have quietly
+     * destroyed it: in Postgres two NULLs are distinct, so every mission-level run would have
+     * stopped colliding with every other. Task-bound runs get their own uniqueness instead.
+     */
+    uniqueIndex('mission_runs_attempt_idx')
+      .on(table.missionId, table.attempt, table.kind)
+      .where(sql`task_id is null`),
+    uniqueIndex('mission_runs_task_attempt_idx')
+      .on(table.taskId, table.attempt)
+      .where(sql`task_id is not null`),
     index('mission_runs_mission_idx').on(table.missionId),
     index('mission_runs_worker_idx').on(table.workerId),
     index('mission_runs_state_idx').on(table.state),
+    index('mission_runs_task_idx').on(table.taskId),
   ],
 );
 
@@ -1049,6 +1113,555 @@ export const workerIdempotency = pgTable(
   ],
 );
 
+/* ------------------------------------------------- Prompt 3: the factory */
+
+/**
+ * A versioned task graph.
+ *
+ * The same discipline as a plan: proposed, read, approved *by version*, superseded by an edit.
+ * `fingerprint` covers only the material content — roles, dependencies, write sets, criteria —
+ * so rewording a task description does not demand a fresh approval while changing what an agent
+ * may write always does.
+ */
+export const missionTaskGraphs = pgTable(
+  'mission_task_graphs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id')
+      .notNull()
+      .references(() => missions.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    planVersion: integer('plan_version').notNull(),
+    state: text('state').$type<TaskGraphState>().notNull().default('draft'),
+    playbookKey: text('playbook_key'),
+    playbookVersion: integer('playbook_version'),
+    summary: text('summary').notNull(),
+    notes: jsonb('notes')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    fingerprint: text('fingerprint').notNull(),
+    maxParallelTasks: integer('max_parallel_tasks').notNull().default(3),
+    maxWriteTasks: integer('max_write_tasks').notNull().default(1),
+    maxRepairRounds: integer('max_repair_rounds').notNull().default(2),
+    proposedBy: text('proposed_by').notNull().default('system'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    approvedBy: text('approved_by'),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedReason: text('revoked_reason'),
+  },
+  (table) => [
+    uniqueIndex('mission_task_graphs_version_idx').on(table.missionId, table.version),
+    index('mission_task_graphs_mission_idx').on(table.missionId),
+    index('mission_task_graphs_state_idx').on(table.state),
+  ],
+);
+
+/**
+ * One task.
+ *
+ * `declared_write_set` is the load-bearing column: it is compared against other tasks before a
+ * task starts, and against the files that really changed after it finishes. Both comparisons use
+ * the same containment rule (`domain/write-set.ts`), so a task cannot pass the first and violate
+ * the spirit of the second.
+ */
+export const missionTasks = pgTable(
+  'mission_tasks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id')
+      .notNull()
+      .references(() => missions.id, { onDelete: 'cascade' }),
+    graphId: uuid('graph_id')
+      .notNull()
+      .references(() => missionTaskGraphs.id, { onDelete: 'cascade' }),
+    graphVersion: integer('graph_version').notNull(),
+    planVersion: integer('plan_version').notNull(),
+    key: text('key').notNull(),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    role: text('role').$type<AgentRole>().notNull(),
+    /** Names a profile defined in code. A row can never define one. */
+    permissionProfileId: text('permission_profile_id').notNull(),
+    taskType: text('task_type').$type<TaskType>().notNull(),
+    state: text('state').$type<TaskState>().notNull().default('draft'),
+    position: integer('position').notNull().default(0),
+
+    expectedInputs: jsonb('expected_inputs')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    expectedOutputs: jsonb('expected_outputs')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    acceptanceCriteria: jsonb('acceptance_criteria')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+
+    workspaceRequirement: text('workspace_requirement')
+      .$type<WorkspaceRequirement>()
+      .notNull()
+      .default('none'),
+    requiresRepository: boolean('requires_repository').notNull().default(true),
+    expectedFileAreas: jsonb('expected_file_areas')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    declaredWriteSet: jsonb('declared_write_set')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    actualChangedFiles: jsonb('actual_changed_files')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+
+    assignedWorkerId: uuid('assigned_worker_id').references(() => workers.id, {
+      onDelete: 'set null',
+    }),
+    activeRunId: uuid('active_run_id'),
+    attempt: integer('attempt').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(1),
+    maxTurns: integer('max_turns'),
+    timeLimitMs: bigint('time_limit_ms', { mode: 'number' }),
+    maxOutputTokens: bigint('max_output_tokens', { mode: 'number' }),
+
+    usageInputTokens: bigint('usage_input_tokens', { mode: 'number' }),
+    usageOutputTokens: bigint('usage_output_tokens', { mode: 'number' }),
+    usageCostUsd: doublePrecision('usage_cost_usd'),
+    usageTurns: integer('usage_turns'),
+    usageDurationMs: bigint('usage_duration_ms', { mode: 'number' }),
+
+    reviewsTaskId: uuid('reviews_task_id'),
+    repairRound: integer('repair_round').notNull().default(0),
+    latestReviewId: uuid('latest_review_id'),
+
+    branchName: text('branch_name'),
+    baseSha: text('base_sha'),
+    headSha: text('head_sha'),
+    workspacePath: text('workspace_path'),
+    workspacePreserved: boolean('workspace_preserved').notNull().default(true),
+
+    failureCode: text('failure_code').$type<TaskFailureCode>(),
+    failureMessage: text('failure_message'),
+    summary: text('summary'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('mission_tasks_key_idx').on(table.graphId, table.key),
+    index('mission_tasks_mission_idx').on(table.missionId),
+    index('mission_tasks_graph_idx').on(table.graphId),
+    index('mission_tasks_state_idx').on(table.state),
+    index('mission_tasks_worker_idx').on(table.assignedWorkerId),
+    index('mission_tasks_role_idx').on(table.role),
+  ],
+);
+
+/** Edges. A separate table so readiness is a join rather than a JSON scan. */
+export const missionTaskDependencies = pgTable(
+  'mission_task_dependencies',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    graphId: uuid('graph_id')
+      .notNull()
+      .references(() => missionTaskGraphs.id, { onDelete: 'cascade' }),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => missionTasks.id, { onDelete: 'cascade' }),
+    dependsOnTaskId: uuid('depends_on_task_id')
+      .notNull()
+      .references(() => missionTasks.id, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    uniqueIndex('mission_task_dependencies_edge_idx').on(table.taskId, table.dependsOnTaskId),
+    index('mission_task_dependencies_graph_idx').on(table.graphId),
+  ],
+);
+
+/**
+ * Write leases.
+ *
+ * A lease is held for the duration of a write-capable task and names the paths that task may
+ * change. Two live leases whose paths overlap cannot both exist, which is enforced by the
+ * service that grants them rather than by the schema — Postgres has no "overlapping prefix"
+ * exclusion constraint for arbitrary path lists — but the unique index below at least guarantees
+ * one live lease per task.
+ */
+export const missionWriteLeases = pgTable(
+  'mission_write_leases',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id')
+      .notNull()
+      .references(() => missions.id, { onDelete: 'cascade' }),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => missionTasks.id, { onDelete: 'cascade' }),
+    runId: uuid('run_id'),
+    paths: jsonb('paths')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    state: text('state').$type<'held' | 'released'>().notNull().default('held'),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+    releasedAt: timestamp('released_at', { withTimezone: true }),
+    releasedReason: text('released_reason'),
+  },
+  (table) => [
+    uniqueIndex('mission_write_leases_task_idx')
+      .on(table.taskId)
+      .where(sql`state = 'held'`),
+    index('mission_write_leases_mission_idx').on(table.missionId),
+  ],
+);
+
+/**
+ * One review verdict.
+ *
+ * `diff_fingerprint` is what stops a verdict outliving the thing it was about: an approval is
+ * for a specific diff, and a later diff has a different fingerprint, so it has no approval.
+ * `cold_context` records that the reviewer was given the constructed context and nothing else.
+ */
+export const missionReviews = pgTable(
+  'mission_reviews',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id')
+      .notNull()
+      .references(() => missions.id, { onDelete: 'cascade' }),
+    taskId: uuid('task_id')
+      .notNull()
+      .references(() => missionTasks.id, { onDelete: 'cascade' }),
+    runId: uuid('run_id'),
+    graphVersion: integer('graph_version').notNull(),
+    planVersion: integer('plan_version').notNull(),
+    reviewerRole: text('reviewer_role').$type<AgentRole>().notNull(),
+    verdict: text('verdict').$type<ReviewVerdict>().notNull(),
+    /** What the reviewer proposed, before deterministic policy reconciled it. Kept for audit. */
+    proposedVerdict: text('proposed_verdict').$type<ReviewVerdict>(),
+    overrideRule: text('override_rule'),
+    overrideReason: text('override_reason'),
+    summary: text('summary').notNull(),
+    diffFingerprint: text('diff_fingerprint').notNull(),
+    reviewedFiles: jsonb('reviewed_files')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    verificationSnapshot: jsonb('verification_snapshot')
+      .$type<{ check: string; outcome: VerificationOutcome; required: boolean }[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    repairRound: integer('repair_round').notNull().default(0),
+    coldContext: boolean('cold_context').notNull().default(true),
+    unavailableReason: text('unavailable_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('mission_reviews_mission_idx').on(table.missionId),
+    index('mission_reviews_task_idx').on(table.taskId),
+    index('mission_reviews_verdict_idx').on(table.verdict),
+  ],
+);
+
+/** One structured finding. Prose alone cannot be stored, which is the point. */
+export const missionReviewFindings = pgTable(
+  'mission_review_findings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reviewId: uuid('review_id')
+      .notNull()
+      .references(() => missionReviews.id, { onDelete: 'cascade' }),
+    missionId: uuid('mission_id')
+      .notNull()
+      .references(() => missions.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    severity: text('severity').$type<FindingSeverity>().notNull(),
+    category: text('category').$type<FindingCategory>().notNull(),
+    title: text('title').notNull(),
+    description: text('description').notNull(),
+    evidence: text('evidence').notNull(),
+    file: text('file'),
+    line: integer('line'),
+    component: text('component'),
+    violates: text('violates'),
+    reproduction: text('reproduction'),
+    recommendation: text('recommendation').notNull(),
+    confidence: text('confidence').$type<FindingConfidence>().notNull(),
+    blocksDelivery: boolean('blocks_delivery').notNull().default(false),
+    state: text('state').$type<FindingState>().notNull().default('open'),
+    triageRule: text('triage_rule'),
+    ownerDecision: text('owner_decision'),
+    resolvedByTaskId: uuid('resolved_by_task_id'),
+    repairRound: integer('repair_round').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('mission_review_findings_key_idx').on(table.reviewId, table.key),
+    index('mission_review_findings_mission_idx').on(table.missionId),
+    index('mission_review_findings_state_idx').on(table.state),
+    index('mission_review_findings_severity_idx').on(table.severity),
+  ],
+);
+
+/** The completion receipt: the only thing that makes a mission delivery-ready. */
+export const missionReceipts = pgTable(
+  'mission_receipts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id')
+      .notNull()
+      .references(() => missions.id, { onDelete: 'cascade' }),
+    graphVersion: integer('graph_version').notNull(),
+    planVersion: integer('plan_version').notNull(),
+    content: jsonb('content').$type<CompletionReceiptContent>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('mission_receipts_version_idx').on(table.missionId, table.graphVersion),
+    index('mission_receipts_mission_idx').on(table.missionId),
+  ],
+);
+
+/* ------------------------------------------------------------- playbooks */
+
+export const playbooks = pgTable(
+  'playbooks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull(),
+    builtIn: boolean('built_in').notNull().default(false),
+    enabled: boolean('enabled').notNull().default(true),
+    latestVersion: integer('latest_version').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('playbooks_key_idx').on(table.key)],
+);
+
+/**
+ * A playbook version.
+ *
+ * Immutable. Editing a playbook writes a new row; a mission records the exact version it ran, so
+ * a playbook changed halfway through a mission cannot change what that mission is doing.
+ */
+export const playbookVersions = pgTable(
+  'playbook_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    playbookId: uuid('playbook_id')
+      .notNull()
+      .references(() => playbooks.id, { onDelete: 'cascade' }),
+    playbookKey: text('playbook_key').notNull(),
+    version: integer('version').notNull(),
+    definition: jsonb('definition').$type<PlaybookDefinition>().notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdBy: text('created_by').notNull().default('system'),
+    note: text('note'),
+  },
+  (table) => [
+    uniqueIndex('playbook_versions_version_idx').on(table.playbookId, table.version),
+    index('playbook_versions_key_idx').on(table.playbookKey),
+  ],
+);
+
+/* --------------------------------------------------- CI and release control */
+
+/**
+ * Every dispatch Jarvis was asked for, whether or not it happened.
+ *
+ * Refusals are rows too. A CI controller that silently drops what it will not do is impossible to
+ * debug and impossible to audit; `refusal_rule` says exactly which gate closed.
+ */
+export const ciDispatches = pgTable(
+  'ci_dispatches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    taskId: uuid('task_id').references(() => missionTasks.id, { onDelete: 'set null' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    purpose: text('purpose').$type<CiDispatchPurpose>().notNull(),
+    repositoryFullName: text('repository_full_name').notNull(),
+    workflowFile: text('workflow_file').notNull(),
+    ref: text('ref').notNull(),
+    commitSha: text('commit_sha').notNull(),
+    inputs: jsonb('inputs')
+      .$type<Record<string, string>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    inputsFingerprint: text('inputs_fingerprint').notNull(),
+    state: text('state').$type<CiDispatchState>().notNull().default('requested'),
+    refusalRule: text('refusal_rule'),
+    refusalReason: text('refusal_reason'),
+    requestedBy: text('requested_by').notNull(),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    approvedBy: text('approved_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    externalRunId: text('external_run_id'),
+    externalRunUrl: text('external_run_url'),
+    conclusion: text('conclusion'),
+    stageReport: jsonb('stage_report')
+      .$type<{ stage: string; state: string }[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('ci_dispatches_idempotency_idx').on(table.idempotencyKey),
+    index('ci_dispatches_mission_idx').on(table.missionId),
+    index('ci_dispatches_state_idx').on(table.state),
+    index('ci_dispatches_requested_idx').on(table.requestedAt),
+  ],
+);
+
+/**
+ * An owner's approval for one external build.
+ *
+ * `identity` is the hash of repository + workflow + ref + commit + inputs. When any of those
+ * change, the identity changes and the approval no longer matches — which is the whole mechanism
+ * behind "do not reuse a previous approval after the commit changes".
+ */
+export const releaseApprovals = pgTable(
+  'release_approvals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull().default('testflight'),
+    repositoryFullName: text('repository_full_name').notNull(),
+    workflowFile: text('workflow_file').notNull(),
+    ref: text('ref').notNull(),
+    commitSha: text('commit_sha').notNull(),
+    inputs: jsonb('inputs')
+      .$type<Record<string, string>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    identity: text('identity').notNull(),
+    state: text('state').$type<ReleaseApprovalState>().notNull().default('pending'),
+    bundleIdentifier: text('bundle_identifier'),
+    buildNumber: text('build_number'),
+    approvedBy: text('approved_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    supersededReason: text('superseded_reason'),
+    dispatchId: uuid('dispatch_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('release_approvals_project_idx').on(table.projectId),
+    index('release_approvals_state_idx').on(table.state),
+    uniqueIndex('release_approvals_identity_idx')
+      .on(table.identity)
+      .where(sql`state = 'approved'`),
+  ],
+);
+
+/* ------------------------------------------------------------- wallboards */
+
+/**
+ * A paired display device.
+ *
+ * Same credential discipline as a worker: hashed at rest, shown once, revocable, checked per
+ * request. What differs is the size of what it unlocks — a sanitised summary and nothing else.
+ */
+export const displayDevices = pgTable(
+  'display_devices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    tokenPrefix: text('token_prefix').notNull(),
+    location: text('location'),
+    scopes: jsonb('scopes')
+      .$type<DisplayScope[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    rotationSeconds: integer('rotation_seconds').notNull().default(20),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    lastSeenUserAgent: text('last_seen_user_agent'),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedReason: text('revoked_reason'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('display_devices_token_hash_idx').on(table.tokenHash),
+    index('display_devices_revoked_idx').on(table.revokedAt),
+  ],
+);
+
+/* --------------------------------------------------------- the app factory */
+
+/**
+ * App identity and shape.
+ *
+ * Signing material is conspicuously absent and stays absent: `signing_secret_names` holds the
+ * *names* of GitHub Actions secrets, so Jarvis can report that a repository looks configured
+ * without ever being able to read what it is configured with.
+ */
+export const projectAppProfiles = pgTable(
+  'project_app_profiles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    platform: text('platform').$type<AppPlatform>().notNull().default('ios'),
+    appName: text('app_name'),
+    bundleIdentifier: text('bundle_identifier'),
+    sku: text('sku'),
+    teamIdentifierReference: text('team_identifier_reference'),
+    appCategory: text('app_category'),
+    primaryColor: text('primary_color'),
+    iconState: text('icon_state').$type<IconState>().notNull().default('none'),
+    subscriptionModel: text('subscription_model')
+      .$type<SubscriptionModel>()
+      .notNull()
+      .default('not_applicable'),
+    storeKitProductIds: jsonb('storekit_product_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    requiresWidget: boolean('requires_widget').notNull().default(false),
+    requiresAppGroup: boolean('requires_app_group').notNull().default(false),
+    appGroupIdentifier: text('app_group_identifier'),
+    requiresNotifications: boolean('requires_notifications').notNull().default(false),
+    privacySensitiveApis: jsonb('privacy_sensitive_apis')
+      .$type<PrivacySensitiveApi[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    websiteRepository: text('website_repository'),
+    websiteDomain: text('website_domain'),
+    supportUrl: text('support_url'),
+    privacyUrl: text('privacy_url'),
+    termsUrl: text('terms_url'),
+    testFlightWorkflow: text('testflight_workflow'),
+    signingSecretNames: jsonb('signing_secret_names')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('project_app_profiles_project_idx').on(table.projectId)],
+);
+
 /* --------------------------------------------------------------- relations */
 
 export const missionRelations = relations(missions, ({ one, many }) => ({
@@ -1078,6 +1691,19 @@ export const missionPlanRelations = relations(missionPlans, ({ one }) => ({
 export const schema = {
   workers,
   missions,
+  missionTaskGraphs,
+  missionTasks,
+  missionTaskDependencies,
+  missionWriteLeases,
+  missionReviews,
+  missionReviewFindings,
+  missionReceipts,
+  playbooks,
+  playbookVersions,
+  ciDispatches,
+  releaseApprovals,
+  displayDevices,
+  projectAppProfiles,
   missionPlans,
   missionApprovals,
   missionClarifications,

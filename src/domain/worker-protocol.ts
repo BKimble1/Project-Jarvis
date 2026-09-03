@@ -85,6 +85,101 @@ export interface MissionAssignment {
   readonly allowWebResearch: boolean;
 }
 
+/**
+ * A single task of a task graph, assigned to a worker.
+ *
+ * Superset of what a `MissionAssignment` carries, plus everything the task itself needs: its
+ * role, the profile that confines it, the write set it declared, the branch it owns, and — for a
+ * reviewer — the *constructed* review context.
+ *
+ * Two absences are load-bearing. There is no field carrying another agent's transcript, so a
+ * reviewer cannot inherit the builder's conversation by any route. And there is no field naming a
+ * permission: `permissionProfileId` names a profile the worker resolves from its own installation,
+ * so the control plane cannot widen what a task may do by sending a different value.
+ */
+export interface TaskAssignment {
+  readonly kind: 'task';
+  readonly missionId: string;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly taskKey: string;
+  readonly graphVersion: number;
+  readonly attempt: number;
+  readonly role: string;
+  readonly permissionProfileId: string;
+  readonly taskType: string;
+  readonly title: string;
+  readonly description: string;
+  readonly acceptanceCriteria: readonly string[];
+  readonly expectedInputs: readonly string[];
+  readonly expectedOutputs: readonly string[];
+  readonly workspaceRequirement: string;
+  readonly declaredWriteSet: readonly string[];
+  readonly branchName: string | null;
+  readonly integrationBranch: string | null;
+  /** Task branches this task must merge, in dependency order. Only for an integrator. */
+  readonly mergeBranches: readonly string[];
+  readonly repairRound: number;
+  readonly maxTurns: number | null;
+  readonly timeLimitMs: number | null;
+  readonly maxOutputTokens: number | null;
+
+  readonly missionTitle: string;
+  readonly rawRequest: string;
+  readonly missionType: MissionType;
+  readonly riskLevel: string;
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly projectGoal: string | null;
+  readonly planVersion: number;
+  readonly plan: MissionPlanContent | null;
+  readonly graphSummary: string;
+  readonly siblingTasks: readonly { key: string; title: string; role: string; state: string }[];
+  readonly constraints: readonly string[];
+  readonly doNotTouch: readonly string[];
+  readonly repository: AssignmentRepository | null;
+  readonly clarifications: readonly { question: string; answer: string; assumed: boolean }[];
+  readonly projectContext: readonly string[];
+  readonly allowWebResearch: boolean;
+
+  /**
+   * Inputs a reviewer needs and only a reviewer gets.
+   *
+   * Assembled by the control plane from stored records. `null` for every other role, which is why
+   * a builder never receives the review context and a reviewer never receives anything else.
+   */
+  readonly review: TaskReviewInputs | null;
+  /** Findings a repair round is scoped to. `null` outside a repair. */
+  readonly repairScope: readonly TaskRepairFinding[] | null;
+  readonly verification: readonly {
+    check: string;
+    outcome: string;
+    required: boolean;
+    detail: string;
+  }[];
+}
+
+export interface TaskReviewInputs {
+  readonly planSummary: string;
+  readonly planApproach: string;
+  readonly planScope: readonly string[];
+  readonly planOutOfScope: readonly string[];
+  readonly acceptanceCriteria: readonly string[];
+  readonly diff: string;
+  readonly changedFiles: readonly string[];
+  readonly diffFingerprint: string;
+  readonly artifacts: readonly { title: string; kind: string }[];
+  readonly repositoryInstructions: string | null;
+}
+
+export interface TaskRepairFinding {
+  readonly key: string;
+  readonly severity: string;
+  readonly title: string;
+  readonly recommendation: string;
+  readonly file: string | null;
+}
+
 export interface AssignmentRepository {
   readonly owner: string;
   readonly name: string;
@@ -120,6 +215,14 @@ export const workerClaimSchema = z.object({
   heartbeat: workerHeartbeatSchema,
   /** Which kinds of run this worker is able to take right now. */
   accepts: z.array(z.enum(RUN_KINDS)).min(1).max(RUN_KINDS.length),
+  /**
+   * Roles this worker will take, for the Prompt 3 task queue.
+   *
+   * Optional so a Prompt 2 worker keeps working unchanged. A worker with no model credential
+   * sends only the deterministic roles, so it can still integrate and verify without ever being
+   * handed something it cannot do.
+   */
+  roles: z.array(z.string().trim().min(3).max(40)).max(20).optional(),
 });
 export type WorkerClaimInput = z.infer<typeof workerClaimSchema>;
 

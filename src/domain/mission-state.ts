@@ -71,6 +71,15 @@ export const MISSION_TRANSITIONS: readonly MissionTransition[] = [
 
   /* Queue and claim */
   T('queued', 'claimed', ['worker'], 'Claimed by a worker'),
+  /*
+   * Prompt 3: a multi-agent mission has no single claim moment.
+   *
+   * Its tasks are claimed individually and the mission is "running" as soon as any of them is, so
+   * it moves straight from `queued` to `running` rather than passing through a mission-level
+   * `claimed`/`preparing_workspace` that no longer describes anything real. The single-agent path
+   * is untouched and still goes through both.
+   */
+  T('queued', 'running', ['system', 'worker'], 'Its first task started'),
   T('queued', 'awaiting_plan_approval', ['owner', 'system'], 'Approval withdrawn or plan edited'),
   T('queued', 'cancelled', ['owner'], 'Cancelled while queued'),
   T('queued', 'failed', ['system'], 'Could not be started'),
@@ -89,6 +98,9 @@ export const MISSION_TRANSITIONS: readonly MissionTransition[] = [
   T('running', 'verifying', ['worker'], 'Running verification'),
   T('running', 'creating_pull_request', ['worker'], 'Opening the draft pull request'),
   T('running', 'completed', ['worker'], 'Finished'),
+  /* A multi-agent mission reaches its draft pull request through the delivery task. */
+  T('running', 'pull_request_ready', ['worker', 'system'], 'The draft pull request is open'),
+  T('running', 'awaiting_plan_approval', ['system'], 'A revised graph needs approving'),
   T('running', 'failed', ['worker', 'system'], 'Failed'),
   T('running', 'stopping', ['owner'], 'Stop requested'),
   T('waiting_for_permission', 'running', ['owner', 'worker'], 'Permission decided'),

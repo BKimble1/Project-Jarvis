@@ -1,0 +1,499 @@
+import { createHash } from 'node:crypto';
+import { ConflictError, ForbiddenError, NotFoundError } from '@/domain/errors';
+import { AGENT_ROLES, isReviewRole, type AgentRole } from '@/domain/agent-role';
+import {
+  assertTaskTransition,
+  isTerminalTaskState,
+  type MissionTask,
+  type TaskState,
+} from '@/domain/mission-task';
+import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
+import { boundText, redactSecrets } from '@/domain/redaction';
+import type { ReviewSubmissionInput } from '@/domain/mission-review';
+import type { MissionPlanContent } from '@/domain/mission-plan';
+import type { TaskAssignment } from '@/domain/worker-protocol';
+import type { CapacityLimits } from '@/domain/capacity';
+import type {
+  ArtifactRepository,
+  EventRepository,
+  MissionRepository,
+  PlanRepository,
+  RunRepository,
+  VerificationRepository,
+  WorkerRepository,
+} from '../repositories/mission-types';
+import type { ProjectRepository, SourceRepository } from '../repositories/types';
+import type {
+  ReviewRepository,
+  TaskGraphRepository,
+  TaskRepository,
+  WriteLeaseRepository,
+} from '../repositories/factory-types';
+import type { MissionOrchestrator } from './orchestrator';
+
+/**
+ * The worker's side of the task protocol.
+ *
+ * Same discipline as `WorkerService` in Prompt 2, and for the same reason: every method starts by
+ * proving the caller owns what it is talking about. `authoriseTask` is the single choke point —
+ * the task exists, its run belongs to *this* worker, and that run is still the task's active run.
+ * A worker that has been superseded cannot report on a task it no longer holds.
+ *
+ * The assignment this service builds is assembled entirely from Jarvis's own tables. Nothing a
+ * previous agent said reaches a later one except through a record the orchestrator chose to
+ * include — which is what makes the reviewer's cold context a property of the protocol rather
+ * than a convention the prompt asks for.
+ */
+
+export interface TaskWorkerServiceDeps {
+  readonly missions: MissionRepository;
+  readonly plans: PlanRepository;
+  readonly graphs: TaskGraphRepository;
+  readonly tasks: TaskRepository;
+  readonly leases: WriteLeaseRepository;
+  readonly reviews: ReviewRepository;
+  readonly runs: RunRepository;
+  readonly events: EventRepository;
+  readonly verifications: VerificationRepository;
+  readonly artifacts: ArtifactRepository;
+  readonly workers: WorkerRepository;
+  readonly projects: ProjectRepository;
+  readonly sources: SourceRepository;
+  readonly orchestrator: MissionOrchestrator;
+  readonly limits: CapacityLimits;
+  readonly allowWebResearch: boolean;
+  readonly clock?: () => Date;
+}
+
+export class TaskWorkerService {
+  private readonly clock: () => Date;
+
+  constructor(private readonly deps: TaskWorkerServiceDeps) {
+    this.clock = deps.clock ?? (() => new Date());
+  }
+
+  /* --------------------------------------------------------------- claiming */
+
+  /**
+   * Hand out the next task this worker may take.
+   *
+   * The claim itself is one atomic statement in the repository; everything here is preparation
+   * and assembly. A worker that names no roles, or names only roles it cannot perform, gets
+   * nothing rather than something it will fail at.
+   */
+  async claimTask(workerId: string, roles: readonly string[]): Promise<TaskAssignment | null> {
+    const worker = await this.deps.workers.findById(workerId);
+    if (!worker || worker.revokedAt) return null;
+
+    const valid = roles.filter((role): role is AgentRole =>
+      (AGENT_ROLES as readonly string[]).includes(role),
+    );
+    if (valid.length === 0) return null;
+
+    const posture = await this.deps.orchestrator.posture();
+    const limits = await this.deps.orchestrator.limits();
+
+    const claimed = await this.deps.tasks.claimNext({
+      workerId,
+      now: this.clock(),
+      roles: valid,
+      limits: {
+        maxActiveRuns: limits.maxActiveRuns,
+        maxRunsPerMission: limits.maxRunsPerMission,
+        maxParallelWriters: limits.maxParallelWriters,
+        maxParallelReadOnly: limits.maxParallelReadOnly,
+        maxActiveMissions: limits.maxActiveMissions,
+      },
+      accepting: posture === 'open',
+    });
+    if (!claimed) return null;
+
+    await this.deps.events.record(claimed.task.missionId, {
+      type: 'run_started',
+      actor: 'system',
+      summary: `${claimed.task.key} (${claimed.task.role}) was claimed by ${worker.name}.`,
+      detail: { taskKey: claimed.task.key, runId: claimed.runId },
+    });
+    await this.deps.orchestrator.tick(claimed.task.missionId);
+
+    return this.buildAssignment(claimed.task, claimed.runId);
+  }
+
+  /**
+   * Assemble everything a task needs, and nothing it does not.
+   *
+   * The `review` block is populated only for a review role. That is the mechanism behind cold
+   * context: a builder's assignment has `review: null` and a reviewer's has no field that could
+   * carry a builder's transcript, so the separation is structural rather than remembered.
+   */
+  private async buildAssignment(task: MissionTask, runId: string): Promise<TaskAssignment> {
+    const mission = await this.deps.missions.findById(task.missionId);
+    if (!mission) throw new NotFoundError('Mission');
+    const graph = await this.deps.graphs.byVersion(task.missionId, task.graphVersion);
+    const plan = await this.deps.plans.byVersion(task.missionId, task.planVersion);
+    const project = mission.projectId ? await this.deps.projects.findById(mission.projectId) : null;
+    const siblings = graph ? await this.deps.tasks.listByGraph(graph.id) : [];
+    const verifications = await this.deps.verifications.list(task.missionId);
+    const artifacts = await this.deps.artifacts.list(task.missionId);
+
+    const repository = await this.resolveRepository(mission);
+    const branchName = await this.ensureBranch(task, mission);
+    const integrationBranch = await this.ensureIntegrationBranch(mission);
+
+    /* An integrator merges the finished write branches, in dependency order. */
+    const mergeBranches = siblings
+      .filter((sibling) => sibling.state === 'succeeded' && sibling.branchName)
+      .sort((left, right) => left.position - right.position)
+      .map((sibling) => sibling.branchName!)
+      .filter((branch) => branch !== integrationBranch);
+
+    const review = isReviewRole(task.role)
+      ? await this.buildReviewInputs(task, mission, plan?.content ?? null, artifacts)
+      : null;
+
+    const repairScope =
+      task.repairRound > 0
+        ? (await this.deps.reviews.listFindings(task.missionId))
+            .filter((finding) => finding.state === 'accepted')
+            .map((finding) => ({
+              key: finding.key,
+              severity: finding.severity,
+              title: finding.title,
+              recommendation: finding.recommendation,
+              file: finding.file,
+            }))
+        : null;
+
+    return {
+      kind: 'task',
+      missionId: mission.id,
+      runId,
+      taskId: task.id,
+      taskKey: task.key,
+      graphVersion: task.graphVersion,
+      attempt: task.attempt,
+      role: task.role,
+      permissionProfileId: task.permissionProfileId,
+      taskType: task.taskType,
+      title: task.title,
+      description: task.description,
+      acceptanceCriteria: task.acceptanceCriteria,
+      expectedInputs: task.expectedInputs,
+      expectedOutputs: task.expectedOutputs,
+      workspaceRequirement: task.workspaceRequirement,
+      declaredWriteSet: task.declaredWriteSet,
+      branchName,
+      integrationBranch,
+      mergeBranches,
+      repairRound: task.repairRound,
+      maxTurns: task.maxTurns,
+      timeLimitMs: task.timeLimitMs,
+      maxOutputTokens: task.maxOutputTokens,
+
+      missionTitle: mission.title,
+      rawRequest: mission.rawRequest,
+      missionType: mission.type,
+      riskLevel: mission.riskLevel,
+      projectId: mission.projectId ?? '',
+      projectName: project?.name ?? 'this project',
+      projectGoal: project?.goal ?? null,
+      planVersion: task.planVersion,
+      plan: plan?.content ?? null,
+      graphSummary: graph?.summary ?? '',
+      siblingTasks: siblings.map((sibling) => ({
+        key: sibling.key,
+        title: sibling.title,
+        role: sibling.role,
+        state: sibling.state,
+      })),
+      constraints: mission.constraints,
+      doNotTouch: mission.doNotTouch,
+      repository,
+      clarifications: [],
+      projectContext: [],
+      allowWebResearch: this.deps.allowWebResearch,
+      review,
+      repairScope,
+      verification: verifications.map((record) => ({
+        check: record.command,
+        outcome: record.outcome,
+        required: record.source !== 'optional',
+        detail: record.reason ?? `exit ${record.exitCode ?? '—'}`,
+      })),
+    };
+  }
+
+  /**
+   * What the reviewer sees.
+   *
+   * Assembled from the plan, the criteria, the recorded diff and the artifacts. There is no
+   * parameter here for a transcript and no code path that reads `mission_events` of type
+   * `agent_message` — a reviewer's world is built from records, never from another agent's words.
+   */
+  private async buildReviewInputs(
+    task: MissionTask,
+    mission: Awaited<ReturnType<MissionRepository['findById']>>,
+    plan: MissionPlanContent | null,
+    artifacts: Awaited<ReturnType<ArtifactRepository['list']>>,
+  ): Promise<TaskAssignment['review']> {
+    const graph = await this.deps.graphs.byVersion(task.missionId, task.graphVersion);
+    const siblings = graph ? await this.deps.tasks.listByGraph(graph.id) : [];
+    const integration = siblings.find((sibling) => sibling.taskType === 'integration');
+    const changedFiles = [...new Set(siblings.flatMap((sibling) => sibling.actualChangedFiles))];
+    const content = plan;
+
+    /*
+     * The diff is identified by its head sha rather than carried inline: the worker already has
+     * the integration branch checked out and can produce the diff itself, and shipping a large
+     * patch through the control plane would be storing a copy of the repository in the database.
+     */
+    const fingerprint = createHash('sha256')
+      .update(`${integration?.headSha ?? ''}|${changedFiles.sort().join('|')}`)
+      .digest('hex');
+
+    return {
+      planSummary: content?.summary ?? mission?.title ?? '',
+      planApproach: content?.approach ?? '',
+      planScope: content?.scope ?? [],
+      planOutOfScope: content?.outOfScope ?? [],
+      acceptanceCriteria: content?.acceptanceCriteria ?? mission?.acceptanceCriteria ?? [],
+      /* Empty: the reviewer reads the diff from its own clone, which is the honest source. */
+      diff: '',
+      changedFiles,
+      diffFingerprint: fingerprint,
+      artifacts: artifacts.map((artifact) => ({ title: artifact.title, kind: artifact.kind })),
+      repositoryInstructions: null,
+    };
+  }
+
+  private async resolveRepository(
+    mission: NonNullable<Awaited<ReturnType<MissionRepository['findById']>>>,
+  ): Promise<TaskAssignment['repository']> {
+    if (!mission.repositoryOwner || !mission.repositoryName) return null;
+    const sources = mission.projectId
+      ? await this.deps.sources.listByProject(mission.projectId)
+      : [];
+    const source =
+      sources.find((candidate) => candidate.kind === 'github_repo' && candidate.isPrimary) ??
+      sources.find((candidate) => candidate.kind === 'github_repo');
+    return {
+      owner: mission.repositoryOwner,
+      name: mission.repositoryName,
+      fullName: `${mission.repositoryOwner}/${mission.repositoryName}`,
+      defaultBranch: mission.baseBranch ?? source?.github?.defaultBranch ?? 'main',
+      cloneUrl: `https://github.com/${mission.repositoryOwner}/${mission.repositoryName}.git`,
+      visibility: source?.github?.visibility ?? null,
+    };
+  }
+
+  /** A task branch is built from the mission id and the task key, then re-validated. */
+  private async ensureBranch(
+    task: MissionTask,
+    mission: NonNullable<Awaited<ReturnType<MissionRepository['findById']>>>,
+  ): Promise<string | null> {
+    if (task.workspaceRequirement !== 'task_workspace') return task.branchName;
+    if (task.branchName) return task.branchName;
+    const slug = slugifyForBranch(`${task.key} ${task.title}`) || task.key;
+    const branch = buildBranchName(mission.id, slug);
+    await this.deps.tasks.patch(task.id, { branchName: branch });
+    return branch;
+  }
+
+  private async ensureIntegrationBranch(
+    mission: NonNullable<Awaited<ReturnType<MissionRepository['findById']>>>,
+  ): Promise<string | null> {
+    if (mission.integrationBranch) return mission.integrationBranch;
+    const branch = buildBranchName(mission.id, 'integration');
+    await this.deps.missions.patch(mission.id, { integrationBranch: branch });
+    return branch;
+  }
+
+  /* ------------------------------------------------------------- reporting */
+
+  /**
+   * The single choke point.
+   *
+   * Everything a worker reports goes through here first: the task exists, the run belongs to this
+   * worker, and it is still the task's active run. A worker whose task was reassigned gets a
+   * conflict rather than the ability to write over whoever holds it now.
+   */
+  private async authoriseTask(
+    workerId: string,
+    taskId: string,
+    runId: string,
+  ): Promise<MissionTask> {
+    const task = await this.deps.tasks.findById(taskId);
+    if (!task) throw new NotFoundError('Task');
+    const run = await this.deps.runs.findById(runId);
+    if (!run) throw new NotFoundError('Run');
+    if (run.workerId !== workerId) {
+      throw new ForbiddenError('That run belongs to a different worker.');
+    }
+    if (task.activeRunId !== runId) {
+      throw new ConflictError('That run is no longer this task’s active run.');
+    }
+    return task;
+  }
+
+  async reportTaskState(
+    workerId: string,
+    input: {
+      runId: string;
+      taskId: string;
+      taskState?: string;
+      currentAction?: string | null;
+      agentSessionId?: string | null;
+      workspacePath?: string | null;
+      branchName?: string | null;
+      baseSha?: string | null;
+      headSha?: string | null;
+      filesChanged?: readonly string[];
+      pullRequestUrl?: string | null;
+      pullRequestNumber?: number | null;
+      usage?: {
+        inputTokens?: number | null;
+        outputTokens?: number | null;
+        totalCostUsd?: number | null;
+        turns?: number | null;
+        durationMs?: number | null;
+      } | null;
+      completionSummary?: string | null;
+      failureCode?: string | null;
+      failureMessage?: string | null;
+      workspacePreserved?: boolean | null;
+      runtimeName?: string | null;
+      runtimeVersion?: string | null;
+    },
+  ): Promise<{ task: MissionTask; stopRequested: boolean }> {
+    const task = await this.authoriseTask(workerId, input.taskId, input.runId);
+    const now = this.clock();
+
+    await this.deps.runs.patch(input.runId, {
+      currentAction: input.currentAction ?? null,
+      ...(input.agentSessionId !== undefined ? { agentSessionId: input.agentSessionId } : {}),
+      ...(input.runtimeName !== undefined ? { runtimeName: input.runtimeName } : {}),
+      ...(input.runtimeVersion !== undefined ? { runtimeVersion: input.runtimeVersion } : {}),
+      ...(input.workspacePath !== undefined ? { workspacePath: input.workspacePath } : {}),
+      ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
+      ...(input.headSha !== undefined ? { headSha: input.headSha } : {}),
+      ...(input.filesChanged ? { filesChanged: [...input.filesChanged] } : {}),
+      lastEventAt: now,
+    });
+
+    const patch = {
+      lastActivityAt: now,
+      ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
+      ...(input.baseSha !== undefined ? { baseSha: input.baseSha } : {}),
+      ...(input.headSha !== undefined ? { headSha: input.headSha } : {}),
+      ...(input.workspacePath !== undefined ? { workspacePath: input.workspacePath } : {}),
+      ...(input.filesChanged ? { actualChangedFiles: [...input.filesChanged] } : {}),
+      ...(input.completionSummary !== undefined ? { summary: input.completionSummary } : {}),
+      ...(input.failureMessage !== undefined ? { failureMessage: input.failureMessage } : {}),
+      ...(input.workspacePreserved !== undefined && input.workspacePreserved !== null
+        ? { workspacePreserved: input.workspacePreserved }
+        : {}),
+      ...(input.usage
+        ? {
+            usage: {
+              inputTokens: input.usage.inputTokens ?? null,
+              outputTokens: input.usage.outputTokens ?? null,
+              totalCostUsd: input.usage.totalCostUsd ?? null,
+              turns: input.usage.turns ?? null,
+              durationMs: input.usage.durationMs ?? null,
+            },
+          }
+        : {}),
+    };
+
+    /* No state named: metadata only, exactly as the mission protocol behaves. */
+    if (!input.taskState) {
+      const updated = await this.deps.tasks.patch(task.id, patch);
+      return { task: updated, stopRequested: false };
+    }
+
+    const next = input.taskState as TaskState;
+    assertTaskTransition(task.state, next, 'worker');
+    const finished = isTerminalTaskState(next);
+    const moved = await this.deps.tasks.transition(
+      task.id,
+      next,
+      {
+        ...patch,
+        ...(input.failureCode !== undefined
+          ? { failureCode: input.failureCode as MissionTask['failureCode'] }
+          : {}),
+        ...(finished ? { finishedAt: now, activeRunId: null } : {}),
+      },
+      task.state,
+    );
+    if (!moved) {
+      throw new ConflictError('That task changed while you were reporting on it.');
+    }
+
+    if (finished) {
+      await this.deps.runs.patch(input.runId, {
+        state: next === 'succeeded' ? 'succeeded' : next === 'stopped' ? 'stopped' : 'failed',
+        finishedAt: now,
+      });
+      await this.deps.leases.release(task.id, `The task ${next}.`);
+      if (input.pullRequestUrl) {
+        await this.deps.missions.patch(task.missionId, {
+          pullRequestUrl: input.pullRequestUrl,
+          pullRequestNumber: input.pullRequestNumber ?? null,
+        });
+      }
+      await this.deps.orchestrator.tick(task.missionId);
+    }
+
+    return { task: moved, stopRequested: false };
+  }
+
+  /* ---------------------------------------------------------------- leases */
+
+  async acquireLease(
+    workerId: string,
+    input: { runId: string; taskId: string; paths: readonly string[] },
+  ): Promise<{ granted: boolean; reason: string | null }> {
+    const task = await this.authoriseTask(workerId, input.taskId, input.runId);
+
+    /*
+     * The paths a task may lease are the ones its *approved graph* declared, not the ones the
+     * worker asks for. A worker cannot widen its own lease by sending a longer list.
+     */
+    const lease = await this.deps.leases.acquire({
+      missionId: task.missionId,
+      taskId: task.id,
+      runId: input.runId,
+      paths: task.declaredWriteSet,
+    });
+    if (!lease) {
+      const held = await this.deps.leases.listHeld(task.missionId);
+      return {
+        granted: false,
+        reason: `Another task already holds a write lease over ${held[0]?.paths.slice(0, 3).join(', ') ?? 'these files'}.`,
+      };
+    }
+    return { granted: true, reason: null };
+  }
+
+  /* ---------------------------------------------------------------- review */
+
+  async submitReview(workerId: string, input: ReviewSubmissionInput): Promise<{ ok: true }> {
+    const task = await this.authoriseTask(workerId, input.taskId, input.runId);
+    if (!isReviewRole(task.role)) {
+      throw new ForbiddenError('Only a review task may submit a verdict.');
+    }
+    await this.deps.orchestrator.recordReview({ ...input, reviewerRole: task.role });
+    return { ok: true };
+  }
+
+  /* ------------------------------------------------------------ diagnostics */
+
+  /** A short, redacted description for the workers page. Never a credential, never a path. */
+  describeAssignment(assignment: TaskAssignment): string {
+    return boundText(
+      redactSecrets(`${assignment.taskKey} · ${assignment.role} · ${assignment.title}`),
+      200,
+    );
+  }
+}

@@ -33,7 +33,33 @@ const ALLOWED_SUBCOMMANDS = new Set([
   'ls-files',
   'symbolic-ref',
   'show',
+  /*
+   * Prompt 3: the worker merges finished task branches into the mission integration branch.
+   *
+   * This is the same shape as pushing. The *agent* still cannot merge — `P-CMD03` in
+   * `policy.ts` denies `git merge` in any command an agent runs, and that list is unchanged —
+   * while the *worker* performs the merge itself, deterministically, only ever into a `jarvis/`
+   * branch that `assertMissionBranchName` re-checks immediately beforehand. Two lists, two
+   * audiences; widening the worker's does not widen the agent's.
+   */
+  'merge',
 ]);
+
+/**
+ * Merge strategy options that resolve a conflict by discarding one side.
+ *
+ * Refused outright rather than left to the caller's discretion: `-X ours` turns "these two agents
+ * disagreed" into "one of them silently lost", which is the exact outcome integration exists to
+ * prevent.
+ */
+const FORBIDDEN_MERGE_FLAGS = [
+  '-X',
+  '--strategy-option',
+  '-s',
+  '--strategy',
+  '--allow-unrelated-histories',
+  '--squash',
+];
 
 export interface GitResult {
   readonly code: number;
@@ -67,6 +93,21 @@ export async function git(args: readonly string[], options: GitOptions): Promise
   const subcommand = args.find((arg) => !arg.startsWith('-'));
   if (!subcommand || !ALLOWED_SUBCOMMANDS.has(subcommand)) {
     throw new ValidationError(`git ${subcommand ?? '(none)'} is not available to the worker.`);
+  }
+  if (subcommand === 'merge') {
+    for (const arg of args) {
+      const flag = arg.split('=')[0] ?? arg;
+      /* `-Xours` attaches its value, so a prefix test is needed as well as an exact one. */
+      const forbidden =
+        FORBIDDEN_MERGE_FLAGS.includes(flag) ||
+        arg.startsWith('-X') ||
+        (arg.startsWith('-s') && arg !== '-s' && !arg.startsWith('--'));
+      if (forbidden) {
+        throw new ValidationError(
+          `git merge ${arg.slice(0, 20)} resolves conflicts by discarding work, so Jarvis never uses it.`,
+        );
+      }
+    }
   }
   const result = await run('git', args, options);
   if (result.code !== 0) {

@@ -7,6 +7,7 @@ import type {
   WorkerPollInput,
   WorkerPollResponse,
   WorkerRunStateInput,
+  TaskAssignment,
 } from '@/domain/worker-protocol';
 import type {
   ArtifactInput,
@@ -78,6 +79,63 @@ export class ControlPlaneClient {
     pauseRequested: boolean;
   }> {
     return this.post('/api/worker/run', input);
+  }
+
+  /**
+   * Ask for a write lease before touching anything.
+   *
+   * Returns `{granted:false}` rather than throwing when another task holds an overlapping lease:
+   * a task that has to wait is an ordinary outcome, not an error, and treating it as one would
+   * turn a scheduling decision into a failed task.
+   */
+  /** Claim the next task of a task graph. Returns `null` when there is nothing this worker may take. */
+  async claimTask(input: {
+    heartbeat: unknown;
+    roles: readonly string[];
+  }): Promise<TaskAssignment | null> {
+    const response = await this.post<{ assignment: TaskAssignment | null }>(
+      '/api/worker/claim-task',
+      input,
+    );
+    return response.assignment;
+  }
+
+  acquireLease(input: {
+    runId: string;
+    taskId: string;
+    paths: readonly string[];
+  }): Promise<{ granted: boolean; reason: string | null }> {
+    return this.post('/api/worker/lease', input);
+  }
+
+  /** Report a task's state. `taskState` omitted means metadata only, as with `runState`. */
+  taskState(input: {
+    runId: string;
+    taskId: string;
+    taskState?: string;
+    [key: string]: unknown;
+  }): Promise<{ ok: true; taskState: string; stopRequested: boolean; pauseRequested: boolean }> {
+    return this.post('/api/worker/task', input);
+  }
+
+  /**
+   * Submit a review verdict.
+   *
+   * Deliberately does *not* return what the control plane decided to do about it. A reviewing
+   * worker has no business knowing whether its verdict triggered a repair — and a fresh reviewer
+   * in the next round must not be able to find out what the last one concluded.
+   */
+  submitReview(input: {
+    runId: string;
+    taskId: string;
+    verdict: string;
+    summary: string;
+    findings: readonly unknown[];
+    reviewedFiles: readonly string[];
+    diffFingerprint: string;
+    unavailableReason: string | null;
+  }): Promise<{ ok: true }> {
+    return this.post('/api/worker/review', input);
   }
 
   submitPlan(

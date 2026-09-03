@@ -267,8 +267,41 @@ export type PermissionDecisionInput = z.infer<typeof permissionDecisionSchema>;
 
 /* ------------------------------------------------------------ verifications */
 
-export const VERIFICATION_OUTCOMES = ['passed', 'failed', 'unavailable', 'skipped'] as const;
+/**
+ * How a check really turned out.
+ *
+ * Five values and no sixth, and in particular no value that means "close enough". `unavailable`
+ * (the tool is not on this machine), `skipped` (Jarvis chose not to run it) and `not_applicable`
+ * (there is nothing here for it to check) are all distinct from each other and none of them is a
+ * pass. Collapsing any of them into `passed` is the single most tempting dishonesty in this
+ * system, so the type makes it impossible to do by accident.
+ */
+export const VERIFICATION_OUTCOMES = [
+  'passed',
+  'failed',
+  'unavailable',
+  'skipped',
+  'not_applicable',
+] as const;
 export type VerificationOutcome = (typeof VERIFICATION_OUTCOMES)[number];
+
+export const VERIFICATION_OUTCOME_LABELS: Record<VerificationOutcome, string> = {
+  passed: 'Passed',
+  failed: 'Failed',
+  unavailable: 'Unavailable here',
+  skipped: 'Skipped',
+  not_applicable: 'Not applicable',
+};
+
+/** The outcomes that are emphatically not a pass. Used wherever "did it pass?" is asked. */
+export function verificationPassed(outcome: VerificationOutcome): boolean {
+  return outcome === 'passed';
+}
+
+/** True when the check produced no evidence either way, so nothing may be concluded from it. */
+export function verificationInconclusive(outcome: VerificationOutcome): boolean {
+  return outcome === 'unavailable' || outcome === 'skipped' || outcome === 'not_applicable';
+}
 
 export interface MissionVerification {
   readonly id: string;

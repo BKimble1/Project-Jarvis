@@ -184,6 +184,22 @@ export interface Mission {
   readonly currentPlanVersion: number | null;
   readonly approvedPlanVersion: number | null;
 
+  /**
+   * Prompt 3: the task graph is versioned and approved exactly like the plan.
+   *
+   * Null on a mission that predates a graph, or one that never needed one — the single-agent
+   * path from Prompt 2 still works with both of these unset.
+   */
+  readonly currentGraphVersion: number | null;
+  readonly approvedGraphVersion: number | null;
+  readonly playbookKey: string | null;
+  readonly playbookVersion: number | null;
+  /** Where finished task branches are merged. Never the default branch. */
+  readonly integrationBranch: string | null;
+  readonly repairRoundsUsed: number;
+  /** Present only once the mission has a completion receipt; its absence means "not ready". */
+  readonly receiptId: string | null;
+
   /** Set only by an explicit owner override, so a paused project cannot execute by accident. */
   readonly executionOverrideAt: string | null;
   readonly executionOverrideReason: string | null;

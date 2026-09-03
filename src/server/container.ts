@@ -31,6 +31,36 @@ import { BriefingService } from '@/server/services/briefing-service';
 import { ProjectSyncService } from '@/server/services/sync-service';
 import { GithubImportService } from '@/server/services/import-service';
 import { AttentionService } from '@/server/services/attention-service';
+import {
+  DrizzleAppProfileRepository,
+  DrizzleCiDispatchRepository,
+  DrizzleDisplayDeviceRepository,
+  DrizzlePlaybookRepository,
+  DrizzleReceiptRepository,
+  DrizzleReleaseApprovalRepository,
+  DrizzleReviewRepository,
+  DrizzleTaskGraphRepository,
+  DrizzleTaskRepository,
+  DrizzleWriteLeaseRepository,
+} from './repositories/factory-drizzle';
+import type {
+  AppProfileRepository,
+  CiDispatchRepository,
+  DisplayDeviceRepository,
+  PlaybookRepository,
+  ReceiptRepository,
+  ReleaseApprovalRepository,
+  ReviewRepository,
+  TaskGraphRepository,
+  TaskRepository,
+  WriteLeaseRepository,
+} from './repositories/factory-types';
+import { MissionOrchestrator } from './missions/orchestrator';
+import { TaskWorkerService } from './missions/task-worker-service';
+import { PlaybookService } from './playbooks/playbook-service';
+import { CiController, type WorkflowDispatcher } from './ci/controller';
+import { GithubWorkflowDispatcher } from './ci/github-dispatcher';
+import { DisplayAuth } from './display/display-auth';
 import { StatusQueryRouter } from '@/server/query/router';
 import { SessionStore, OAuthStateStore } from '@/server/auth/session';
 import {
@@ -107,6 +137,23 @@ export interface Services {
   readonly idempotency: IdempotencyRepository;
   readonly missions: MissionService;
   readonly workerService: WorkerService;
+
+  /* The Prompt 3 factory. */
+  readonly graphs: TaskGraphRepository;
+  readonly tasks: TaskRepository;
+  readonly leases: WriteLeaseRepository;
+  readonly reviews: ReviewRepository;
+  readonly receipts: ReceiptRepository;
+  readonly playbooks: PlaybookRepository;
+  readonly ciDispatches: CiDispatchRepository;
+  readonly releaseApprovals: ReleaseApprovalRepository;
+  readonly displayDevices: DisplayDeviceRepository;
+  readonly appProfiles: AppProfileRepository;
+  readonly orchestrator: MissionOrchestrator;
+  readonly taskWorkerService: TaskWorkerService;
+  readonly playbookService: PlaybookService;
+  readonly ci: CiController;
+  readonly displays: DisplayAuth;
 }
 
 export interface BuildServicesOverrides {
@@ -217,6 +264,86 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  /* ------------------------------------------------------------ the factory */
+  const graphs = new DrizzleTaskGraphRepository(db);
+  const tasks = new DrizzleTaskRepository(db);
+  const leases = new DrizzleWriteLeaseRepository(db);
+  const reviews = new DrizzleReviewRepository(db);
+  const receipts = new DrizzleReceiptRepository(db);
+  const playbookRepo = new DrizzlePlaybookRepository(db);
+  const ciDispatches = new DrizzleCiDispatchRepository(db);
+  const releaseApprovals = new DrizzleReleaseApprovalRepository(db);
+  const displayDevices = new DrizzleDisplayDeviceRepository(db);
+  const appProfiles = new DrizzleAppProfileRepository(db);
+
+  const orchestrator = new MissionOrchestrator({
+    missions: missionRepo,
+    plans,
+    graphs,
+    tasks,
+    leases,
+    reviews,
+    receipts,
+    playbooks: playbookRepo,
+    verifications,
+    artifacts,
+    events: missionEvents,
+    runs: missionRuns,
+    projects,
+    settings,
+    limits: config.missions.capacity,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  const taskWorkerService = new TaskWorkerService({
+    missions: missionRepo,
+    plans,
+    graphs,
+    tasks,
+    leases,
+    reviews,
+    runs: missionRuns,
+    events: missionEvents,
+    verifications,
+    artifacts,
+    workers: workerRepo,
+    projects,
+    sources,
+    orchestrator,
+    limits: config.missions.capacity,
+    allowWebResearch: config.missions.allowWebResearch,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  const playbookService = new PlaybookService({ playbooks: playbookRepo });
+
+  /*
+   * The CI controller gets a dispatcher only when it has a credential of its own. A null
+   * dispatcher is not a degraded mode to work around — it is the reason a dispatch is refused
+   * with R-CI2 rather than quietly borrowing something else's token.
+   */
+  const dispatcher: WorkflowDispatcher | null = config.ci.token
+    ? new GithubWorkflowDispatcher({ token: config.ci.token, apiUrl: config.ci.apiUrl })
+    : null;
+  const ci = new CiController({
+    config: {
+      enabled: config.ci.enabled,
+      credentialConfigured: config.ci.credentialConfigured,
+      repositories: config.ci.repositories,
+      workflows: config.ci.workflows,
+      refs: config.ci.refs,
+      maxDispatchesPerHour: config.ci.maxDispatchesPerHour,
+    },
+    dispatcher,
+    dispatches: ciDispatches,
+    approvals: releaseApprovals,
+    appProfiles,
+    activity,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  const displays = new DisplayAuth(displayDevices);
+
   const router = new StatusQueryRouter({
     projects,
     briefings,
@@ -261,6 +388,21 @@ export function buildServices(
     idempotency,
     missions,
     workerService,
+    graphs,
+    tasks,
+    leases,
+    reviews,
+    receipts,
+    playbooks: playbookRepo,
+    ciDispatches,
+    releaseApprovals,
+    displayDevices,
+    appProfiles,
+    orchestrator,
+    taskWorkerService,
+    playbookService,
+    ci,
+    displays,
   };
 }
 

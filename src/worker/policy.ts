@@ -1,4 +1,6 @@
 import { assertInsideWorkspace, isInsideWorkspace } from '@/domain/workspace-safety';
+import { AGENT_ROLE_LABELS, type AgentRole, type PermissionProfile } from '@/domain/agent-role';
+import { filesOutsideWriteSet, describeWriteSet } from '@/domain/write-set';
 
 /**
  * The worker's security policy.
@@ -26,6 +28,24 @@ export interface PolicyContext {
   /** Areas the owner marked as off limits for this mission. */
   readonly doNotTouch: readonly string[];
   readonly allowWebResearch: boolean;
+  /**
+   * Prompt 3: the role this session is running as, and the ceiling it runs under.
+   *
+   * Optional so a Prompt 2-shaped mission run — one agent, no task graph — behaves exactly as it
+   * did. When present the profile is checked *first* and can only ever refuse: every rule below
+   * still runs afterwards, so adding a profile removes capability and never adds any.
+   */
+  readonly role?: AgentRole;
+  readonly profile?: PermissionProfile;
+  /**
+   * The paths this task said it would change.
+   *
+   * Empty means "no declaration", which is the Prompt 2 case. When it is non-empty a write
+   * outside it is refused at the tool call, *and* checked again against the real diff after the
+   * session ends — the belt and the braces disagree only if there is a bug, and the test suite
+   * asserts they do not.
+   */
+  readonly declaredWriteSet?: readonly string[];
 }
 
 export type PolicyDecision =
@@ -42,6 +62,9 @@ const ask = (rule: string, reason: string): PolicyDecision => ({ verdict: 'ask',
 const READ_TOOLS = ['Read', 'Glob', 'Grep', 'NotebookRead', 'TodoWrite', 'Task'];
 const WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 const WEB_TOOLS = ['WebSearch', 'WebFetch'];
+/** Named separately from the lists above so the role ceiling can reason about kinds of access. */
+const SHELL_TOOL_NAMES = ['Bash', 'BashOutput', 'KillShell'];
+const FILE_TOOL_NAMES = [...READ_TOOLS.filter((tool) => tool !== 'TodoWrite'), ...WRITE_TOOLS];
 
 /**
  * Shell commands that are never run, whatever they are wrapped in.
@@ -143,6 +166,61 @@ export interface ToolRequest {
  */
 export function evaluateToolUse(request: ToolRequest, context: PolicyContext): PolicyDecision {
   const { toolName, input } = request;
+
+  /*
+   * The role ceiling, before anything else.
+   *
+   * A profile is an allow-list of tool names decided outside the model's reach, in the worker's
+   * own installation. A reviewer physically has no Write tool; a researcher has no Bash that can
+   * mutate; a coordinator has no filesystem at all. Because this runs first and only ever
+   * returns `deny`, the rest of this function is unchanged from Prompt 2 and every rule it
+   * enforces still applies on top.
+   */
+  if (context.profile && !context.profile.allowedTools.includes(toolName)) {
+    return deny(
+      'P-ROLE01',
+      `A ${AGENT_ROLE_LABELS[context.role ?? 'researcher'].toLowerCase()} has no ${toolName} tool. ${context.profile.summary}`,
+    );
+  }
+  if (context.profile && !context.profile.shell && SHELL_TOOL_NAMES.includes(toolName)) {
+    return deny('P-ROLE02', 'This role does not run commands at all.');
+  }
+  if (
+    context.profile &&
+    context.profile.filesystem === 'none' &&
+    FILE_TOOL_NAMES.includes(toolName)
+  ) {
+    return deny('P-ROLE03', 'This role has no access to the project files.');
+  }
+  if (context.profile && context.profile.filesystem !== 'write' && WRITE_TOOLS.includes(toolName)) {
+    return deny('P-ROLE04', 'This role may read the project but never change it.');
+  }
+  if (
+    context.profile &&
+    context.profile.network !== 'web_research' &&
+    WEB_TOOLS.includes(toolName)
+  ) {
+    return deny('P-ROLE05', 'This role has no network access.');
+  }
+
+  /* A write outside the declared write set is refused where it is attempted, not afterwards. */
+  if (WRITE_TOOLS.includes(toolName) && (context.declaredWriteSet?.length ?? 0) > 0) {
+    const target = ['file_path', 'path', 'notebook_path', 'filePath']
+      .map((key) => input[key])
+      .find((value): value is string => typeof value === 'string');
+    if (target) {
+      const relative = target.startsWith(context.workspaceRoot)
+        ? target.slice(context.workspaceRoot.length).replace(/^\/+/, '')
+        : target;
+      const outside = filesOutsideWriteSet(context.declaredWriteSet ?? [], [relative]);
+      if (outside.length > 0) {
+        return deny(
+          'P-SCOPE01',
+          `${relative} is outside this task's approved write set (${describeWriteSet(context.declaredWriteSet ?? [])}).`,
+        );
+      }
+    }
+  }
 
   if (READ_TOOLS.includes(toolName)) {
     return checkPaths(input, context, { forWriting: false });

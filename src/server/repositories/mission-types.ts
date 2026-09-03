@@ -96,6 +96,14 @@ export interface MissionStatePatch {
   readonly riskLevel?: MissionRiskLevel;
   readonly riskRuleIds?: readonly string[];
   readonly riskReasons?: readonly string[];
+  /* Prompt 3. */
+  readonly currentGraphVersion?: number | null;
+  readonly approvedGraphVersion?: number | null;
+  readonly playbookKey?: string | null;
+  readonly playbookVersion?: number | null;
+  readonly integrationBranch?: string | null;
+  readonly repairRoundsUsed?: number;
+  readonly receiptId?: string | null;
 }
 
 export interface ClaimRequest {

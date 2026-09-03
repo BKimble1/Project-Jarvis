@@ -26,8 +26,32 @@ import { changedFiles, currentBranch, git, headSha, isClean, remoteUrl } from '.
  * restart — the whole point of preserving it is that it survives the thing that went wrong.
  */
 
-/** Which clone a run uses. Inspection reads; execution works. */
-export type WorkspaceSlot = 'repo' | 'inspect';
+/**
+ * Which clone a run uses.
+ *
+ * Prompt 2 had two: `repo` for execution and `inspect` for read-only planning. Prompt 3 adds one
+ * per task, because several agents work on one mission at once and no two may ever share a
+ * writable checkout. A slot name is built by `taskSlot` from the task key and validated by
+ * `assertSlot` immediately before it becomes a path segment — the same construct-then-revalidate
+ * discipline branch names get, because this is the other place mission text turns into a path.
+ */
+export type WorkspaceSlot = string;
+
+const SLOT_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
+
+export function assertSlot(slot: string): string {
+  if (!SLOT_PATTERN.test(slot)) {
+    throw new ValidationError('That is not a workspace slot name.', { slot: slot.slice(0, 60) });
+  }
+  return slot;
+}
+
+/** The slot a task owns: `task-t1`, `read-t2`, `integration`. */
+export function taskSlot(kind: 'task' | 'read', taskKey: string): string {
+  return assertSlot(`${kind}-${taskKey.toLowerCase()}`);
+}
+
+export const INTEGRATION_SLOT = 'integration';
 
 export interface WorkspaceHandle {
   /** `<root>/<missionId>` — everything the mission owns. */
@@ -91,7 +115,7 @@ export async function prepareWorkspace(options: PrepareOptions): Promise<Workspa
   /* Belt and braces: the derived path is re-checked against the root before anything is created. */
   assertInsideWorkspace(options.workspaceRoot, missionRoot);
 
-  const slot: WorkspaceSlot = options.slot ?? 'repo';
+  const slot: WorkspaceSlot = assertSlot(options.slot ?? 'repo');
   const repoPath = path.join(missionRoot, slot);
   assertInsideWorkspace(options.workspaceRoot, repoPath);
 
@@ -107,7 +131,7 @@ export async function prepareWorkspace(options: PrepareOptions): Promise<Workspa
      * action, and an inspection that changed nothing has nothing in it to lose — which is checked
      * against the working tree rather than assumed from the permission mode.
      */
-    if (slot === 'inspect' && (await isCleanCheckout(repoPath))) {
+    if ((slot === 'inspect' || slot.startsWith('read-')) && (await isCleanCheckout(repoPath))) {
       options.onProgress?.(
         'Replacing the previous read-only inspection clone; it changed nothing.',
       );

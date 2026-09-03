@@ -131,6 +131,17 @@ export const ACTIVITY_KINDS = [
   'project_restored',
   'data_exported',
   'data_retention_applied',
+  /* Prompt 3: the factory's own audit trail. */
+  'ci_dispatch_requested',
+  'ci_dispatch_refused',
+  'ci_dispatch_sent',
+  'release_approved',
+  'release_revoked',
+  'display_paired',
+  'display_revoked',
+  'playbook_installed',
+  'playbook_disabled',
+  'capacity_changed',
 ] as const;
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
 

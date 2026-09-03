@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ConfigurationError } from '@/domain/errors';
+import { clampCapacityLimits, type CapacityLimits } from '@/domain/capacity';
 
 /**
  * Environment configuration.
@@ -19,6 +20,13 @@ const bool = (defaultValue: boolean) =>
       if (value === undefined || value.trim() === '') return defaultValue;
       return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
     });
+
+/** A comma- or space-separated allow-list from an environment variable. Empty means empty. */
+const splitList = (value: string | undefined): readonly string[] =>
+  (value ?? '')
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 
 const positiveInt = (defaultValue: number, max = 1_000_000) =>
   z
@@ -69,6 +77,50 @@ const rawSchema = z.object({
   JARVIS_ALLOW_WEB_RESEARCH: bool(false),
   JARVIS_MISSION_EVENT_RETENTION_DAYS: positiveInt(180, 3650),
 
+  /* ------------------------------------------- Prompt 3: the agent factory */
+  /**
+   * Capacity.
+   *
+   * Every one of these is clamped again by `clampCapacityLimits` against an absolute ceiling in
+   * `@/domain/capacity`, so a mistaken value here cannot produce a Jarvis running twenty agents.
+   * The defaults are deliberately small; raising them is a decision, not a slider.
+   */
+  JARVIS_MAX_ACTIVE_MISSIONS: positiveInt(2, 6),
+  JARVIS_MAX_ACTIVE_AGENT_RUNS: positiveInt(4, 12),
+  JARVIS_MAX_RUNS_PER_MISSION: positiveInt(3, 6),
+  JARVIS_MAX_PARALLEL_READONLY: positiveInt(3, 6),
+  JARVIS_MAX_PARALLEL_WRITERS: positiveInt(1, 3),
+  JARVIS_MAX_REPAIR_ROUNDS: z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      if (value === undefined || value.trim() === '') return 2;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 3) {
+        ctx.addIssue({ code: 'custom', message: 'Must be 0, 1, 2 or 3' });
+        return z.NEVER;
+      }
+      return parsed;
+    }),
+  JARVIS_MAX_TASK_RUNTIME_MINUTES: positiveInt(45, 240),
+  JARVIS_MAX_MISSION_RUNTIME_MINUTES: positiveInt(240, 720),
+  JARVIS_MAX_MISSION_OUTPUT_TOKENS: positiveInt(3_000_000, 20_000_000),
+  JARVIS_MAX_TASK_OUTPUT_TOKENS: positiveInt(600_000, 4_000_000),
+
+  /**
+   * The CI controller.
+   *
+   * Off unless explicitly enabled *and* given a credential of its own. It never borrows the
+   * worker's delivery token, and the worker's GitHub client has no method it could use anyway.
+   */
+  JARVIS_CI_ENABLED: bool(false),
+  JARVIS_CI_GITHUB_TOKEN: z.string().trim().optional(),
+  JARVIS_CI_API_URL: z.string().trim().optional(),
+  JARVIS_CI_REPOSITORIES: z.string().trim().optional(),
+  JARVIS_CI_WORKFLOWS: z.string().trim().optional(),
+  JARVIS_CI_REFS: z.string().trim().optional(),
+  JARVIS_CI_MAX_DISPATCHES_PER_HOUR: positiveInt(4, 60),
+
   JARVIS_DEMO_MODE: bool(false),
   JARVIS_ALLOW_DEMO_IN_PRODUCTION: bool(false),
 
@@ -117,6 +169,24 @@ export interface AppConfig {
     readonly concurrencyLimit: number;
     readonly allowWebResearch: boolean;
     readonly eventRetentionDays: number;
+    readonly capacity: CapacityLimits;
+  };
+  /**
+   * The CI controller's own configuration.
+   *
+   * `enabled` is true only when the owner switched it on *and* supplied a separate credential:
+   * an enabled controller with no token of its own would be a controller looking for one to
+   * borrow, and there is nothing here for it to borrow from.
+   */
+  readonly ci: {
+    readonly enabled: boolean;
+    readonly credentialConfigured: boolean;
+    readonly token: string | null;
+    readonly apiUrl: string;
+    readonly repositories: readonly string[];
+    readonly workflows: readonly string[];
+    readonly refs: readonly string[];
+    readonly maxDispatchesPerHour: number;
   };
   readonly demoMode: boolean;
   readonly testAuthSecret: string | null;
@@ -291,6 +361,28 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
       concurrencyLimit: env.JARVIS_MISSION_CONCURRENCY,
       allowWebResearch: env.JARVIS_ALLOW_WEB_RESEARCH,
       eventRetentionDays: env.JARVIS_MISSION_EVENT_RETENTION_DAYS,
+      capacity: clampCapacityLimits({
+        maxActiveMissions: env.JARVIS_MAX_ACTIVE_MISSIONS,
+        maxActiveRuns: env.JARVIS_MAX_ACTIVE_AGENT_RUNS,
+        maxRunsPerMission: env.JARVIS_MAX_RUNS_PER_MISSION,
+        maxParallelReadOnly: env.JARVIS_MAX_PARALLEL_READONLY,
+        maxParallelWriters: env.JARVIS_MAX_PARALLEL_WRITERS,
+        maxRepairRounds: env.JARVIS_MAX_REPAIR_ROUNDS,
+        maxTaskRuntimeMs: env.JARVIS_MAX_TASK_RUNTIME_MINUTES * 60_000,
+        maxMissionRuntimeMs: env.JARVIS_MAX_MISSION_RUNTIME_MINUTES * 60_000,
+        maxMissionOutputTokens: env.JARVIS_MAX_MISSION_OUTPUT_TOKENS,
+        maxTaskOutputTokens: env.JARVIS_MAX_TASK_OUTPUT_TOKENS,
+      }),
+    },
+    ci: {
+      enabled: env.JARVIS_CI_ENABLED && Boolean(env.JARVIS_CI_GITHUB_TOKEN),
+      credentialConfigured: Boolean(env.JARVIS_CI_GITHUB_TOKEN),
+      token: env.JARVIS_CI_GITHUB_TOKEN ?? null,
+      apiUrl: env.JARVIS_CI_API_URL ?? 'https://api.github.com',
+      repositories: splitList(env.JARVIS_CI_REPOSITORIES),
+      workflows: splitList(env.JARVIS_CI_WORKFLOWS),
+      refs: splitList(env.JARVIS_CI_REFS),
+      maxDispatchesPerHour: env.JARVIS_CI_MAX_DISPATCHES_PER_HOUR,
     },
     demoMode,
     testAuthSecret,

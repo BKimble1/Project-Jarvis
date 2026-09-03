@@ -131,6 +131,16 @@ export class WorkerService {
    * Deliberately combined. A worker that heartbeats and polls separately can be healthy in one
    * call and stale in the other, and the mission screen would show two different truths.
    */
+  /**
+   * Record a heartbeat without asking for work.
+   *
+   * The task claim endpoint needs the heartbeat side effect but not the mission assignment, and
+   * duplicating `applyHeartbeat`'s call site is how the two drift apart.
+   */
+  async heartbeat(workerId: string, input: WorkerPollInput['heartbeat']): Promise<void> {
+    await this.applyHeartbeat(workerId, input, this.clock());
+  }
+
   async poll(workerId: string, input: WorkerPollInput): Promise<WorkerPollResponse> {
     const now = this.clock();
     await this.applyHeartbeat(workerId, input.heartbeat, now);

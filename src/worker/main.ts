@@ -4,6 +4,8 @@ import { ControlPlaneClient, ControlPlaneError } from './client';
 import { buildWorkerConfig, describeWorkerConfig, type WorkerConfig } from './config';
 import { GitHubRestDelivery, type GitHubDelivery } from './delivery';
 import { MissionRunner } from './mission-runner';
+import { TaskRunner } from './task-runner';
+import { DETERMINISTIC_ROLES, AGENT_ROLES } from '@/domain/agent-role';
 import { ClaudeAgentRuntime } from './runtime/claude-agent-sdk';
 import { ScriptedRuntime } from './runtime/scripted';
 import type { AgentRuntime } from './runtime/types';
@@ -32,6 +34,7 @@ export class JarvisWorkerProcess {
   private draining = false;
   private stopped = false;
   private current: MissionRunner | null = null;
+  private currentTask: TaskRunner | null = null;
   private currentMissionId: string | null = null;
   private currentRunId: string | null = null;
   private lastActivityAt: Date | null = null;
@@ -151,10 +154,16 @@ export class JarvisWorkerProcess {
           }
         }
 
-        if (!this.current && !this.draining && this.runtimeAvailable && this.workspaceHealthy) {
-          await this.claimAndRun();
+        if (!this.current && !this.currentTask && !this.draining && this.workspaceHealthy) {
+          /*
+           * Missions first, then tasks. A Prompt 2 mission is a whole unit of work and finishing
+           * one is worth more than starting a fragment of another; a worker with no model still
+           * reaches the task claim, because verification and integration need no model at all.
+           */
+          if (this.runtimeAvailable) await this.claimAndRun();
+          if (!this.current) await this.claimAndRunTask();
         }
-        if (this.draining && !this.current) {
+        if (this.draining && !this.current && !this.currentTask) {
           this.log('Drained. Exiting.');
           break;
         }
@@ -169,6 +178,52 @@ export class JarvisWorkerProcess {
       }
 
       await this.sleep(interval);
+    }
+  }
+
+  /**
+   * Which roles this worker will accept.
+   *
+   * A worker whose model runtime is unavailable still takes `verifier` and `integrator`: those
+   * run no model at all, and a mission that can be integrated and verified while its Anthropic
+   * key is missing is better than one that stalls entirely.
+   */
+  private acceptedRoles(): readonly string[] {
+    return this.runtimeAvailable ? [...AGENT_ROLES] : [...DETERMINISTIC_ROLES];
+  }
+
+  private async claimAndRunTask(): Promise<void> {
+    const assignment = await this.deps.client.claimTask({
+      heartbeat: await this.heartbeat(),
+      roles: this.acceptedRoles(),
+    });
+    if (!assignment) return;
+
+    this.currentMissionId = assignment.missionId;
+    this.currentRunId = assignment.runId;
+    this.lastActivityAt = new Date();
+    this.log(
+      `Claimed task ${assignment.taskKey} (${assignment.role}) for "${assignment.missionTitle}".`,
+    );
+
+    const runner = new TaskRunner(
+      {
+        config: this.deps.config,
+        client: this.deps.client,
+        runtime: this.deps.runtime,
+        delivery: this.deps.delivery,
+      },
+      assignment,
+    );
+    this.currentTask = runner;
+    try {
+      await runner.run();
+    } finally {
+      this.currentTask = null;
+      this.currentMissionId = null;
+      this.currentRunId = null;
+      this.lastActivityAt = new Date();
+      this.log(`Finished task ${assignment.taskKey}.`);
     }
   }
 

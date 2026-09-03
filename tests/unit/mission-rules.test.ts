@@ -71,6 +71,13 @@ function mission(overrides: Partial<Mission> = {}): Mission {
     attemptCount: 0,
     currentPlanVersion: 1,
     approvedPlanVersion: 1,
+    currentGraphVersion: null,
+    approvedGraphVersion: null,
+    playbookKey: null,
+    playbookVersion: null,
+    integrationBranch: null,
+    repairRoundsUsed: 0,
+    receiptId: null,
     executionOverrideAt: null,
     executionOverrideReason: null,
     constraints: [],
@@ -135,10 +142,24 @@ describe('mission state machine', () => {
     for (const state of MISSION_STATES) expect(reachable.has(state)).toBe(true);
   });
 
-  it('reports the moves an actor may make from a state', () => {
-    expect(allowedNextStates('queued', 'worker')).toEqual(['claimed']);
+  /*
+   * Updated in Prompt 3, and the guarantee is unchanged.
+   *
+   * A multi-agent mission has no single moment of being claimed — its tasks are claimed
+   * individually — so `queued → running` was added for a worker alongside `queued → claimed`,
+   * which the single-agent path still uses. What this test has always been protecting is the
+   * *asymmetry*: a worker may start a queued mission and an owner may not. That is asserted
+   * below more directly than an exact-set comparison ever did.
+   */
+  it('lets a worker start a queued mission and never lets an owner do it', () => {
+    expect(allowedNextStates('queued', 'worker')).toContain('claimed');
+    expect(allowedNextStates('queued', 'worker')).toContain('running');
     expect(allowedNextStates('queued', 'owner')).toContain('cancelled');
     expect(allowedNextStates('queued', 'owner')).not.toContain('claimed');
+    expect(allowedNextStates('queued', 'owner')).not.toContain('running');
+    /* And nothing at all may move a queued mission straight to a finished state. */
+    expect(allowedNextStates('queued')).not.toContain('completed');
+    expect(allowedNextStates('queued')).not.toContain('pull_request_ready');
   });
 });
 

@@ -35,6 +35,14 @@ export type ScriptedStep =
 
 export interface ScriptedRuntimeOptions {
   readonly steps: readonly ScriptedStep[];
+  /**
+   * Steps chosen per session, when one script cannot serve every role.
+   *
+   * A multi-agent mission starts several sessions with different jobs: a builder edits a file, a
+   * reviewer returns a JSON verdict. Returning `null` falls back to `steps`, so the single-script
+   * case is unchanged and every existing test keeps working.
+   */
+  readonly stepsFor?: (request: AgentSessionRequest) => readonly ScriptedStep[] | null;
   readonly sessionId?: string;
   readonly available?: boolean;
   readonly unavailableDetail?: string;
@@ -68,9 +76,11 @@ export class ScriptedRuntime implements AgentRuntime {
     let interrupted = false;
     let resolveMessage: ((text: string) => void) | null = null;
 
+    const steps = this.options.stepsFor?.(request) ?? this.options.steps;
+
     const run = async () => {
       queue.push({ type: 'session', sessionId });
-      for (const step of this.options.steps) {
+      for (const step of steps) {
         if (interrupted || request.signal.aborted) break;
 
         switch (step.kind) {
