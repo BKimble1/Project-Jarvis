@@ -84,10 +84,27 @@ export default async function OperationsPage() {
         <Tile
           label="Not reporting"
           value={`${stalled.length}`}
-          sub={stalled.length === 0 ? 'all healthy' : 'check these first'}
+          sub={
+            activeTasks.length === 0
+              ? 'nothing running'
+              : stalled.length === 0
+                ? 'all reporting'
+                : 'check these first'
+          }
           tone={stalled.length > 0 ? 'critical' : 'plain'}
         />
       </section>
+
+      {liveWorkers.length === 0 ? (
+        <p className="rounded-[var(--radius-card)] bg-[var(--color-caution-soft)] px-3 py-2.5 text-sm text-[var(--color-caution-text)]">
+          No worker is connected, so nothing can run — Jarvis can still plan and propose, but an
+          approved task graph will wait.{' '}
+          <Link href="/workers" className="underline">
+            Enrol a worker
+          </Link>
+          .
+        </p>
+      ) : null}
 
       {posture !== 'open' ? (
         <p className="rounded-[var(--radius-card)] bg-[var(--color-caution-soft)] px-3 py-2.5 text-sm text-[var(--color-caution-text)]">

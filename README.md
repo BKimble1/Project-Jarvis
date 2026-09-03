@@ -5,8 +5,10 @@
 Jarvis knows what projects you have, what has actually happened on them, what is blocked, and
 what deserves your attention next — and it can prove every claim it makes.
 
-Since Phase 2 it can also **take one approved mission from plain language to a verified draft
-pull request** — planning first, and stopping wherever you want to be asked.
+Since Phase 2 it can **take an approved mission from plain language to a verified draft pull
+request** — planning first, and stopping wherever you want to be asked. Since Phase 3 it does that
+with **several agents at once**: research, build, verification and an independent review, each with
+its own permissions and its own workspace, and none of it starting until you approve the shape.
 
 Open it on your phone or your computer and ask:
 
@@ -45,12 +47,13 @@ you approve a specific version of a specific plan, and nothing is ever merged.
 | Jarvis command bar           | Deterministic routing for the questions above, with project-name resolution and disambiguation.                                                                         |
 | Installable PWA              | Mobile-first, light and dark, offline-aware shell.                                                                                                                      |
 
-### Deliberately not included yet
+### Deliberately not included, in any phase
 
-Mission execution, launching Claude Code, repository writes, branches or pull requests, agents and
-agent coordination, code generation, TestFlight or App Store uploads, voice, long-term memory,
-document ingestion, email/Slack/calendar, social, financial or billing features, multi-user
-organisations, a marketplace, terminal access and a browser IDE.
+Merging to a default branch, force pushing, automatic deployment, App Store submission, public
+release, unlimited retries, agents that can widen their own permissions, unbounded agent-to-agent
+messaging, autonomous recurring schedules, voice, long-term personal memory, document-library
+ingestion, email/Slack/calendar, social, financial or billing features, multi-user organisations,
+a model marketplace, terminal access and a browser IDE.
 
 **The GitHub connection is strictly read-only.** See [docs/SECURITY.md](docs/SECURITY.md) for how
 that is enforced and verified rather than merely promised.
@@ -111,12 +114,20 @@ Playwright step. Nothing is weakened to make the gate pass; see [docs/TESTING.md
 | [Local setup](docs/SETUP_LOCAL.md) · [Windows](docs/SETUP_WINDOWS.md) | Development environments.                                              |
 | [Netlify deployment](docs/DEPLOY_NETLIFY.md)                          | Build, environment, scheduled synchronisation.                         |
 | [Testing](docs/TESTING.md)                                            | What is tested, and how to add to it.                                  |
+| [Mission Control](docs/MISSION_CONTROL.md)                            | Phase 2: the control plane / worker split, and why.                    |
+| [Mission rules](docs/MISSION_RULES.md)                                | Phase 2 rules, by id.                                                  |
+| [Worker](docs/WORKER.md)                                              | Running a worker, and what it may and may not do.                      |
+| [Multi-agent factory](docs/MULTI_AGENT_FACTORY.md)                    | Phase 3: task graphs, roles, isolation, review and repair.             |
+| [Multi-agent rules](docs/MULTI_AGENT_RULES.md)                        | Every Phase 3 rule, by id.                                             |
+| [Playbooks](docs/PLAYBOOKS.md)                                        | Reusable mission shapes, and how versioning protects a running one.    |
+| [Operations](docs/OPERATIONS.md)                                      | Watching the factory, slowing it down, and wall displays.              |
+| [Threat model](docs/THREAT_MODEL.md)                                  | What an agent could try, and what stops it.                            |
 | [Implementation plan](docs/IMPLEMENTATION_PLAN.md)                    | The plan this phase was built to.                                      |
-| [Roadmap](docs/ROADMAP.md)                                            | What Prompt 2 adds, and the seams already left for it.                 |
+| [Roadmap](docs/ROADMAP.md)                                            | What comes next, and the seams already left for it.                    |
 
 ---
 
-## Mission Control (Phase 2)
+## Mission Control (Phase 2) and the multi-agent factory (Phase 3)
 
 Jarvis can now act, under a deliberately narrow set of permissions.
 
@@ -131,12 +142,32 @@ Jarvis can now act, under a deliberately narrow set of permissions.
 | Draft pull requests      | A `jarvis/<mission-id>` branch, real verification results, and a **draft** PR. Jarvis never merges.                                                                              |
 | Research missions        | A sourced report attached to the project, with no branch and no code change.                                                                                                     |
 
-**What it will never do:** push to a default branch, force push, merge, publish a release, deploy,
-upload a build, change repository settings or secrets, or approve its own plan. These are
-capability limits in the worker, not instructions to a model — see
-[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [docs/MISSION_RULES.md](docs/MISSION_RULES.md).
+### Phase 3 — several agents, under control
 
-Setting up a worker: [docs/WORKER.md](docs/WORKER.md).
+| Capability                | Detail                                                                                                                                                                            |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task graphs               | A mission becomes a small acyclic graph of tasks. You see every agent, its role, its permission profile and exactly where it may write — and approve that before anything starts. |
+| Agent roles               | Researcher, builder, verifier, reviewer, security reviewer, UI/UX reviewer, repairer, integrator and more, each with a permission ceiling it cannot exceed.                       |
+| Real parallelism          | Read-only tasks run at the same time. Two writers whose paths overlap never do.                                                                                                   |
+| Isolated workspaces       | Every writing agent gets its own clone, its own `jarvis/…` branch and a write lease over the paths the approved graph declared.                                                   |
+| Deterministic integration | Task branches are merged by git with no model involved, no strategy option, and a conflict that stops with both sides intact.                                                     |
+| Verification gate         | The repository's own checks, with their real outcomes. A check that cannot run here is recorded as unavailable, never as a pass.                                                  |
+| Independent review        | A fresh session that never sees the builder's transcript. An approval standing on a failed required check is overridden by policy, and both verdicts are kept.                    |
+| Bounded repair            | Repair → re-integrate → re-verify → _fresh_ review, up to the rounds you allowed. Then it stops.                                                                                  |
+| Completion receipts       | Eight delivery stages, each with its evidence — including the three Jarvis structurally cannot reach and why.                                                                     |
+| Playbooks                 | Reusable, versioned mission shapes. A change to one cannot alter a mission already following it.                                                                                  |
+| Operations and wallboards | One page for what is running and how to slow it down; a scoped, revocable, read-only display for a screen on a wall.                                                              |
+
+**What it will never do:** push to a default branch, force push, merge, publish a release, deploy,
+upload a build, change repository settings or secrets, approve its own plan, approve its own task
+graph, widen its own permissions, raise a limit, add a repair attempt, install a playbook, create a
+display token, or approve a TestFlight build. These are capability limits — usually a route that
+does not exist — not instructions to a model. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md),
+[docs/MISSION_RULES.md](docs/MISSION_RULES.md) and
+[docs/MULTI_AGENT_RULES.md](docs/MULTI_AGENT_RULES.md).
+
+Setting up a worker: [docs/WORKER.md](docs/WORKER.md). Running the factory:
+[docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Known limitations
 
@@ -146,9 +177,16 @@ what it is.
 - **Writes are limited to a branch and a draft pull request.** Jarvis cannot merge, deploy,
   publish, or change repository settings — and the _synchronisation_ path is still read-only by
   construction. See [SECURITY.md](docs/SECURITY.md) and [THREAT_MODEL.md](docs/THREAT_MODEL.md).
-- **One mission at a time, and it needs a worker.** Without a connected worker Jarvis can still
-  plan — from its own project record, labelled **Inferred** and saying plainly that nothing was
-  inspected — but it cannot execute. Multiple agents arrive in Phase 3.
+- **It needs a worker.** Without a connected worker Jarvis can still plan — from its own project
+  record, labelled **Inferred** and saying plainly that nothing was inspected — but it cannot
+  execute. How many agents run at once is a ceiling you set; the default is four across all
+  missions and one writer.
+- **A repair round is bounded.** If review still blocks after the rounds you allowed, Jarvis stops
+  and preserves everything rather than trying again. That is the intended outcome, not a failure
+  to persist.
+- **A review is only as good as the reviewer.** It is a fresh session that never sees how the work
+  was written, and deterministic policy overrides an approval that stands on a failed required
+  check — but it is still a model reading a diff. The draft pull request is yours to read.
 - **Risk classification is pattern-based.** It is a first filter, not the last line of defence:
   the capability limits are. It can be wrong in both directions, which is why you approve the plan.
 - **GitHub is the only connected source.** App Store Connect, Netlify, Linear and the rest are not

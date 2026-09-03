@@ -145,17 +145,23 @@ export class BriefingService {
       ...assessment,
       currentWork: [...assessment.currentWork, ...signals.currentWork],
       recentlyCompleted: [...assessment.recentlyCompleted, ...signals.recentlyCompleted],
+      /*
+       * `agentAttention` only. A plan waiting for approval is already shown by Mission Control and
+       * by the "what needs me" screen's mission section; adding it here too would show it twice on
+       * one page. What is *not* shown anywhere else is the factory's own attention — an exhausted
+       * repair budget, an agent that wrote outside its approved scope — so that belongs here.
+       */
       decisionsNeeded: [
         ...assessment.decisionsNeeded,
-        ...signals.attention.map((reason) => ({
+        ...signals.agentAttention.map((reason) => ({
           text: reason.summary,
           provenance: reason.provenance,
           evidenceIds: reason.evidenceIds,
           rule: reason.rule,
         })),
       ],
-      attention: [...assessment.attention, ...signals.attention],
-      needsAttention: assessment.needsAttention || signals.attention.length > 0,
+      attention: [...assessment.attention, ...signals.agentAttention],
+      needsAttention: assessment.needsAttention || signals.agentAttention.length > 0,
       unknowns: [...assessment.unknowns, ...signals.unknowns],
     };
     return merged;

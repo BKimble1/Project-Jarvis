@@ -145,6 +145,58 @@ The suite is organised around the claims the product makes, not around file stru
   a project, open evidence behind a briefing, trigger a synchronisation, view meaningful changes —
   and the same journey at an iPhone viewport, with no horizontal overflow.
 
+**The multi-agent factory (Phase 3)**
+
+- Task-graph validation by rule id: cycles, review coverage, verification before review,
+  overlapping parallel writers, a profile above its role's ceiling, a missing specialist review.
+- The nineteen-state task machine: no finish without verification and review, no restart without
+  an owner, actor enforcement on every move, and reachability of every state.
+- Write sets: subtree containment in both directions, the `src/app` vs `src/apple` prefix trap, a
+  `..` escape refused, and the offending files named.
+- Roles and profiles: the table is frozen, no reviewer or researcher profile carries a write tool,
+  every default is inside its ceiling, and an unknown profile name throws rather than defaulting.
+- Review verdicts and finding triage by rule id, including that an unavailable review is never a
+  pass and that an approval over a failed required check is overridden.
+- The review context: it says an unavailable review is not a pass, and it has no field through
+  which a builder transcript or an earlier verdict could arrive.
+- Capacity: every ceiling, clamping, reduce-only adjustment, stale tasks, and tokens-not-dollars.
+- Receipts: the three stages Jarvis can never reach are always false and always explained, and a
+  stage claiming to be reached without evidence fails `receiptIsHonest`.
+- CI and TestFlight gates by rule id, including exact-commit binding and a superseded approval.
+- Playbooks: all nine built-ins validate and produce valid graphs, versioning does not mutate an
+  earlier version, and conditional tasks drop cleanly.
+
+**Real-handler integration (Phase 3)**
+
+- Owner authentication on all fifteen new owner routes, and a cross-origin write refused.
+- Worker authentication on all four new worker routes.
+- Task claiming under contention: two workers race, at most one claim.
+- Concurrency, drain mode, and an owner reducing but never raising a limit.
+- Graph approval: an unapproved graph runs nothing, a fingerprint mismatch is refused, and a new
+  proposal revokes an earlier approval.
+- The lease granted covers the _approved graph's_ write set, not what the worker asked for.
+- A worker cannot report on, lease for, or review another worker's run.
+- A review verdict from a task that is not a review task is refused.
+- Playbook install and versioning; a playbook Jarvis would refuse to run is refused at install.
+- CI refused by default; each allow-list rule; an exact-commit TestFlight approval that stops
+  applying when the commit moves; an app profile that refuses a pasted private key.
+- Display pairing shows the token once, never again, and stops working when revoked.
+- The export carries the factory's record and no credential of any kind.
+
+**The multi-agent smoke test**
+
+`tests/integration/multi-agent-smoke.test.ts` is the one that matters most. It uses a real
+database, the real route handlers, the real orchestrator, real `TaskRunner` workers and a real git
+repository on disk; only the model (scripted runtime) and GitHub's API (`FakeDelivery`) are
+replaced. In one run it proves: a task graph is created and approved; two read-only tasks run
+concurrently on two workers; the builder waits for the research it depends on; the builder works on
+an isolated branch; verification runs against the integrated result; the reviewer receives cold
+context and catches a deliberately seeded defect; repair is bounded; a _fresh_ reviewer evaluates
+the repaired work; the integration branch stays separate from `main`; a draft pull request is
+produced; nothing is merged; and no forbidden API is called.
+
+It found nine real defects when it was first run, which is the argument for writing it.
+
 ## Adding tests
 
 - Put pure logic in `tests/unit/`. If it needs a database, it belongs in `tests/integration/`.

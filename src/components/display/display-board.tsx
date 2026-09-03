@@ -90,12 +90,13 @@ export function DisplayBoard() {
           <p className="text-lg text-[var(--color-text-subtle)] xl:text-xl">{payload.deviceName}</p>
         </div>
         <div className="flex items-center gap-4 text-lg xl:text-xl">
-          <HealthDot
-            ok={payload.health.controlPlane === 'ok' && payload.health.workers.stale === 0}
-          />
+          <HealthDot ok={payload.health.controlPlane === 'ok'} />
           <span className="text-[var(--color-text-muted)]">
-            {payload.health.workers.healthy}/{payload.health.workers.total} worker
-            {payload.health.workers.total === 1 ? '' : 's'}
+            {payload.health.workers.total === 0
+              ? 'No worker connected'
+              : `${payload.health.workers.healthy}/${payload.health.workers.total} worker${
+                  payload.health.workers.total === 1 ? '' : 's'
+                }`}
             {payload.health.posture !== 'open' ? ` · ${payload.health.posture}` : ''}
           </span>
           <span
@@ -131,6 +132,23 @@ export function DisplayBoard() {
           tone={payload.counts.failingChecks > 0 ? 'bad' : 'plain'}
         />
       </section>
+
+      {payload.scopes.includes('portfolio') && payload.portfolio.projects > 0 ? (
+        <p className="text-xl text-[var(--color-text-muted)] xl:text-2xl">
+          {payload.portfolio.projects} project{payload.portfolio.projects === 1 ? '' : 's'} ·{' '}
+          <span
+            className={
+              payload.portfolio.needsAttention > 0
+                ? 'text-[var(--color-caution-text)]'
+                : 'text-[var(--color-positive-text)]'
+            }
+          >
+            {payload.portfolio.needsAttention} need
+            {payload.portfolio.needsAttention === 1 ? 's' : ''} attention
+          </span>
+          {payload.portfolio.blocked > 0 ? ` · ${payload.portfolio.blocked} blocked` : ''}
+        </p>
+      ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-3">
         <section className="flex min-h-0 flex-col gap-3 xl:col-span-2" aria-label="Missions">

@@ -34,7 +34,19 @@ export interface MissionSignalInput {
 }
 
 export interface MissionSignals {
+  /**
+   * Mission-state attention: a plan waiting, a permission request, a failed run.
+   *
+   * Surfaced by Mission Control and by the "what needs me" screen's own mission section, which is
+   * why the briefing service deliberately does *not* fold these into a project's attention — a
+   * plan awaiting approval shown twice on one page is noise, not thoroughness.
+   */
   readonly attention: readonly AttentionReason[];
+  /**
+   * Factory attention: the repair budget ran out, an agent wrote outside its scope, agents are
+   * waiting on the owner. Nothing else surfaces these, so a project briefing is where they live.
+   */
+  readonly agentAttention: readonly AttentionReason[];
   readonly currentWork: readonly Claim[];
   readonly recentlyCompleted: readonly Claim[];
   readonly unknowns: readonly string[];
@@ -53,6 +65,7 @@ const SEVERITY: Record<string, AttentionReason['severity']> = {
 
 export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
   const attention: AttentionReason[] = [];
+  const agentAttention: AttentionReason[] = [];
   const currentWork: Claim[] = [];
   const recentlyCompleted: Claim[] = [];
   const unknowns: string[] = [];
@@ -219,13 +232,13 @@ export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
     }
 
     describeAgents(mission, input.tasks?.get(mission.id) ?? null, {
-      attention,
+      attention: agentAttention,
       currentWork,
       unknowns,
     });
   }
 
-  return { attention, currentWork, recentlyCompleted, unknowns };
+  return { attention, agentAttention, currentWork, recentlyCompleted, unknowns };
 }
 
 /**

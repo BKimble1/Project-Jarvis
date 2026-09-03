@@ -140,6 +140,38 @@ The short version:
 - **A lost heartbeat changes nothing.** It marks the _worker_ disconnected. A crash never produces
   a false `completed`, and never a false `failed` either — the work on disk may be fine.
 
+## Several agents (Phase 3)
+
+Everything above still holds. What changes is that a mission may now run several agents, so a few
+more things need to be true:
+
+- **A permission profile is a ceiling, never a grant.** Profiles are frozen module data. A task
+  may name one; it can never define one, and an unknown name throws rather than defaulting to
+  something permissive. `evaluateToolUse` applies the profile first and it can only ever `deny`,
+  so every rule from Phase 2 still runs afterwards.
+- **An agent cannot widen its own scope.** Not its role, not its profile, not its write set, not a
+  concurrency limit, not a repair budget, not an allow-list, not a playbook, not a display token,
+  not an approval of any kind. In each case the guarantee is that no worker-authenticated route
+  exists — not that a route checks a flag.
+- **Two writing agents never share a checkout.** Each gets its own clone and its own branch, and
+  must hold a write lease covering the paths the _approved graph_ declared.
+- **The write set is enforced twice**, by one shared containment rule: at the tool call, and again
+  against the diff that really happened. A violation preserves the workspace and names the files.
+- **Merging is deterministic and has no override.** No model, no strategy option, no force. A
+  conflict aborts with both sides intact.
+- **A reviewer cannot be handed the builder's argument.** There is no field on a review assignment
+  that could carry a transcript, and a fresh reviewer after a repair is never told what the
+  previous one concluded.
+- **A review cannot approve over a red required check.** Deterministic policy overrides it, records
+  what the reviewer actually proposed, and turns the failing checks into the repair scope.
+- **A wall display is a separate, weaker identity.** Its own credential, its own revocation, a
+  payload built from scratch rather than filtered, and no write route of any kind.
+- **The CI controller has its own credential or it does nothing.** It never borrows the worker's,
+  and a TestFlight approval is bound to one exact commit.
+- **Jarvis never holds an Apple credential.** Signing and App Store Connect secrets stay in GitHub
+  Actions secrets that only the workflow can read; an app profile stores the _name_ of a secret and
+  its schema refuses anything shaped like a value.
+
 ## Reporting
 
 This is a single-user personal deployment. If you find a problem, fix it on a branch and run

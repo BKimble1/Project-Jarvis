@@ -117,7 +117,15 @@ export async function buildDisplayPayload(
     scopes: device.scopes,
     rotationSeconds: device.rotationSeconds,
     health: {
-      controlPlane: posture === 'open' ? 'ok' : 'degraded',
+      /*
+       * No worker at all is `degraded`, not `ok`. "Zero of zero are stale" is true and useless: a
+       * board whose whole value is a glance must not show green for an instance that physically
+       * cannot run anything.
+       */
+      controlPlane:
+        posture === 'open' && liveWorkers.length > 0 && healthyWorkers.length > 0
+          ? 'ok'
+          : 'degraded',
       workers: {
         total: liveWorkers.length,
         healthy: healthyWorkers.length,

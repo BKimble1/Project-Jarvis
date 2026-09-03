@@ -263,12 +263,73 @@ function TaskCard({ missionId, task }: { missionId: string; task: MissionTask })
         {task.branchName ? (
           <p className="font-mono text-xs text-[var(--color-text-subtle)]">{task.branchName}</p>
         ) : null}
-        <p className="text-xs text-[var(--color-text-subtle)]">
-          <a href={`/missions/${missionId}/tasks/${task.id}`} className="hover:underline">
-            Task detail
-          </a>
-        </p>
+        <TaskActions missionId={missionId} task={task} />
       </div>
     </details>
+  );
+}
+
+/**
+ * What an owner may do to one task.
+ *
+ * Deliberately three verbs and no fourth: skip it, cancel it, or put a failed one back in the
+ * queue. There is no "mark succeeded" and no "approve", because a task reaching `succeeded` means
+ * it was verified and reviewed — and an owner override that could declare work finished would undo
+ * the entire point of the review gate. The state machine refuses those moves anyway; not offering
+ * them is how the interface stays honest about it.
+ */
+function TaskActions({ missionId, task }: { missionId: string; task: MissionTask }) {
+  const router = useRouter();
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const canSkip = task.state === 'blocked' || task.state === 'ready' || task.state === 'draft';
+  const canCancel = canSkip || task.state === 'paused';
+  const canRetry = task.state === 'failed';
+  if (!canSkip && !canCancel && !canRetry) return null;
+
+  async function act(action: 'skip' | 'cancel' | 'retry') {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/missions/${missionId}/tasks/${task.id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as {
+          error?: { message?: string };
+        };
+        setError(payload.error?.message ?? 'That did not work.');
+        return;
+      }
+      router.refresh();
+    } catch {
+      setError('Could not reach Jarvis.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {canSkip ? (
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act('skip')}>
+          Skip this
+        </Button>
+      ) : null}
+      {canRetry ? (
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void act('retry')}>
+          Try again
+        </Button>
+      ) : null}
+      {canCancel ? (
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act('cancel')}>
+          Cancel
+        </Button>
+      ) : null}
+      {error ? <span className="text-xs text-[var(--color-critical-text)]">{error}</span> : null}
+    </div>
   );
 }
