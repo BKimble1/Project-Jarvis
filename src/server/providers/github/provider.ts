@@ -267,7 +267,10 @@ export class GitHubSourceProvider implements SourceProvider {
     const truncated = raw.byteLength > maxBytes;
     /* Cut on a byte boundary, then drop the replacement character a split character leaves behind. */
     const text = truncated
-      ? raw.subarray(0, maxBytes).toString('utf8').replace(/\uFFFD+$/, '')
+      ? raw
+          .subarray(0, maxBytes)
+          .toString('utf8')
+          .replace(/\uFFFD+$/, '')
       : raw.toString('utf8');
 
     /* A NUL byte means these are not characters. Indexing them would store a page of nonsense. */

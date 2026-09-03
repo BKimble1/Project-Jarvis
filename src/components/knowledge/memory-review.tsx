@@ -120,7 +120,7 @@ export function MemoryReview({ memories }: { memories: readonly MemoryRow[] }) {
             </div>
 
             <p
-              className={`text-sm ${forgotten ? 'italic text-[var(--color-text-subtle)]' : 'text-[var(--color-text)]'}`}
+              className={`text-sm ${forgotten ? 'text-[var(--color-text-subtle)] italic' : 'text-[var(--color-text)]'}`}
             >
               {forgotten ? 'This was forgotten. The text is gone.' : memory.statement}
             </p>
@@ -199,8 +199,7 @@ export function MemoryReview({ memories }: { memories: readonly MemoryRow[] }) {
               <div className="flex flex-col gap-2 rounded-lg border border-[var(--color-critical)] bg-[var(--color-critical-soft)] p-3">
                 <p className="text-[0.8125rem] text-[var(--color-critical-text)]">
                   This removes the text permanently — from search, from the semantic index and from
-                  exports. It cannot be undone. Jarvis keeps only a record that a deletion
-                  happened.
+                  exports. It cannot be undone. Jarvis keeps only a record that a deletion happened.
                 </p>
                 <label
                   htmlFor={`forget-${memory.id}`}

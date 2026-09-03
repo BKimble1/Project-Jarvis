@@ -65,7 +65,7 @@ carries scope, sensitivity and whether it can be re-read, and never a client-sup
 path), `knowledge_revisions` (the exact content at one instant — citations resolve here, not to a
 source), `knowledge_blocks` (canonical parsed blocks with their line ranges),
 `knowledge_chunks` (retrievable passages), `knowledge_embeddings` (unit-normalised `real[]`
-vectors for chunks *or* memories, with the model, dimensions and indexing version that produced
+vectors for chunks _or_ memories, with the model, dimensions and indexing version that produced
 them), `knowledge_ingestion_jobs` (observable, retryable pipeline work), `knowledge_items`
 (memories, with origin, status and sensitivity), `knowledge_conflicts` (statements that appear to
 disagree — recorded as questions, never resolved automatically).
@@ -98,7 +98,7 @@ Indexes exist for the queries the product actually runs:
   channels query it — `english` for stemmed recall, `simple` so an exact identifier like
   `E_AUTH_401` survives.
 - `knowledge_items`: a generated `tsvector` over `statement || detail`, indexed with GIN. Because
-  it is *generated*, clearing those columns when a memory is forgotten updates the index without a
+  it is _generated_, clearing those columns when a memory is forgotten updates the index without a
   second write — which is what makes "unreachable through every path" checkable.
 - `knowledge_embeddings`: unique on `(chunk_id, model, indexing_version)` and on
   `(item_id, model, indexing_version)`, each partial on the relevant id being non-null, with a
@@ -127,7 +127,7 @@ for them explicitly:
 - **Forgetting a memory** clears the statement, detail, excerpts, tags and source reference, and
   deletes every embedding of the item. The row survives as a tombstone.
 
-Both write a deletion receipt naming *where* content was removed from. Neither receipt nor audit
+Both write a deletion receipt naming _where_ content was removed from. Neither receipt nor audit
 event contains what was removed — an audit trail holding the forgotten sentence would be a copy,
 and a hash-chained log cannot be rewritten later to take it back out.
 

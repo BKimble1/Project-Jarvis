@@ -75,7 +75,7 @@ open — a misconfigured deployment fails safe.
 Owner-supplied URLs on a project are validated to `http`/`https`, stored as data, and rendered only
 as anchors. The server never fetches those.
 
-Since Phase 4B there is one place the server *does* fetch an owner-supplied URL — importing a web
+Since Phase 4B there is one place the server _does_ fetch an owner-supplied URL — importing a web
 page into knowledge — and it is treated as a security boundary rather than as a feature:
 
 - `http`/`https` only. Every other scheme is refused, `file:` and `gopher:` included.

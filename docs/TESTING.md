@@ -212,14 +212,14 @@ The suite is organised around the claims the product makes, not around file stru
 A green suite proves nothing until the assertions are known to bite. Each of these was broken
 deliberately, the failure observed, and the code restored:
 
-| mutation | tests that failed |
-|----------|-------------------|
-| `isActive` hard-coded true in the revision mapper | refresh keeps exactly one active revision |
-| the semantic similarity floor removed | an unrelated query returns no semantic candidates |
-| the display audience ceiling raised to `private` | a wallboard never sees private memory |
-| the project clause replaced with `or true` | the four project-isolation tests |
-| chunk overlap reverted to character slicing | four locator-containment assertions |
-| a regex scrubber added to the prompt renderer | retrieved text is returned intact |
+| mutation                                          | tests that failed                                 |
+| ------------------------------------------------- | ------------------------------------------------- |
+| `isActive` hard-coded true in the revision mapper | refresh keeps exactly one active revision         |
+| the semantic similarity floor removed             | an unrelated query returns no semantic candidates |
+| the display audience ceiling raised to `private`  | a wallboard never sees private memory             |
+| the project clause replaced with `or true`        | the four project-isolation tests                  |
+| chunk overlap reverted to character slicing       | four locator-containment assertions               |
+| a regex scrubber added to the prompt renderer     | retrieved text is returned intact                 |
 
 **The multi-agent smoke test**
 

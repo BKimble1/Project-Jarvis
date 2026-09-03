@@ -84,10 +84,10 @@ export default async function OperationsPage() {
       </header>
 
       {/*
-        * Placed above everything, because it is the sentence that qualifies every other number on
-        * this page. "Four agents working" means something different when nothing beyond the test
-        * suite has been proved.
-        */}
+       * Placed above everything, because it is the sentence that qualifies every other number on
+       * this page. "Four agents working" means something different when nothing beyond the test
+       * suite has been proved.
+       */}
       <Link
         href="/operations/qualification"
         className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2.5 text-sm hover:border-[var(--color-accent)]"

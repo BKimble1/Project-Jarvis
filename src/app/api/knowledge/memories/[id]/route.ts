@@ -25,31 +25,33 @@ const decisionSchema = z.discriminatedUnion('decision', [
   }),
 ]);
 
-export const POST = ownerRouteWithParams<{ id: string }>(async ({ services, params, request, session }) => {
-  const body = await parseBody(request, decisionSchema);
-  const actor = { actor: session.githubLogin ?? session.id, actorKind: 'owner' as const };
+export const POST = ownerRouteWithParams<{ id: string }>(
+  async ({ services, params, request, session }) => {
+    const body = await parseBody(request, decisionSchema);
+    const actor = { actor: session.githubLogin ?? session.id, actorKind: 'owner' as const };
 
-  if (body.decision === 'forget') {
-    const result = await services.memoryService.forget(
+    if (body.decision === 'forget') {
+      const result = await services.memoryService.forget(
+        params.id,
+        { confirmation: body.confirmation, reason: body.reason ?? null },
+        actor,
+      );
+      return json({
+        memory: result.item,
+        embeddingsRemoved: result.embeddingsRemoved,
+        /* Echoed so the interface can say what was actually done, in the same words each time. */
+        confirmationPhrase: FORGET_CONFIRMATION,
+      });
+    }
+
+    const memory = await services.memoryService.decide(
       params.id,
-      { confirmation: body.confirmation, reason: body.reason ?? null },
+      { decision: body.decision, reason: body.reason ?? null },
       actor,
     );
-    return json({
-      memory: result.item,
-      embeddingsRemoved: result.embeddingsRemoved,
-      /* Echoed so the interface can say what was actually done, in the same words each time. */
-      confirmationPhrase: FORGET_CONFIRMATION,
-    });
-  }
-
-  const memory = await services.memoryService.decide(
-    params.id,
-    { decision: body.decision, reason: body.reason ?? null },
-    actor,
-  );
-  return json({ memory });
-});
+    return json({ memory });
+  },
+);
 
 /** Edit wording, classification, scope or review dates. Never origin, status or authorship. */
 export const PATCH = ownerRouteWithParams<{ id: string }>(

@@ -33,9 +33,7 @@ test.describe('what Jarvis knows', () => {
     await expect(page.getByText(/Read and indexed into \d+ passage/)).toBeVisible();
 
     /* It appears in the sources list with a real passage count, not a spinner that never ends. */
-    await expect(
-      page.getByRole('link', { name: /Deployment runbook/ }).first(),
-    ).toBeVisible();
+    await expect(page.getByRole('link', { name: /Deployment runbook/ }).first()).toBeVisible();
 
     /* And it is findable. */
     await page.getByLabel("Search Jarvis's knowledge").fill(canary);
@@ -48,9 +46,7 @@ test.describe('what Jarvis knows', () => {
      * has to say that rather than describing text search as hybrid.
      */
     await expect(diagnostics.getByText('Full-text only')).toBeVisible();
-    await expect(
-      diagnostics.getByText(/No semantic index is configured/),
-    ).toBeVisible();
+    await expect(diagnostics.getByText(/No semantic index is configured/)).toBeVisible();
 
     await expect(page.getByText(new RegExp(canary))).toBeVisible();
 
@@ -77,10 +73,7 @@ test.describe('what Jarvis knows', () => {
     expect(created.status()).toBe(201);
 
     await page.reload();
-    const note = page
-      .locator('article')
-      .filter({ hasText: canary })
-      .first();
+    const note = page.locator('article').filter({ hasText: canary }).first();
     await expect(note).toBeVisible();
 
     await note.getByRole('button', { name: 'Forget' }).click();
@@ -105,5 +98,4 @@ test.describe('what Jarvis knows', () => {
     await page.getByRole('button', { name: 'Search', exact: true }).click();
     await expect(page.getByText(/Nothing matched/)).toBeVisible();
   });
-
 });

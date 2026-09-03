@@ -241,8 +241,8 @@ export function AddSource({
             required
           />
           <p className="text-xs text-[var(--color-text-subtle)]">
-            The repository comes from the project&rsquo;s own connection. You cannot point this at
-            a different one.
+            The repository comes from the project&rsquo;s own connection. You cannot point this at a
+            different one.
           </p>
         </div>
       ) : null}

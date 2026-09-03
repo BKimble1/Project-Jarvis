@@ -1,5 +1,9 @@
 import { ValidationError } from '@/domain/errors';
-import { ALLOWED_UPLOAD_TYPES, safeFilename, uploadMetadataSchema } from '@/domain/knowledge-source';
+import {
+  ALLOWED_UPLOAD_TYPES,
+  safeFilename,
+  uploadMetadataSchema,
+} from '@/domain/knowledge-source';
 import { json, ownerRoute } from '@/server/http/handler';
 
 export const dynamic = 'force-dynamic';

@@ -27,7 +27,12 @@ const searchSchema = z.object({
   includeGlobal: z.boolean().default(true),
   includeMemories: z.boolean().default(true),
   includeSources: z.boolean().default(true),
-  limit: z.number().int().min(1).max(RETRIEVAL_LIMITS.maxLimit).default(RETRIEVAL_LIMITS.defaultLimit),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(RETRIEVAL_LIMITS.maxLimit)
+    .default(RETRIEVAL_LIMITS.defaultLimit),
   asOf: z.string().datetime().nullish(),
 });
 

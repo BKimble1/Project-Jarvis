@@ -178,7 +178,7 @@ export function RetrievalInspector({
               ).map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-2">
                   <dt className="text-[var(--color-text-subtle)]">{label}</dt>
-                  <dd className="tabular-nums text-[var(--color-text-muted)]">{value}</dd>
+                  <dd className="text-[var(--color-text-muted)] tabular-nums">{value}</dd>
                 </div>
               ))}
             </dl>

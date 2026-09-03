@@ -42,7 +42,7 @@ export default async function SourcePage({ params }: { params: Promise<{ id: str
           / {SOURCE_KIND_LABELS[source.kind]}
         </p>
         <h1 className="text-xl font-semibold">{source.title}</h1>
-        <p className="break-all text-sm text-[var(--color-text-muted)]">{source.origin}</p>
+        <p className="text-sm break-all text-[var(--color-text-muted)]">{source.origin}</p>
       </header>
 
       <Card>
@@ -83,7 +83,7 @@ export default async function SourcePage({ params }: { params: Promise<{ id: str
             ).map(([label, value]) => (
               <div key={label} className="flex justify-between gap-2">
                 <dt className="text-[var(--color-text-subtle)]">{label}</dt>
-                <dd className="tabular-nums text-[var(--color-text-muted)]">{value}</dd>
+                <dd className="text-[var(--color-text-muted)] tabular-nums">{value}</dd>
               </div>
             ))}
           </dl>
@@ -135,7 +135,7 @@ export default async function SourcePage({ params }: { params: Promise<{ id: str
                     {revision.chunkerVersion} · read <RelativeTime iso={revision.fetchedAt} />
                   </span>
                   {cited.display ? (
-                    <span className="break-all font-mono text-xs text-[var(--color-text-subtle)]">
+                    <span className="font-mono text-xs break-all text-[var(--color-text-subtle)]">
                       {cited.display}
                     </span>
                   ) : null}

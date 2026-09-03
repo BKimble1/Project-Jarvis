@@ -425,10 +425,10 @@ describe('knowledge HTTP handlers', () => {
 
     for (const [label, bytes] of disguises) {
       const response = await uploadRoute.POST(
-        upload(
-          new File([new Uint8Array(bytes)], 'notes.md', { type: 'text/markdown' }),
-          { title: `Disguised ${label}`, scope: 'global' },
-        ),
+        upload(new File([new Uint8Array(bytes)], 'notes.md', { type: 'text/markdown' }), {
+          title: `Disguised ${label}`,
+          scope: 'global',
+        }),
       );
       expect(response.status, `${label} named .md`).toBe(422);
     }
@@ -460,10 +460,10 @@ describe('knowledge HTTP handlers', () => {
 
     /* A .pdf claiming to be plain text: either a mistake or an attempt, and refused either way. */
     const response = await uploadRoute.POST(
-      upload(
-        new File(['not really a pdf'], 'report.pdf', { type: 'text/plain' }),
-        { title: 'Mismatched', scope: 'global' },
-      ),
+      upload(new File(['not really a pdf'], 'report.pdf', { type: 'text/plain' }), {
+        title: 'Mismatched',
+        scope: 'global',
+      }),
     );
 
     expect(response.status).toBe(422);
@@ -546,7 +546,12 @@ describe('knowledge HTTP handlers', () => {
     );
     const id = created.memory.id as string;
 
-    for (const attempt of [{}, { confirmation: '' }, { confirmation: 'yes' }, { confirmation: 'Forget this permanently' }]) {
+    for (const attempt of [
+      {},
+      { confirmation: '' },
+      { confirmation: 'yes' },
+      { confirmation: 'Forget this permanently' },
+    ]) {
       const response = await decision.POST(
         post(`/api/knowledge/memories/${id}`, { json: { decision: 'forget', ...attempt } }),
         { params: Promise.resolve({ id }) },

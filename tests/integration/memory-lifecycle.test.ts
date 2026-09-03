@@ -97,7 +97,12 @@ describe('memory lifecycle', () => {
     it('cannot be recorded by anything that is not the owner', async () => {
       await expect(
         harness.services.memoryService.remember(
-          { scope: 'global', category: 'fact', statement: 'An agent wrote this directly.', tags: [] },
+          {
+            scope: 'global',
+            category: 'fact',
+            statement: 'An agent wrote this directly.',
+            tags: [],
+          },
           AGENT,
         ),
       ).rejects.toBeInstanceOf(ForbiddenError);
@@ -422,7 +427,11 @@ describe('memory lifecycle', () => {
         OWNER,
       );
       await expect(
-        harness.services.memoryService.edit(outcome.item.id, { statement: 'Something else' }, AGENT),
+        harness.services.memoryService.edit(
+          outcome.item.id,
+          { statement: 'Something else' },
+          AGENT,
+        ),
       ).rejects.toBeInstanceOf(ForbiddenError);
     });
   });

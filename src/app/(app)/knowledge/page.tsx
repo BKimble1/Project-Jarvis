@@ -92,8 +92,8 @@ export default async function KnowledgePage() {
           </CardHeader>
           <CardContent className="pt-0">
             <p className="mb-2 text-[0.8125rem] text-[var(--color-text-muted)]">
-              Jarvis proposed these. None of them is used in an answer until you say so, and
-              nothing that proposed one can approve it.
+              Jarvis proposed these. None of them is used in an answer until you say so, and nothing
+              that proposed one can approve it.
             </p>
             <MemoryReview memories={suggestions.map(toRow)} />
           </CardContent>
@@ -158,8 +158,8 @@ export default async function KnowledgePage() {
         <CardContent className="pt-0">
           {sources.length === 0 ? (
             <p className="text-sm text-[var(--color-text-muted)]">
-              Nothing yet. Add a note, a file, an approved web page or a file from a
-              project&rsquo;s repository.
+              Nothing yet. Add a note, a file, an approved web page or a file from a project&rsquo;s
+              repository.
             </p>
           ) : (
             <ul className="flex flex-col gap-1.5">

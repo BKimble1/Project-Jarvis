@@ -73,7 +73,7 @@ export default async function MemoryPage({ params }: { params: Promise<{ id: str
           </div>
 
           <p
-            className={`text-base ${forgotten ? 'italic text-[var(--color-text-subtle)]' : 'text-[var(--color-text)]'}`}
+            className={`text-base ${forgotten ? 'text-[var(--color-text-subtle)] italic' : 'text-[var(--color-text)]'}`}
           >
             {forgotten ? 'The text was removed permanently at your request.' : memory.statement}
           </p>

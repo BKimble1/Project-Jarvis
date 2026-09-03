@@ -172,7 +172,14 @@ export class MemoryService {
       await this.applySupersession(input.supersedesId, item, 'Replaced by a newer note.', actor);
     }
 
-    await this.record(actor, 'knowledge.create', item, 'allowed', decision.rule, 'You recorded a note.');
+    await this.record(
+      actor,
+      'knowledge.create',
+      item,
+      'allowed',
+      decision.rule,
+      'You recorded a note.',
+    );
     await this.embedItem(item);
     const conflicts = await this.raiseConflicts(item);
 
@@ -814,11 +821,7 @@ function boundReason(value: string | null | undefined): string | null {
   return trimmed.length <= 600 ? trimmed : `${trimmed.slice(0, 597)}…`;
 }
 
-function authorityReason(
-  item: KnowledgeItem,
-  authoritative: boolean,
-  nowIso: string,
-): string {
+function authorityReason(item: KnowledgeItem, authoritative: boolean, nowIso: string): string {
   if (authoritative) {
     return item.origin === 'explicit'
       ? 'You stated this, so Jarvis may rely on it.'
