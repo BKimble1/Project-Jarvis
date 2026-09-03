@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { ValidationError } from './errors';
 
 /**
  * Documents Jarvis has been given, and the rules for turning one into citable evidence.
@@ -324,156 +323,31 @@ export const sourceDeleteSchema = z.object({
  * Checked against the *resolved address* by the fetcher, not only against the string, because
  * `evil.example.com` resolving to `127.0.0.1` is the whole trick.
  */
-export const BLOCKED_HOSTNAMES: readonly string[] = [
-  'localhost',
-  'localhost.localdomain',
-  'metadata',
-  'metadata.google.internal',
-  'instance-data',
-];
-
-const PRIVATE_V4 = [
-  /^0\./,
-  /^10\./,
-  /^127\./,
-  /^169\.254\./,
-  /^172\.(1[6-9]|2[0-9]|3[01])\./,
-  /^192\.168\./,
-  /^192\.0\.0\./,
-  /^198\.1[89]\./,
-  /^224\./,
-  /^24[0-9]\./,
-  /^25[0-5]\./,
-];
-
-export function isBlockedAddress(address: string): boolean {
-  const value = address
-    .trim()
-    .toLowerCase()
-    .replace(/^\[|\]$/g, '');
-  if (BLOCKED_HOSTNAMES.includes(value)) return true;
-  if (value.endsWith('.localhost') || value.endsWith('.local') || value.endsWith('.internal')) {
-    return true;
-  }
-  if (PRIVATE_V4.some((pattern) => pattern.test(value))) return true;
-  /* IPv6 loopback, link-local, unique-local and IPv4-mapped forms. */
-  if (value === '::' || value === '::1') return true;
-  if (/^fe[89ab][0-9a-f]:/.test(value)) return true;
-  if (/^f[cd][0-9a-f]{2}:/.test(value)) return true;
-  if (value.startsWith('::ffff:')) return isBlockedAddress(value.slice('::ffff:'.length));
-  return false;
-}
-
 /**
- * Check a URL before anything resolves it.
+ * SSRF protection lives in `net-guard.ts`.
  *
- * Throws rather than returning a boolean, because every caller's correct response is to stop, and
- * a boolean invites someone to ignore it.
+ * It used to live here, and it checked only the hostname *string*: `evil.example.com` resolving
+ * to `127.0.0.1` passed, and numeric spellings of loopback — `2130706433`, `0177.0.0.1` — were not
+ * recognised at all. The replacement normalises every IPv4 and IPv6 form before matching,
+ * validates the addresses a name actually resolves to, and re-checks every redirect hop.
+ *
+ * Re-exported so existing callers keep working and there is exactly one implementation.
  */
-export function assertFetchableUrl(raw: string): URL {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new ValidationError('That is not a URL Jarvis can read.');
-  }
-  if (url.protocol !== 'https:') {
-    throw new ValidationError('Jarvis fetches https addresses only.');
-  }
-  if (url.username || url.password) {
-    throw new ValidationError('Jarvis will not fetch a URL with credentials in it.');
-  }
-  if (url.port && url.port !== '443') {
-    throw new ValidationError('Jarvis fetches on the standard https port only.');
-  }
-  if (isBlockedAddress(url.hostname)) {
-    throw new ValidationError(
-      'That address is on Jarvis’s own network or loopback, so it will not be fetched.',
-    );
-  }
-  return url;
-}
+export { BLOCKED_HOSTNAMES, assertFetchableUrl, isBlockedAddress } from './net-guard';
 
 /* ------------------------------------------------------------------ chunking */
 
 /**
- * Split text into overlapping, citable chunks.
+ * Chunking lives in `knowledge-chunker.ts`.
  *
- * Splits on structure first — a Markdown heading, a blank line — and only falls back to a hard
- * character cut when a single paragraph is genuinely enormous. Overlap exists so a sentence
- * spanning a boundary is retrievable from either side; without it, the one paragraph that answers
- * a question is the one that got cut in half.
- *
- * `locator` is built by the caller's `locate` function, so a PDF can say `p. 4` and a Markdown
- * file can say `lines 40-58` using the same chunker.
+ * The implementation that was here re-seeded each chunk with the previous chunk's tail but
+ * reported a line range starting *after* that tail, so from the second chunk onward the claimed
+ * location did not contain the chunk's own text — every "open this citation" after the first
+ * highlighted the wrong region. `deriveChunks` works over structural blocks instead, so a chunk's
+ * range covers its text by construction, and gives each chunk a stable identity derived from its
+ * location and content rather than from insertion order.
  */
-export function chunkText(
-  text: string,
-  options: {
-    readonly maxChars?: number;
-    readonly overlapChars?: number;
-    readonly maxChunks?: number;
-    /** Called with the 0-based line range of the chunk within the original text. */
-    readonly locate: (input: { startLine: number; endLine: number; ordinal: number }) => string;
-  },
-): readonly ParsedChunk[] {
-  const maxChars = options.maxChars ?? SOURCE_LIMITS.maxChunkChars;
-  const overlap = Math.min(options.overlapChars ?? SOURCE_LIMITS.chunkOverlapChars, maxChars - 1);
-  const maxChunks = options.maxChunks ?? SOURCE_LIMITS.maxChunksPerSource;
-
-  const lines = text.split('\n');
-  const chunks: ParsedChunk[] = [];
-
-  let buffer: string[] = [];
-  let bufferChars = 0;
-  let startLine = 0;
-  let heading: string | null = null;
-
-  const flush = (endLine: number): void => {
-    const body = buffer.join('\n').trim();
-    buffer = [];
-    bufferChars = 0;
-    if (body.length === 0) return;
-    if (chunks.length >= maxChunks) return;
-    chunks.push({
-      ordinal: chunks.length,
-      locator: options.locate({ startLine, endLine, ordinal: chunks.length }),
-      heading,
-      text: body,
-    });
-  };
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-
-    /* A Markdown heading both records context and forces a boundary. */
-    const headingMatch = /^(#{1,6})\s+(.{1,120})$/.exec(line.trim());
-    if (headingMatch && bufferChars > 0) {
-      flush(index - 1);
-      startLine = index;
-    }
-    if (headingMatch) heading = headingMatch[2]!.trim();
-
-    buffer.push(line);
-    bufferChars += line.length + 1;
-
-    const atBlankLine = line.trim().length === 0;
-    if (bufferChars >= maxChars || (atBlankLine && bufferChars >= maxChars - overlap)) {
-      flush(index);
-      /* Re-seed with the tail of what was just emitted, so a boundary sentence is not lost. */
-      const previous = chunks[chunks.length - 1];
-      if (previous && overlap > 0) {
-        const tail = previous.text.slice(-overlap);
-        buffer = [tail];
-        bufferChars = tail.length;
-      }
-      startLine = index + 1;
-    }
-    if (chunks.length >= maxChunks) break;
-  }
-  flush(lines.length - 1);
-  return chunks;
-}
+export { deriveChunks, CHUNKER_VERSION } from './knowledge-chunker';
 
 /**
  * Normalise text without destroying the positions a citation depends on.
@@ -482,19 +356,16 @@ export function chunkText(
  * spaces, and trailing whitespace goes — but no line is ever added or removed, because `lines
  * 40-58` has to still mean lines 40-58 afterwards.
  */
-export function normaliseSourceText(raw: string): string {
-  return raw
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .map((line) =>
-      line
-        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
-        .replace(/\u00a0/g, ' ')
-        .replace(/[ \t]+$/g, ''),
-    )
-    .join('\n')
-    .replace(/\n{4,}/g, '\n\n\n');
-}
+/**
+ * Superseded by `canonicaliseText` in `knowledge-parser.ts`.
+ *
+ * The previous implementation ended with `.replace(/\n{4,}/g, '\n\n\n')` directly beneath a
+ * comment promising that line count was preserved exactly. It was not: a seven-line input came
+ * back five lines long, so every citation into a document containing a blank-line gap pointed at
+ * the wrong place. `canonicaliseText` preserves line count and is asserted to by tests over
+ * inputs chosen to trip it.
+ */
+export { canonicaliseText as normaliseSourceText } from './knowledge-parser';
 
 /** `p. 4`, `lines 40-58`, or an ordinal when the source has no natural units. */
 export function describeLocator(input: {

@@ -72,6 +72,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   '0001_missions.sql',
   '0002_factory.sql',
   '0003_completion.sql',
+  '0004_knowledge_revisions.sql',
 ];
 
 /** Settings keys this service owns. Named once so a typo cannot silently create a second key. */
