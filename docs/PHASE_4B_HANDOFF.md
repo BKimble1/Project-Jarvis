@@ -332,3 +332,72 @@ search-audience test that only asserted a 200.
 - **Conflict detection is lexical**, a Jaccard overlap of significant words. It is biased toward
   reporting: a harmless pair costs ten seconds to dismiss, a missed contradiction means Jarvis
   confidently states something the owner stopped believing.
+
+---
+
+## Verification, reported separately
+
+**Automated, on this branch:**
+
+| gate                                              | result                                                                              |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `npx tsc --noEmit`                                | clean                                                                               |
+| `npm run lint`                                    | clean                                                                               |
+| `npm run format:check`                            | clean                                                                               |
+| `npm test`                                        | 28 files, 1073 tests, all passing                                                   |
+| `npm run build`                                   | succeeds; all three knowledge pages compile                                         |
+| `npx playwright test tests/e2e/viewports.spec.ts` | `/knowledge` added to the sweep; fits at all five sizes with no horizontal overflow |
+
+**Live behaviour actually exercised**, as distinct from tested in principle:
+
+- A note typed into the real form, in a real browser, becoming a real search result whose citation
+  opens the source page showing revision 1 marked in use.
+- Forgetting through the real interface: the confirm button disabled until the phrase matches
+  exactly, a near-miss rejected, and the text then absent from the page and from search.
+- PDF extraction against real PDF bytes assembled by hand — page-aware, with the citation naming
+  the page the text was on.
+- An encrypted PDF, refused as password-protected rather than as empty or corrupt.
+- The SSRF guard against real sockets, including a loopback server that really is listening.
+- Six concurrent refreshes against a real PostgreSQL, leaving exactly one active revision.
+
+**Not exercised live, and therefore not claimed:**
+
+- No external embedding provider was configured. Everything about semantic retrieval here was
+  measured against the bundled hashed-trigram provider, whose limits are documented above.
+- No real remote URL was fetched. The SSRF guard was driven against local sockets and a scripted
+  fetcher; the allow-list path has not been used against a live third-party host.
+- No real GitHub repository file was imported. The repository path uses the fake provider.
+- OCR does not exist, so no scanned document has been read.
+
+**The E2E suite is now heavier than this container reliably handles.** Stated plainly because the
+evidence is unambiguous and because a green-looking suite that fails one test per run is exactly
+the kind of thing that gets waved through.
+
+Measured, five full runs:
+
+| branch                  | runs | wall time  | failures                                    |
+| ----------------------- | ---- | ---------- | ------------------------------------------- |
+| 4A baseline (`71f2f8a`) | 2    | 8.3, 8.4 m | none                                        |
+| this branch             | 4    | 9.5–12.2 m | one per run, a **different** test each time |
+
+The four were: the sandbox mission smoke test (twice), the signed-out auth redirect, and the task
+graph permission screen. Every one of them passes in isolation, comfortably — the auth test in 1.6s
+against a 30s budget, the mission smoke test in 18–42s against 180s. The failures land in teardown
+after a body timeout. Nothing about them is located in the knowledge code, and none of them
+reproduces when its own file is run alone or with both browser projects in the failing order.
+
+So this is contention, and the load is mine: three added E2E tests, a ninth page in the viewport
+sweep, and more pages and queries overall. It is not a product defect and it is not one bad test —
+the failure moves, which is what rules out the single-test explanation.
+
+One real reduction was made along the way, on its own merits rather than as a fix: the sandbox
+mission smoke test now runs once, under the desktop project only. It boots a real worker process,
+clones a repository, runs a verification and opens a pull request — all backend properties with
+nothing viewport-dependent in them — and `viewports.spec.ts` already skipped its second project for
+exactly this reason and says so in the same words. That cut 2.7 minutes. It did **not** stop the
+flaking, and this section previously claimed it had; that claim was wrong and is corrected here.
+
+What a later phase should do about it, in order of preference: run Playwright with more than one
+worker on a machine that has the cores for it; or split the suite so the real-process tests run
+separately from the interface tests. What it should _not_ do is raise timeouts until the failures
+stop, which converts a load problem into a much longer suite that still hides real regressions.

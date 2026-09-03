@@ -221,11 +221,19 @@ test.describe('the sandbox mission smoke test', () => {
     baseURL,
   }) => {
     /*
-     * Three minutes, not the default ninety seconds. This is the one test that boots a real
-     * worker process, clones a repository, runs a read-only inspection, waits for an approval,
-     * runs the mission, runs the repository's own verification, commits, pushes and opens a
-     * pull request. About thirty seconds of that is work; the rest is headroom, so a slow
-     * machine fails this test on a real defect rather than on the clock.
+     * Once, not once per browser project. This test boots a real worker process, clones a
+     * repository, runs an inspection, waits for an approval, runs the mission, runs the
+     * repository's own verification, commits, pushes and opens a pull request — and every one of
+     * those is a backend property with nothing viewport-dependent in it. Running it twice took
+     * the same forty seconds of real work to prove the same thing, and as the suite grew the
+     * second run became the one that intermittently ran out of budget under whole-suite load.
+     * `viewports.spec.ts` skips its second project for the same reason and says so the same way.
+     */
+    test.skip(test.info().project.name !== 'desktop', 'proves a backend property, not a layout');
+
+    /*
+     * Three minutes, not the default ninety seconds. About thirty seconds of that is work; the
+     * rest is headroom, so a slow machine fails this test on a real defect rather than the clock.
      */
     test.setTimeout(180_000);
     await resetPullRequests(page.request);
