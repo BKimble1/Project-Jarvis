@@ -8,7 +8,7 @@ import { ControlPlaneError, type ControlPlaneClient } from './client';
 import type { WorkerConfig } from './config';
 import { buildPullRequestBody, DeliveryError, type GitHubDelivery } from './delivery';
 import { changedFiles, git, headSha, pushMissionBranch } from './git';
-import { commitTaskWork, filesAgainstBase, integrateBranches } from './integration';
+import { commitTaskWork, filesAgainstBase, integrateBranches, readBranchDiff } from './integration';
 import { buildPolicyPrompt, evaluateToolUse, type PolicyContext } from './policy';
 import type { AgentEvent, AgentRuntime, AgentSession } from './runtime/types';
 import { discoverCommands, runVerification, summariseVerification } from './verification';
@@ -179,6 +179,8 @@ export class TaskRunner {
       readOnly: false,
       branch: this.assignment.branchName,
       slot: taskSlot('task', this.assignment.taskKey),
+      /* A repair continues the branch it repairs rather than starting beside it. */
+      startFrom: this.assignment.baseTaskBranch,
     });
     const workspace = this.workspace!;
 
@@ -240,6 +242,46 @@ export class TaskRunner {
         sha: commit?.sha,
       },
     );
+
+    /*
+     * Publish the task branch.
+     *
+     * A task branch that only exists in this workspace is invisible to the integrator, which
+     * runs in a workspace of its own and may not even be on this machine. Pushing it under
+     * `jarvis/` — the same policy-checked path Prompt 2 already uses, so the default branch is
+     * still unreachable and a force push is still refused — is what makes the work shareable,
+     * and it doubles as the durable record of what this agent did.
+     *
+     * A worker with no GitHub write credential can still build and review; it simply cannot hand
+     * its branch to anyone else, and the integrator says so plainly rather than failing with a
+     * git error nobody can read.
+     */
+    if (this.deps.delivery) {
+      try {
+        await pushMissionBranch({
+          cwd: workspace.repoPath,
+          branch: workspace.branch!,
+          defaultBranch: workspace.baseBranch,
+          credentialToken: this.deps.config.githubToken,
+        });
+        await this.emit('branch_pushed', `Pushed ${workspace.branch}.`);
+      } catch (error) {
+        await this.fail(
+          'github_error',
+          `The work is committed on ${workspace.branch}, but pushing it failed, so no other task can reach it: ${error instanceof Error ? error.message.slice(0, 300) : 'unknown error'}`,
+          { changedFiles: changed },
+        );
+        return;
+      }
+    } else {
+      await this.emit(
+        'info',
+        `This worker has no GitHub write credential, so ${workspace.branch} stays on this machine.`,
+        {},
+        'warning',
+      );
+    }
+
     await this.report('succeeded', {
       currentAction: null,
       headSha: commit?.sha ?? null,
@@ -253,7 +295,17 @@ export class TaskRunner {
   /** Deterministic git. No model is started, and there is nothing here for one to influence. */
   private async runIntegration(): Promise<void> {
     await this.report('preparing', { currentAction: 'Preparing the integration workspace' });
-    await this.prepare({ readOnly: false, branch: null, slot: INTEGRATION_SLOT });
+    /*
+     * The integration workspace is reused across rounds rather than re-cloned.
+     *
+     * There is exactly one of it per mission — the verifier already resumes into it — and a
+     * repair round integrates a second time. Refusing to reuse it made the second round fail with
+     * "a workspace already exists from an earlier attempt", which is the right message for a
+     * *task* workspace and the wrong one here. Reuse is safe because `integrateBranches` starts
+     * by resetting the integration branch to the base with `checkout -B`, and because `prepare`
+     * still refuses a workspace with uncommitted changes in it.
+     */
+    await this.prepare({ readOnly: false, branch: null, slot: INTEGRATION_SLOT, reuse: true });
     const workspace = this.workspace!;
 
     await this.report('integrating', {
@@ -288,6 +340,33 @@ export class TaskRunner {
       `Merged ${result.merged.length} branch(es) into ${this.assignment.integrationBranch}.`,
       { headSha: result.headSha, files: result.changedFiles.length },
     );
+
+    /*
+     * Publish the integration branch.
+     *
+     * The reviewer works in a clone of its own — that is what makes the review independent — so
+     * an integration branch that exists only in this workspace is an integration branch the
+     * reviewer cannot read. Delivery pushes it too; pushing here is what makes it reviewable
+     * before anyone decides whether to deliver it.
+     */
+    if (this.deps.delivery && this.assignment.integrationBranch) {
+      try {
+        await pushMissionBranch({
+          cwd: workspace.repoPath,
+          branch: this.assignment.integrationBranch,
+          defaultBranch: workspace.baseBranch,
+          credentialToken: this.deps.config.githubToken,
+        });
+        await this.emit('branch_pushed', `Pushed ${this.assignment.integrationBranch}.`);
+      } catch (error) {
+        await this.fail(
+          'github_error',
+          `The merge succeeded but pushing ${this.assignment.integrationBranch} failed, so no reviewer can read it: ${error instanceof Error ? error.message.slice(0, 300) : 'unknown error'}`,
+        );
+        return;
+      }
+    }
+
     await this.report('succeeded', {
       currentAction: null,
       branchName: this.assignment.integrationBranch,
@@ -387,6 +466,43 @@ export class TaskRunner {
 
     await this.report('running', { currentAction: 'Reviewing the finished work' });
 
+    /*
+     * Fetch the work into this clone and read the diff.
+     *
+     * The control plane sends the review's *context* — the plan, the criteria, the verification
+     * evidence — but never the patch, so the diff comes from here. Without this the reviewer sat
+     * in a fresh clone of the default branch and was asked to review a change it could not see;
+     * it would have had to form a verdict out of file names, which is not review.
+     */
+    const integrationBranch = this.assignment.integrationBranch;
+    const seen = integrationBranch
+      ? await readBranchDiff({
+          repoPath: this.workspace!.repoPath,
+          branch: integrationBranch,
+          baseBranch: this.workspace!.baseBranch,
+          credentialToken: this.deps.config.githubToken,
+        })
+      : { diff: '', files: [], headSha: null, truncated: false };
+
+    if (!seen.diff) {
+      /*
+       * No diff is not "nothing to complain about". A reviewer with nothing to read cannot
+       * approve, so the task fails and the owner is told why rather than being handed a verdict
+       * that was never based on anything.
+       */
+      await this.fail(
+        'agent_error',
+        `There is no diff to review: ${integrationBranch ?? 'the integration branch'} could not be read from this workspace. Usually that means it was never pushed — a worker with no GitHub write credential can build and integrate, but nothing it produces is visible to a reviewer working in its own clone.`,
+      );
+      return;
+    }
+
+    await this.emit(
+      'info',
+      `Reviewing ${seen.files.length} changed file(s) on ${integrationBranch}${seen.truncated ? ' (diff truncated)' : ''}.`,
+      { files: seen.files.slice(0, 20), headSha: seen.headSha },
+    );
+
     const prompt = buildReviewContext({
       missionTitle: this.assignment.missionTitle,
       missionRequest: this.assignment.rawRequest,
@@ -401,8 +517,8 @@ export class TaskRunner {
         title: task.title,
         role: task.role,
       })),
-      diff: review.diff,
-      changedFiles: review.changedFiles,
+      diff: seen.diff,
+      changedFiles: seen.files.length > 0 ? seen.files : review.changedFiles,
       verification: this.assignment.verification.map((entry) => ({
         check: entry.check,
         outcome: entry.outcome as VerificationInput['outcome'],
@@ -434,7 +550,7 @@ export class TaskRunner {
       verdict: parsed.verdict,
       summary: parsed.summary,
       findings: parsed.findings,
-      reviewedFiles: [...review.changedFiles],
+      reviewedFiles: [...(seen.files.length > 0 ? seen.files : review.changedFiles)],
       diffFingerprint: review.diffFingerprint,
       unavailableReason: parsed.unavailableReason,
     });
@@ -648,6 +764,7 @@ export class TaskRunner {
     branch: string | null;
     slot: string;
     reuse?: boolean;
+    startFrom?: string | null;
   }): Promise<void> {
     if (!this.assignment.repository || this.assignment.workspaceRequirement === 'none') {
       this.workspace = await prepareScratchWorkspace(
@@ -661,6 +778,7 @@ export class TaskRunner {
       missionId: this.assignment.missionId,
       repository: this.repositoryForRun(),
       branchName: options.branch,
+      startFromBranch: options.startFrom ?? null,
       credentialToken: this.deps.config.githubToken,
       readOnly: options.readOnly,
       reuseExisting: options.reuse ?? false,
@@ -676,7 +794,12 @@ export class TaskRunner {
   /** Sandbox redirection, identical to the mission runner's, so a rehearsal cannot reach real code. */
   private repositoryForRun(): NonNullable<TaskAssignment['repository']> {
     const repository = this.assignment.repository!;
-    const redirect = this.deps.config.sandboxRepositories.get(repository.fullName);
+    /*
+     * Lower-cased, because `parseSandboxRepositories` lower-cases its keys. Looking up the name
+     * as written meant a repository with any capital letter silently missed its redirect and the
+     * task cloned the real repository — the one thing sandbox mode exists to make impossible.
+     */
+    const redirect = this.deps.config.sandboxRepositories.get(repository.fullName.toLowerCase());
     if (!redirect) return repository;
     void this.emit(
       'info',

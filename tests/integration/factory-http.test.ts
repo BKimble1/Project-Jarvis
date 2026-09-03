@@ -112,7 +112,6 @@ const HEARTBEAT = {
   diagnostics: [],
 };
 
-
 describe('Multi-agent factory HTTP handlers', () => {
   let close: () => Promise<void>;
   let services: Services;

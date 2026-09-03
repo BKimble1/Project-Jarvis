@@ -344,6 +344,8 @@ export const TASK_TRANSITIONS: readonly TaskTransition[] = [
 
   T('preparing', 'running', ['worker'], 'Workspace ready; agent started'),
   T('preparing', 'integrating', ['worker'], 'Workspace ready; merging'),
+  /* A verifier has no agent to start: its workspace is ready and the checks begin. */
+  T('preparing', 'verifying', ['worker'], "Workspace ready; running the repository's checks"),
   T('preparing', 'failed', ['worker', 'system'], 'Workspace preparation failed'),
   T('preparing', 'stopped', ['worker', 'system'], 'Stopped while preparing'),
 
@@ -378,7 +380,14 @@ export const TASK_TRANSITIONS: readonly TaskTransition[] = [
 
   T('verifying', 'awaiting_review', ['worker', 'system'], 'Verification finished'),
   T('verifying', 'repair_required', ['system'], 'Verification failed; repair available'),
-  T('verifying', 'succeeded', ['system'], 'Verification finished; nothing to review'),
+  /*
+   * The worker may close its own verification task, because "the checks ran" is a fact it
+   * observed and not a judgement about them. What the results *mean* is decided elsewhere: the
+   * outcomes are recorded through a separate route from real exit codes, `decideVerdict` refuses
+   * an approval standing on a failed required check, and nothing here can turn a failure into a
+   * pass. The system keeps the transition too, for a mission it closes out itself.
+   */
+  T('verifying', 'succeeded', ['worker', 'system'], 'Verification finished; nothing to review'),
   T('verifying', 'failed', ['worker', 'system'], 'Verification failed'),
   T('verifying', 'stopped', ['worker', 'system'], 'Stopped during verification'),
 

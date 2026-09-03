@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ConflictError, ForbiddenError, NotFoundError } from '@/domain/errors';
-import { AGENT_ROLES, isReviewRole, type AgentRole } from '@/domain/agent-role';
+import { AGENT_ROLES, isReviewRole, isWriteRole, type AgentRole } from '@/domain/agent-role';
 import {
   assertTaskTransition,
   isTerminalTaskState,
@@ -30,6 +30,7 @@ import type {
   WriteLeaseRepository,
 } from '../repositories/factory-types';
 import type { MissionOrchestrator } from './orchestrator';
+import { resolveMissionRepository } from './repository-resolution';
 
 /**
  * The worker's side of the task protocol.
@@ -139,6 +140,18 @@ export class TaskWorkerService {
     const repository = await this.resolveRepository(mission);
     const branchName = await this.ensureBranch(task, mission);
     const integrationBranch = await this.ensureIntegrationBranch(mission);
+    /*
+     * A repair continues the branch it repairs. Chosen here rather than by the worker, for the
+     * same reason branch names are: the control plane knows which task this repairs, and a
+     * worker choosing its own starting point is a worker choosing what it is allowed to build on.
+     */
+    const repaired = task.reviewsTaskId
+      ? null
+      : task.repairRound > 0
+        ? (siblings.find((sibling) => sibling.repairRound === 0 && isWriteRole(sibling.role)) ??
+          null)
+        : null;
+    const baseTaskBranch = repaired?.branchName ?? null;
 
     /* An integrator merges the finished write branches, in dependency order. */
     const mergeBranches = siblings
@@ -183,6 +196,7 @@ export class TaskWorkerService {
       workspaceRequirement: task.workspaceRequirement,
       declaredWriteSet: task.declaredWriteSet,
       branchName,
+      baseTaskBranch,
       integrationBranch,
       mergeBranches,
       repairRound: task.repairRound,
@@ -269,21 +283,10 @@ export class TaskWorkerService {
   private async resolveRepository(
     mission: NonNullable<Awaited<ReturnType<MissionRepository['findById']>>>,
   ): Promise<TaskAssignment['repository']> {
-    if (!mission.repositoryOwner || !mission.repositoryName) return null;
     const sources = mission.projectId
       ? await this.deps.sources.listByProject(mission.projectId)
       : [];
-    const source =
-      sources.find((candidate) => candidate.kind === 'github_repo' && candidate.isPrimary) ??
-      sources.find((candidate) => candidate.kind === 'github_repo');
-    return {
-      owner: mission.repositoryOwner,
-      name: mission.repositoryName,
-      fullName: `${mission.repositoryOwner}/${mission.repositoryName}`,
-      defaultBranch: mission.baseBranch ?? source?.github?.defaultBranch ?? 'main',
-      cloneUrl: `https://github.com/${mission.repositoryOwner}/${mission.repositoryName}.git`,
-      visibility: source?.github?.visibility ?? null,
-    };
+    return resolveMissionRepository(mission, sources);
   }
 
   /** A task branch is built from the mission id and the task key, then re-validated. */

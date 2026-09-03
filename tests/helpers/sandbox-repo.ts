@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { git } from '@/worker/git';
@@ -82,13 +82,15 @@ async function createSeed(seedPath: string, files: Record<string, string>): Prom
   await git(['init', '--quiet', '--initial-branch=main', seedPath], { cwd: path.dirname(seedPath) })
     /* `git init <path>` is not in the worker's allow-list, so fall back to mkdir + init. */
     .catch(async () => {
-      const { mkdir } = await import('node:fs/promises');
       await mkdir(seedPath, { recursive: true });
       await runInit(seedPath);
     });
 
   for (const [name, content] of Object.entries(files)) {
-    await writeFile(path.join(seedPath, name), content, 'utf8');
+    const target = path.join(seedPath, name);
+    /* Nested paths, so a seed can describe a repository with directories in it. */
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, 'utf8');
   }
   await git(['add', '--all'], { cwd: seedPath });
   await git(['commit', '--quiet', '--message', 'Initial commit'], { cwd: seedPath });

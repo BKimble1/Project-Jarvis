@@ -71,7 +71,11 @@ import {
   isDisplayDeviceUsable,
   parseDisplayToken,
 } from '@/domain/display-device';
-import { appProfileSchema, assessTestFlightReadiness, looksLikeCredential } from '@/domain/app-profile';
+import {
+  appProfileSchema,
+  assessTestFlightReadiness,
+  looksLikeCredential,
+} from '@/domain/app-profile';
 import { instantiatePlaybook, mergeRequiredChecks, validatePlaybook } from '@/domain/playbook';
 import { BUILT_IN_PLAYBOOKS } from '@/server/playbooks/built-in';
 import { decomposePlan, deriveWriteSet, researchIsWorthwhile } from '@/domain/task-decomposition';
@@ -170,13 +174,13 @@ describe('agent roles and permission profiles', () => {
   it('separates the researcher default from its ceiling, so web access is expressible', () => {
     expect(ROLE_PERMISSION_PROFILE.researcher).toBe('readonly_repo');
     expect(ceilingForRole('researcher').id).toBe('readonly_repo_web');
-    expect(isWithinCeiling(PERMISSION_PROFILES.readonly_repo_web, ceilingForRole('researcher'))).toBe(
-      true,
-    );
-    /* And the ceiling still refuses anything that writes. */
     expect(
-      isWithinCeiling(PERMISSION_PROFILES.workspace_write, ceilingForRole('researcher')),
-    ).toBe(false);
+      isWithinCeiling(PERMISSION_PROFILES.readonly_repo_web, ceilingForRole('researcher')),
+    ).toBe(true);
+    /* And the ceiling still refuses anything that writes. */
+    expect(isWithinCeiling(PERMISSION_PROFILES.workspace_write, ceilingForRole('researcher'))).toBe(
+      false,
+    );
   });
 
   it('describes a profile from the profile rather than from prose that could drift', () => {
@@ -214,7 +218,9 @@ describe('the task state machine', () => {
 
   it('rejects a move the actor may not make', () => {
     expect(() => assertTaskTransition('ready', 'claimed', 'owner')).toThrow(/cannot move a task/);
-    expect(() => assertTaskTransition('running', 'pausing', 'worker')).toThrow(/cannot move a task/);
+    expect(() => assertTaskTransition('running', 'pausing', 'worker')).toThrow(
+      /cannot move a task/,
+    );
   });
 
   it('treats a repeated report of the same state as a no-op rather than a failure', () => {
@@ -294,7 +300,9 @@ describe('write sets', () => {
 
 /* ------------------------------------------------------------- graph validation */
 
-const task = (overrides: Partial<TaskProposal> & Pick<TaskProposal, 'key' | 'role'>): TaskProposal => ({
+const task = (
+  overrides: Partial<TaskProposal> & Pick<TaskProposal, 'key' | 'role'>,
+): TaskProposal => ({
   title: `Task ${overrides.key}`,
   description: 'Do the thing.',
   taskType: 'implementation',
@@ -312,7 +320,11 @@ const task = (overrides: Partial<TaskProposal> & Pick<TaskProposal, 'key' | 'rol
   ...overrides,
 });
 
-const builder = (key: string, writeSet: readonly string[], dependsOn: string[] = []): TaskProposal =>
+const builder = (
+  key: string,
+  writeSet: readonly string[],
+  dependsOn: string[] = [],
+): TaskProposal =>
   task({
     key,
     role: 'builder',
@@ -325,7 +337,13 @@ const builder = (key: string, writeSet: readonly string[], dependsOn: string[] =
 /** The smallest graph that is actually valid: build, verify, review. */
 const validGraph = (): TaskProposal[] => [
   builder('tb', ['src']),
-  task({ key: 'tv', role: 'verifier', taskType: 'verification', dependsOn: ['tb'], workspaceRequirement: 'integration' }),
+  task({
+    key: 'tv',
+    role: 'verifier',
+    taskType: 'verification',
+    dependsOn: ['tb'],
+    workspaceRequirement: 'integration',
+  }),
   task({
     key: 'tr',
     role: 'reviewer',
@@ -360,7 +378,13 @@ describe('task graph validation', () => {
     const result = validateTaskGraph(
       [
         builder('tb', ['src']),
-        task({ key: 'tv', role: 'verifier', taskType: 'verification', dependsOn: ['tb'], workspaceRequirement: 'integration' }),
+        task({
+          key: 'tv',
+          role: 'verifier',
+          taskType: 'verification',
+          dependsOn: ['tb'],
+          workspaceRequirement: 'integration',
+        }),
       ],
       { missionWrites: true },
     );
@@ -378,8 +402,20 @@ describe('task graph validation', () => {
     const result = validateTaskGraph(
       [
         builder('tb', ['src']),
-        task({ key: 'tr', role: 'reviewer', taskType: 'review', dependsOn: ['tb'], reviewsTaskKey: 'tb' }),
-        task({ key: 'tv', role: 'verifier', taskType: 'verification', dependsOn: ['tb'], workspaceRequirement: 'integration' }),
+        task({
+          key: 'tr',
+          role: 'reviewer',
+          taskType: 'review',
+          dependsOn: ['tb'],
+          reviewsTaskKey: 'tb',
+        }),
+        task({
+          key: 'tv',
+          role: 'verifier',
+          taskType: 'verification',
+          dependsOn: ['tb'],
+          workspaceRequirement: 'integration',
+        }),
       ],
       { missionWrites: true },
     );
@@ -391,8 +427,20 @@ describe('task graph validation', () => {
       [
         builder('tb', ['src']),
         builder('tc', ['src/app']),
-        task({ key: 'tv', role: 'verifier', taskType: 'verification', dependsOn: ['tb', 'tc'], workspaceRequirement: 'integration' }),
-        task({ key: 'tr', role: 'reviewer', taskType: 'review', dependsOn: ['tv'], reviewsTaskKey: 'tb' }),
+        task({
+          key: 'tv',
+          role: 'verifier',
+          taskType: 'verification',
+          dependsOn: ['tb', 'tc'],
+          workspaceRequirement: 'integration',
+        }),
+        task({
+          key: 'tr',
+          role: 'reviewer',
+          taskType: 'review',
+          dependsOn: ['tv'],
+          reviewsTaskKey: 'tb',
+        }),
       ],
       { missionWrites: true, limits: { maxWriteTasks: 2 } },
     );
@@ -404,9 +452,27 @@ describe('task graph validation', () => {
       [
         builder('tb', ['src']),
         builder('tc', ['docs']),
-        task({ key: 'tv', role: 'verifier', taskType: 'verification', dependsOn: ['tb', 'tc'], workspaceRequirement: 'integration' }),
-        task({ key: 'tr', role: 'reviewer', taskType: 'review', dependsOn: ['tv'], reviewsTaskKey: 'tb' }),
-        task({ key: 'ts', role: 'reviewer', taskType: 'review', dependsOn: ['tv'], reviewsTaskKey: 'tc' }),
+        task({
+          key: 'tv',
+          role: 'verifier',
+          taskType: 'verification',
+          dependsOn: ['tb', 'tc'],
+          workspaceRequirement: 'integration',
+        }),
+        task({
+          key: 'tr',
+          role: 'reviewer',
+          taskType: 'review',
+          dependsOn: ['tv'],
+          reviewsTaskKey: 'tb',
+        }),
+        task({
+          key: 'ts',
+          role: 'reviewer',
+          taskType: 'review',
+          dependsOn: ['tv'],
+          reviewsTaskKey: 'tc',
+        }),
       ],
       { missionWrites: true, limits: { maxWriteTasks: 2, maxParallelTasks: 3 } },
     );
@@ -480,7 +546,9 @@ describe('task graph validation', () => {
 
 /* -------------------------------------------------------------------- readiness */
 
-const storedTask = (overrides: Partial<MissionTask> & Pick<MissionTask, 'key' | 'state'>): MissionTask => ({
+const storedTask = (
+  overrides: Partial<MissionTask> & Pick<MissionTask, 'key' | 'state'>,
+): MissionTask => ({
   id: `id-${overrides.key}`,
   missionId: 'mission-1',
   graphId: 'graph-1',
@@ -508,7 +576,13 @@ const storedTask = (overrides: Partial<MissionTask> & Pick<MissionTask, 'key' | 
   maxTurns: null,
   timeLimitMs: null,
   maxOutputTokens: null,
-  usage: { inputTokens: null, outputTokens: null, totalCostUsd: null, turns: null, durationMs: null },
+  usage: {
+    inputTokens: null,
+    outputTokens: null,
+    totalCostUsd: null,
+    turns: null,
+    durationMs: null,
+  },
   reviewsTaskId: null,
   repairRound: 0,
   latestReviewId: null,
@@ -618,7 +692,12 @@ describe('review verdicts', () => {
   it('lets only two verdicts deliver', () => {
     expect(verdictAllowsDelivery('approved')).toBe(true);
     expect(verdictAllowsDelivery('approved_with_notes')).toBe(true);
-    for (const verdict of ['repair_required', 'owner_decision_required', 'blocked', 'unavailable'] as const) {
+    for (const verdict of [
+      'repair_required',
+      'owner_decision_required',
+      'blocked',
+      'unavailable',
+    ] as const) {
       expect(verdictAllowsDelivery(verdict)).toBe(false);
     }
   });
@@ -667,7 +746,10 @@ describe('specialist review triggers', () => {
   });
 
   it('requires a UI review for user-facing files', () => {
-    const required = requiredSpecialistReviews({ ...base, changedFiles: ['src/components/card.tsx'] });
+    const required = requiredSpecialistReviews({
+      ...base,
+      changedFiles: ['src/components/card.tsx'],
+    });
     expect(required.map((entry) => entry.role)).toContain('ux_reviewer');
   });
 
@@ -696,7 +778,12 @@ describe('the review context', () => {
     changedFiles: ['x'],
     verification: [
       { check: 'npm test', outcome: 'passed' as const, required: true, detail: 'exit 0' },
-      { check: 'npm run e2e', outcome: 'unavailable' as const, required: true, detail: 'no browser' },
+      {
+        check: 'npm run e2e',
+        outcome: 'unavailable' as const,
+        required: true,
+        detail: 'no browser',
+      },
     ],
     artifacts: [],
     repositoryInstructions: 'Use tabs.',
@@ -706,7 +793,9 @@ describe('the review context', () => {
 
   it('tells the reviewer that unavailable is not a pass', () => {
     const context = buildReviewContext(inputs);
-    expect(context).toContain('"unavailable" means the check could not run here. It is not a pass.');
+    expect(context).toContain(
+      '"unavailable" means the check could not run here. It is not a pass.',
+    );
   });
 
   it('carries the plan, the criteria and the diff but never a builder transcript', () => {
@@ -844,7 +933,13 @@ describe('capacity', () => {
       {
         timeLimitMs: 60_000,
         maxOutputTokens: null,
-        usage: { inputTokens: null, outputTokens: null, totalCostUsd: null, turns: null, durationMs: null },
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          totalCostUsd: null,
+          turns: null,
+          durationMs: null,
+        },
         startedAt: '2026-01-01T00:00:00.000Z',
       },
       '2026-01-01T00:05:00.000Z',
@@ -881,7 +976,14 @@ describe('capacity', () => {
 
 describe('the completion receipt', () => {
   const passing = [
-    { check: 'npm test', outcome: 'passed' as const, required: true, blocksDelivery: true, exitCode: 0, detail: null },
+    {
+      check: 'npm test',
+      outcome: 'passed' as const,
+      required: true,
+      blocksDelivery: true,
+      exitCode: 0,
+      detail: null,
+    },
   ];
   const approved = [
     {
@@ -990,13 +1092,19 @@ describe('the CI controller', () => {
   });
 
   it('refuses a repository, workflow or ref that is not allow-listed', () => {
-    expect(evaluateCiDispatch({ ...request, repositoryFullName: 'other/app' }, enabled).rule).toBe('R-CI4');
-    expect(evaluateCiDispatch({ ...request, workflowFile: 'deploy.yml' }, enabled).rule).toBe('R-CI6');
+    expect(evaluateCiDispatch({ ...request, repositoryFullName: 'other/app' }, enabled).rule).toBe(
+      'R-CI4',
+    );
+    expect(evaluateCiDispatch({ ...request, workflowFile: 'deploy.yml' }, enabled).rule).toBe(
+      'R-CI6',
+    );
     expect(evaluateCiDispatch({ ...request, ref: 'release' }, enabled).rule).toBe('R-CI8');
   });
 
   it('refuses a workflow name that is not a workflow file (R-CI5)', () => {
-    expect(evaluateCiDispatch({ ...request, workflowFile: '../../etc/passwd' }, enabled).rule).toBe('R-CI5');
+    expect(evaluateCiDispatch({ ...request, workflowFile: '../../etc/passwd' }, enabled).rule).toBe(
+      'R-CI5',
+    );
   });
 
   it('requires an exact commit (R-CI9)', () => {
@@ -1038,7 +1146,9 @@ describe('the TestFlight gate', () => {
   });
 
   it('refuses an unverified or unreviewed commit as separate, explicit reasons', () => {
-    expect(evaluateTestFlightDispatch({ ...ready, requiredChecksPassed: false }).rule).toBe('R-TF6');
+    expect(evaluateTestFlightDispatch({ ...ready, requiredChecksPassed: false }).rule).toBe(
+      'R-TF6',
+    );
     expect(evaluateTestFlightDispatch({ ...ready, reviewApproved: false }).rule).toBe('R-TF7');
   });
 
@@ -1050,7 +1160,8 @@ describe('the TestFlight gate', () => {
 
   it('refuses a revoked or already-used approval', () => {
     expect(
-      evaluateTestFlightDispatch({ ...ready, approval: { ...ready.approval, state: 'revoked' } }).rule,
+      evaluateTestFlightDispatch({ ...ready, approval: { ...ready.approval, state: 'revoked' } })
+        .rule,
     ).toBe('R-TF9');
     expect(
       evaluateTestFlightDispatch({ ...ready, approval: { ...ready.approval, state: 'used' } }).rule,
@@ -1062,7 +1173,9 @@ describe('the TestFlight gate', () => {
   });
 
   it('refuses when the repository is not allow-listed or has no configured workflow', () => {
-    expect(evaluateTestFlightDispatch({ ...ready, repositoryAllowListed: false }).rule).toBe('R-TF2');
+    expect(evaluateTestFlightDispatch({ ...ready, repositoryAllowListed: false }).rule).toBe(
+      'R-TF2',
+    );
     expect(evaluateTestFlightDispatch({ ...ready, workflowConfigured: false }).rule).toBe('R-TF3');
   });
 });
@@ -1086,7 +1199,9 @@ describe('app profiles', () => {
     const parsed = appProfileSchema.safeParse({ signingSecretNames: ['APP_STORE_CONNECT_KEY'] });
     expect(parsed.success).toBe(true);
     /* A lowercase value that looks like a secret rather than a name is refused. */
-    expect(appProfileSchema.safeParse({ signingSecretNames: ['abc123secretvalue'] }).success).toBe(false);
+    expect(appProfileSchema.safeParse({ signingSecretNames: ['abc123secretvalue'] }).success).toBe(
+      false,
+    );
   });
 
   it('reports TestFlight readiness from presence alone', () => {
@@ -1181,7 +1296,9 @@ describe('playbooks', () => {
     const widened = {
       ...base,
       tasks: base.tasks.map((entry) =>
-        entry.role === 'reviewer' ? { ...entry, permissionProfileId: 'workspace_write' as const } : entry,
+        entry.role === 'reviewer'
+          ? { ...entry, permissionProfileId: 'workspace_write' as const }
+          : entry,
       ),
     };
     const check = validatePlaybook(widened);
@@ -1311,7 +1428,9 @@ describe('decomposing a plan', () => {
   it('says plainly when a plan named no areas, so the whole repository is in scope', () => {
     expect(deriveWriteSet(plan({ affectedAreas: [] }))).toEqual(['.']);
     expect(deriveWriteSet(plan({ affectedAreas: ['the settings screen'] }))).toEqual(['.']);
-    expect(deriveWriteSet(plan({ affectedAreas: ['src/app/results'] }))).toEqual(['src/app/results']);
+    expect(deriveWriteSet(plan({ affectedAreas: ['src/app/results'] }))).toEqual([
+      'src/app/results',
+    ]);
 
     const result = decomposePlan({
       plan: plan({ affectedAreas: [] }),

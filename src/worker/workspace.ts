@@ -69,6 +69,14 @@ export interface PrepareOptions {
   readonly missionId: string;
   readonly repository: AssignmentRepository;
   readonly branchName: string | null;
+  /**
+   * Start the new branch from this one rather than from the default branch.
+   *
+   * Used by a repair, whose branch continues the branch it repairs. The starting point is still
+   * fetched from the remote and the new branch must still not already exist — what changes is
+   * where it begins, not whether an existing branch may be overwritten.
+   */
+  readonly startFromBranch?: string | null;
   readonly credentialToken: string | null;
   readonly readOnly: boolean;
   /** Reuse an existing clone (a resume) instead of starting again. */
@@ -231,15 +239,44 @@ export async function prepareWorkspace(options: PrepareOptions): Promise<Workspa
     );
   }
 
-  options.onProgress?.(`Creating ${branch} from ${base}@${sha.slice(0, 7)}…`);
-  await git(['checkout', '-b', branch], gitOptions);
+  const startFrom = options.startFromBranch
+    ? assertMissionBranchName(options.startFromBranch)
+    : null;
+  if (startFrom) {
+    /*
+     * Named refspec, because the clone is `--single-branch` and would not otherwise know this
+     * branch exists. A starting point that cannot be fetched is an error rather than a silent
+     * fall back to the default branch: quietly starting a repair from `main` would produce a
+     * branch that reverts the very work it was meant to fix.
+     */
+    await git(
+      ['fetch', 'origin', `refs/heads/${startFrom}:refs/remotes/origin/${startFrom}`],
+      gitOptions,
+    ).catch(() => {
+      throw new WorkspaceError(
+        `Could not fetch ${startFrom}, which this task is supposed to continue.`,
+        'clone_failed',
+      );
+    });
+  }
+
+  options.onProgress?.(
+    startFrom
+      ? `Creating ${branch} from ${startFrom}…`
+      : `Creating ${branch} from ${base}@${sha.slice(0, 7)}…`,
+  );
+  await git(
+    startFrom ? ['checkout', '-b', branch, `origin/${startFrom}`] : ['checkout', '-b', branch],
+    gitOptions,
+  );
+  const branchSha = await headSha(gitOptions);
 
   return {
     missionRoot,
     repoPath,
     branch,
     baseBranch: base,
-    baseSha: sha,
+    baseSha: startFrom ? branchSha : sha,
     repositoryFullName: options.repository.fullName,
   };
 }

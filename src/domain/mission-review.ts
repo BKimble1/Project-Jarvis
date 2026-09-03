@@ -153,6 +153,16 @@ export interface MissionReview {
   /** False when the reviewer inherited nothing from the builder — always true in practice. */
   readonly coldContext: boolean;
   readonly unavailableReason: string | null;
+  /**
+   * What the reviewer actually said, and why Jarvis recorded something else.
+   *
+   * Kept rather than overwritten: the record of a model approving work that a required check had
+   * already failed is exactly the evidence an owner needs to judge how much a reviewer's verdict
+   * is worth, and overwriting it would erase the only place that shows up.
+   */
+  readonly proposedVerdict: ReviewVerdict | null;
+  readonly overrideRule: string | null;
+  readonly overrideReason: string | null;
   readonly createdAt: string;
 }
 

@@ -422,9 +422,12 @@ export function buildRepairTasks(input: {
     readonly severity: string;
   }[];
   readonly verificationKey: string;
+  readonly integrationKey: string;
 }): readonly TaskProposal[] {
   const repairKey = `${input.builderKey}r${input.round}`;
   const reviewKey = `${input.reviewKey}r${input.round}`;
+  const integrationKey = `${input.integrationKey}r${input.round}`;
+  const verificationKey = `${input.verificationKey}r${input.round}`;
   const files = input.findings
     .map((finding) => finding.file)
     .filter((file): file is string => Boolean(file));
@@ -464,6 +467,55 @@ export function buildRepairTasks(input: {
       repairRound: input.round,
       estimatedCost: 'small',
     },
+    /*
+     * Re-integrate and re-verify before the fresh review.
+     *
+     * Without these two the repair never reaches the integration branch and the fresh reviewer
+     * reads the *old* diff — so it either keeps reporting a defect that has already been fixed,
+     * or, worse, approves work on a branch that does not contain the fix and Jarvis opens a draft
+     * pull request for the wrong code. A repair round is a small version of the whole pipeline,
+     * for the same reason the whole pipeline exists.
+     */
+    {
+      key: integrationKey,
+      title: `Re-integrate after repair round ${input.round}`,
+      description:
+        'Rebuild the mission integration branch from the base and merge every finished task branch into it in order, including the repair. Deterministic git; a conflict stops here with both sides intact.',
+      role: 'integrator',
+      permissionProfileId: profileFor('integrator') as TaskProposal['permissionProfileId'],
+      taskType: 'integration',
+      dependsOn: [repairKey],
+      expectedInputs: ['Every finished task branch, including the repair'],
+      expectedOutputs: ['A mission integration branch carrying the repair'],
+      acceptanceCriteria: ['Every task branch merged without discarding either side'],
+      workspaceRequirement: 'integration',
+      requiresRepository: true,
+      expectedFileAreas: [],
+      declaredWriteSet: [],
+      maxAttempts: 1,
+      repairRound: input.round,
+      estimatedCost: 'small',
+    },
+    {
+      key: verificationKey,
+      title: `Re-run the checks after repair round ${input.round}`,
+      description:
+        "Run the repository's checks against the re-integrated result and record what really happened. A check that cannot run here is recorded as unavailable — never as a pass.",
+      role: 'verifier',
+      permissionProfileId: profileFor('verifier') as TaskProposal['permissionProfileId'],
+      taskType: 'verification',
+      dependsOn: [integrationKey],
+      expectedInputs: ['The re-integrated branch'],
+      expectedOutputs: ['A verification record per check'],
+      acceptanceCriteria: ['Every required check ran or is honestly marked unavailable'],
+      workspaceRequirement: 'integration',
+      requiresRepository: true,
+      expectedFileAreas: [],
+      declaredWriteSet: [],
+      maxAttempts: 1,
+      repairRound: input.round,
+      estimatedCost: 'small',
+    },
     {
       key: reviewKey,
       title: `Fresh review after repair round ${input.round}`,
@@ -478,7 +530,7 @@ export function buildRepairTasks(input: {
       role: 'reviewer',
       permissionProfileId: profileFor('reviewer') as TaskProposal['permissionProfileId'],
       taskType: 'review',
-      dependsOn: [repairKey],
+      dependsOn: [verificationKey],
       expectedInputs: ['The repaired diff', 'Fresh verification results'],
       expectedOutputs: ['A verdict and structured findings'],
       acceptanceCriteria: ['Every accepted finding is genuinely resolved or still reported'],

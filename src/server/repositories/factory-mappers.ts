@@ -148,6 +148,9 @@ export function toMissionReview(row: Row<typeof missionReviews>): MissionReview 
     repairRound: row.repairRound,
     coldContext: row.coldContext,
     unavailableReason: row.unavailableReason,
+    proposedVerdict: row.proposedVerdict ?? null,
+    overrideRule: row.overrideRule ?? null,
+    overrideReason: row.overrideReason ?? null,
     createdAt: isoRequired(row.createdAt),
   };
 }

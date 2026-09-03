@@ -243,6 +243,10 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  /* Declared before the worker service, which authorises a task run against its own task. */
+  const graphs = new DrizzleTaskGraphRepository(db);
+  const tasks = new DrizzleTaskRepository(db);
+
   const workerService = new WorkerService({
     missions: missionRepo,
     plans,
@@ -255,6 +259,7 @@ export function buildServices(
     verifications,
     artifacts,
     workers: workerRepo,
+    tasks,
     projects,
     sources,
     evidence,
@@ -265,8 +270,6 @@ export function buildServices(
   });
 
   /* ------------------------------------------------------------ the factory */
-  const graphs = new DrizzleTaskGraphRepository(db);
-  const tasks = new DrizzleTaskRepository(db);
   const leases = new DrizzleWriteLeaseRepository(db);
   const reviews = new DrizzleReviewRepository(db);
   const receipts = new DrizzleReceiptRepository(db);
@@ -290,6 +293,7 @@ export function buildServices(
     events: missionEvents,
     runs: missionRuns,
     projects,
+    sources,
     settings,
     limits: config.missions.capacity,
     ...(overrides.clock ? { clock: overrides.clock } : {}),

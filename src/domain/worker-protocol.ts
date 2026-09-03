@@ -116,6 +116,15 @@ export interface TaskAssignment {
   readonly workspaceRequirement: string;
   readonly declaredWriteSet: readonly string[];
   readonly branchName: string | null;
+  /**
+   * The branch this task's own branch starts from.
+   *
+   * `null` for ordinary work, which starts from the default branch. Set for a repair, whose
+   * branch continues the branch it is repairing — otherwise the repair would be a sibling of the
+   * work it fixes rather than a continuation of it, and integrating the two would collide on
+   * exactly the lines the repair changed.
+   */
+  readonly baseTaskBranch: string | null;
   readonly integrationBranch: string | null;
   /** Task branches this task must merge, in dependency order. Only for an integrator. */
   readonly mergeBranches: readonly string[];

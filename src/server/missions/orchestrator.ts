@@ -38,8 +38,10 @@ import {
   verdictAllowsDelivery,
   type MissionReview,
   type ReviewFinding,
+  type ReviewFindingInput,
   type ReviewSubmissionInput,
 } from '@/domain/mission-review';
+import { resolveMissionRepository } from './repository-resolution';
 import { buildRepairTasks, decomposePlan } from '@/domain/task-decomposition';
 import {
   computeReadiness,
@@ -53,7 +55,7 @@ import {
 import type { TaskProposal } from '@/domain/mission-task';
 import { instantiatePlaybook, playbookSupportsProject, validatePlaybook } from '@/domain/playbook';
 import type { MissionPlan } from '@/domain/mission-plan';
-import type { ProjectRepository } from '../repositories/types';
+import type { ProjectRepository, SourceRepository } from '../repositories/types';
 import type {
   ArtifactRepository,
   EventRepository,
@@ -101,6 +103,7 @@ export interface OrchestratorDeps {
   readonly events: EventRepository;
   readonly runs: RunRepository;
   readonly projects: ProjectRepository;
+  readonly sources: SourceRepository;
   readonly settings: SettingsRepository;
   readonly limits?: CapacityLimits;
   readonly clock?: () => Date;
@@ -195,6 +198,16 @@ export class MissionOrchestrator {
 
     const limits = await this.limits();
     const project = mission.projectId ? await this.deps.projects.findById(mission.projectId) : null;
+    /*
+     * Resolved the same way the worker will resolve it. Deciding this from the mission's own
+     * columns meant deciding it from columns nothing writes, so every graph came out shaped for a
+     * mission with no repository — no research task, no builder, no integration.
+     */
+    const hasRepository =
+      resolveMissionRepository(
+        mission,
+        mission.projectId ? await this.deps.sources.listByProject(mission.projectId) : [],
+      ) !== null;
 
     const specialists = requiredSpecialistReviews({
       changedFiles: plan.content.affectedAreas,
@@ -227,7 +240,7 @@ export class MissionOrchestrator {
         throw new ConflictError('That playbook does not apply to this kind of project.');
       }
       proposals = instantiatePlaybook(version.definition, {
-        hasRepository: Boolean(mission.repositoryOwner && mission.repositoryName),
+        hasRepository,
         allowWebResearch: false,
         missionWrites: !plan.content.reviewOnlyDelivery ? true : true,
         projectType: project?.type ?? null,
@@ -242,7 +255,7 @@ export class MissionOrchestrator {
         plan: plan.content,
         missionType: mission.type,
         missionTitle: mission.title,
-        hasRepository: Boolean(mission.repositoryOwner && mission.repositoryName),
+        hasRepository,
         allowWebResearch: false,
         requiredSpecialists: specialists,
         maxRepairRounds: limits.maxRepairRounds,
@@ -661,6 +674,28 @@ export class MissionOrchestrator {
       requiredChecks,
     });
 
+    /*
+     * Give R-RV1 something to repair.
+     *
+     * R-RV1 overrides an approval that stands on a failed required check — but a reviewer that
+     * approved will have filed no findings, and `applyVerdict` treats "no blocking findings" as
+     * "nothing to repair" and lets delivery through. That combination quietly undid the whole
+     * override: a red required check reached a draft pull request with an approved review on it.
+     *
+     * So when policy overrides *because a check failed*, the failing checks become the finding.
+     * It is a real defect, discovered from evidence rather than from a model's opinion, and it
+     * carries the same weight as any other blocking finding: it is triaged, it becomes repair
+     * scope, and it counts against the repair budget.
+     */
+    const failedChecks = verifications.filter(
+      (record) => record.source !== 'optional' && record.outcome === 'failed',
+    );
+    const findingsToStore =
+      decision.rule === 'R-RV1' &&
+      !input.findings.some((finding) => finding.blocksDelivery || finding.severity === 'critical')
+        ? [...input.findings, buildFailedCheckFinding(input.findings, failedChecks)]
+        : input.findings;
+
     const { review, findings } = await this.deps.reviews.create({
       missionId: task.missionId,
       taskId: task.id,
@@ -682,7 +717,7 @@ export class MissionOrchestrator {
       })),
       repairRound: task.repairRound,
       unavailableReason: input.unavailableReason ?? null,
-      findings: input.findings,
+      findings: findingsToStore,
     });
 
     await this.deps.tasks.patch(task.id, { latestReviewId: review.id });
@@ -776,16 +811,31 @@ export class MissionOrchestrator {
     const nextRound = reviewTask.repairRound + 1;
 
     if (verdict === 'blocked' || nextRound > roundsAllowed) {
+      const code = nextRound > roundsAllowed ? 'repair_limit_reached' : 'review_blocked';
+      const reason =
+        nextRound > roundsAllowed
+          ? `Review still blocks delivery after ${roundsAllowed} repair round(s). Jarvis stops here rather than trying again.`
+          : 'Review blocked delivery.';
+
       await this.completeTask(reviewTask, 'Review recorded.');
-      if (reviewed) {
-        await this.failTask(
-          reviewed,
-          nextRound > roundsAllowed ? 'repair_limit_reached' : 'review_blocked',
-          nextRound > roundsAllowed
-            ? `Review still blocks delivery after ${roundsAllowed} repair round(s). Jarvis stops here rather than trying again.`
-            : 'Review blocked delivery.',
-        );
+      if (reviewed) await this.failTask(reviewed, code, reason);
+
+      /*
+       * Stop delivery explicitly.
+       *
+       * The review task itself is marked `succeeded` above, because it *did* its job — it
+       * reviewed the work and returned a verdict. But delivery depends on the review task, and
+       * leaving it there means a review that blocked delivery unblocks delivery: the dependency
+       * is satisfied, nothing else is watching, and a draft pull request is opened for work the
+       * reviewer refused. Failing the delivery task is what makes "a failed review may not be
+       * ignored" true of the scheduler rather than only of the wording.
+       */
+      const siblings = graph ? await this.deps.tasks.listByGraph(graph.id) : [];
+      for (const sibling of siblings) {
+        if (sibling.taskType !== 'delivery') continue;
+        await this.failTask(sibling, code, `Not delivered: ${reason}`);
       }
+
       await this.deps.events.record(mission.id, {
         type: 'info',
         level: 'error',
@@ -833,7 +883,13 @@ export class MissionOrchestrator {
     const builder = reviewed ?? existing.find((task) => isWriteRole(task.role));
     if (!builder) return;
     const delivery = existing.find((task) => task.taskType === 'delivery');
-    const verification = existing.find((task) => task.taskType === 'verification');
+    /* The *base* graph's integration and verification keys, not a previous round's. */
+    const verification = existing.find(
+      (task) => task.taskType === 'verification' && task.repairRound === 0,
+    );
+    const integration = existing.find(
+      (task) => task.taskType === 'integration' && task.repairRound === 0,
+    );
 
     const proposals = buildRepairTasks({
       round,
@@ -842,6 +898,7 @@ export class MissionOrchestrator {
       deliveryKey: delivery?.key ?? '',
       builderWriteSet: builder.declaredWriteSet,
       verificationKey: verification?.key ?? '',
+      integrationKey: integration?.key ?? '',
       findings: findings.map((finding) => ({
         key: finding.key,
         title: finding.title,
@@ -1150,4 +1207,41 @@ export class MissionOrchestrator {
 function sum(values: readonly (number | null)[]): number | null {
   const present = values.filter((value): value is number => typeof value === 'number');
   return present.length === 0 ? null : present.reduce((total, value) => total + value, 0);
+}
+
+/**
+ * Turn the failing required checks into one blocking finding.
+ *
+ * Written as a finding rather than as a special case downstream so that every reader — the owner,
+ * triage, the repair prompt, the receipt — sees it in the same shape as any other blocking
+ * finding, with the same evidence discipline. Its key is chosen not to collide with whatever the
+ * reviewer already filed.
+ */
+function buildFailedCheckFinding(
+  existing: readonly ReviewFindingInput[],
+  failedChecks: readonly { command: string; detail?: string | null }[],
+): ReviewFindingInput {
+  const used = new Set(existing.map((finding) => finding.key));
+  let index = 1;
+  while (used.has(`F${index}`) && index < 999) index += 1;
+  const names = failedChecks.map((check) => check.command);
+  const listed = names.slice(0, 3).join(', ') || 'a required check';
+  return {
+    key: `F${index}`,
+    severity: 'critical',
+    category: 'test_coverage',
+    title: `${names.length || 1} required check(s) failed: ${listed}`,
+    description:
+      'The review approved this work, but Jarvis records that a required check failed against the exact commit reviewed. A verdict cannot stand on top of that, so the failing checks are the repair scope.',
+    evidence: names.length > 0 ? names.join('\n') : 'A required check reported a failure.',
+    file: null,
+    line: null,
+    component: null,
+    violates: 'A required check must pass before delivery.',
+    reproduction: names[0] ? `Run \`${names[0]}\` against this commit.` : null,
+    recommendation:
+      'Make the failing check pass, or explain why it cannot run here — an unavailable check is recorded as unavailable, never as a pass.',
+    confidence: 'high',
+    blocksDelivery: true,
+  };
 }

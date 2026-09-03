@@ -40,6 +40,8 @@ import type {
   ProjectRepository,
   SourceRepository,
 } from '@/server/repositories/types';
+import type { TaskRepository } from '../repositories/factory-types';
+import { resolveMissionRepository } from './repository-resolution';
 import { issueWorkerToken } from '@/server/workers/auth';
 import type { MissionService } from './mission-service';
 
@@ -65,6 +67,8 @@ export interface WorkerServiceDeps {
   readonly verifications: VerificationRepository;
   readonly artifacts: ArtifactRepository;
   readonly workers: WorkerRepository;
+  /** Present since Prompt 3, so a task run can be authorised against its own task. */
+  readonly tasks?: TaskRepository;
   readonly projects: ProjectRepository;
   readonly sources: SourceRepository;
   readonly evidence: EvidenceRepository;
@@ -300,9 +304,15 @@ export class WorkerService {
    * Validate that a worker may act on a run.
    *
    * This is the single choke point every worker write goes through, and it enforces three
-   * separate things: the run exists, it belongs to *this* worker, and it is still the mission's
-   * active run. The third check is what stops a worker resurrected from an old attempt writing
-   * over a newer one.
+   * separate things: the run exists, it belongs to *this* worker, and it is still the current run
+   * of whatever it is a run *of*. The third check is what stops a worker resurrected from an old
+   * attempt writing over a newer one.
+   *
+   * "Whatever it is a run of" is the part Prompt 3 changed. A mission-level run is checked
+   * against `mission.activeRunId`, exactly as before. A *task* run is checked against its own
+   * task's `activeRunId` — because a mission running six task agents has no single active run,
+   * and holding task runs to the mission's would have meant no task could ever store an
+   * artifact or a verification. The guarantee is unchanged; only its granularity is.
    */
   async authoriseRun(
     workerId: string,
@@ -315,6 +325,19 @@ export class WorkerService {
     }
     const mission = await this.deps.missions.findById(run.missionId);
     if (!mission) throw new NotFoundError('Mission');
+
+    if (run.taskId) {
+      const task = this.deps.tasks ? await this.deps.tasks.findById(run.taskId) : null;
+      if (!task) throw new NotFoundError('Task');
+      if (task.activeRunId !== run.id) {
+        throw new ConflictError(
+          'That run is no longer this task’s active run. Stop reporting against it.',
+          { activeRunId: task.activeRunId },
+        );
+      }
+      return { mission, run };
+    }
+
     if (mission.activeRunId !== run.id) {
       throw new ConflictError(
         'That run is no longer this mission’s active run. Stop reporting against it.',
@@ -657,11 +680,6 @@ export class WorkerService {
     if (!project) throw new NotFoundError('Project');
 
     const sources = await this.deps.sources.listByProject(project.id);
-    const chosen =
-      (mission.sourceId ? sources.find((source) => source.id === mission.sourceId) : undefined) ??
-      sources.find((source) => source.kind === 'github_repo' && source.isPrimary) ??
-      sources.find((source) => source.kind === 'github_repo') ??
-      null;
 
     const plan = mission.currentPlanVersion
       ? await this.deps.plans.byVersion(mission.id, mission.currentPlanVersion)
@@ -694,19 +712,8 @@ export class WorkerService {
       doNotTouch: mission.doNotTouch,
       acceptanceCriteria: mission.acceptanceCriteria,
       deliverable: mission.deliverable,
-      repository:
-        chosen?.github && chosen.github.owner && chosen.github.repo
-          ? {
-              owner: chosen.github.owner,
-              name: chosen.github.repo,
-              fullName: `${chosen.github.owner}/${chosen.github.repo}`,
-              defaultBranch: chosen.github.defaultBranch ?? 'main',
-              cloneUrl:
-                chosen.github.url ??
-                `https://github.com/${chosen.github.owner}/${chosen.github.repo}.git`,
-              visibility: chosen.github.visibility,
-            }
-          : null,
+      /* One resolver, shared with the task assignment, so the two can never disagree again. */
+      repository: resolveMissionRepository(mission, sources),
       branchName,
       resumeSessionId: run.agentSessionId,
       clarifications: clarifications
