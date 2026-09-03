@@ -13,7 +13,9 @@
 import { relations, sql } from 'drizzle-orm';
 import {
   bigint,
+  bigserial,
   boolean,
+  customType,
   doublePrecision,
   index,
   integer,
@@ -98,9 +100,61 @@ import type {
   PrivacySensitiveApi,
   SubscriptionModel,
 } from '@/domain/app-profile';
+import type {
+  CheckOutcome,
+  QualificationAssumptions,
+  QualificationCheckId,
+  QualificationLevel,
+} from '@/domain/qualification';
+import type {
+  ConflictKind,
+  ConflictState,
+  KnowledgeCategory,
+  KnowledgeConfidence,
+  KnowledgeExcerpt,
+  KnowledgeOrigin,
+  KnowledgeScope,
+  KnowledgeStatus,
+} from '@/domain/knowledge';
+import type {
+  SourceFailureCode,
+  SourceKind as KnowledgeSourceKind,
+  SourceState,
+} from '@/domain/knowledge-source';
+import type {
+  AnswerClaim,
+  AnswerCoverage,
+  AnswerMethod,
+  AnswerScope,
+  MissionSuggestion,
+} from '@/domain/answer';
+import type { Cadence, CatchUpPolicy, ExecutionState, ScheduleKind } from '@/domain/schedule';
+import type { BriefingContent, BriefingKind, BriefingNarration } from '@/domain/briefing';
+import type {
+  DeliveryState,
+  NotificationCategory,
+  NotificationChannel,
+  NotificationSeverity,
+} from '@/domain/notification';
+import type { CaptureFailureCode, CaptureState, TranscriptIntent } from '@/domain/voice';
+import type { BudgetKind, BudgetScope, CostBasis, UsageKind } from '@/domain/budget';
+import type { ConnectorId, ConnectorState } from '@/domain/connector';
 
 const now = () => timestamp('placeholder', { withTimezone: true });
 void now; // documentation helper; each column declares its own name below.
+
+/**
+ * A Postgres `tsvector`.
+ *
+ * Declared here rather than left out of the schema so the ORM and the database agree about the
+ * column's existence; the full-text queries themselves are written as SQL, because ranking with
+ * `ts_rank_cd` has no expression-builder equivalent worth the indirection.
+ */
+const tsvector = customType<{ data: string; driverData: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 /* --------------------------------------------------------------------- auth */
 
@@ -1662,6 +1716,908 @@ export const projectAppProfiles = pgTable(
   (table) => [uniqueIndex('project_app_profiles_project_idx').on(table.projectId)],
 );
 
+/* ----------------------------------------------- Prompt 4: qualification */
+
+/**
+ * One qualification attempt.
+ *
+ * A run is a *dated claim about a specific build*: these checks, this outcome, under these
+ * assumptions. The level is stored rather than recomputed on read so that a later code change
+ * cannot retroactively promote or demote a historical run — `requiresRequalification` compares
+ * the stored assumptions against the live ones and says so out loud when they diverge.
+ */
+export const qualificationRuns = pgTable(
+  'qualification_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    level: text('level').$type<QualificationLevel>().notNull().default('built'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    startedBy: text('started_by').notNull(),
+    /** The commit or config fingerprint this was qualified against. */
+    buildRef: text('build_ref'),
+    assumptions: jsonb('assumptions')
+      .$type<QualificationAssumptions>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    note: text('note'),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    qualificationVersion: text('qualification_version').notNull(),
+  },
+  (table) => [
+    index('qualification_runs_started_idx').on(table.startedAt),
+    index('qualification_runs_level_idx').on(table.level),
+  ],
+);
+
+/**
+ * One check result.
+ *
+ * `evidence` is a string map on purpose: there is no `value` column, so a caller trying to store
+ * a credential has nowhere honest to put one, and the redaction pass has a single shape to scan.
+ */
+export const qualificationCheckResults = pgTable(
+  'qualification_check_results',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => qualificationRuns.id, { onDelete: 'cascade' }),
+    checkId: text('check_id').$type<QualificationCheckId>().notNull(),
+    outcome: text('outcome').$type<CheckOutcome>().notNull(),
+    detail: text('detail').notNull(),
+    evidence: jsonb('evidence')
+      .$type<Record<string, string>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    /** Required, and at least ten characters, before `not_applicable` counts as a waiver. */
+    waivedReason: text('waived_reason'),
+    checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+    durationMs: integer('duration_ms'),
+  },
+  (table) => [
+    uniqueIndex('qualification_check_results_run_check_idx').on(table.runId, table.checkId),
+    index('qualification_check_results_check_idx').on(table.checkId),
+  ],
+);
+
+/**
+ * What the test suite and the simulated smoke test last said, per build.
+ *
+ * The `automated` and `simulated` rungs are earned by tests rather than by configuration, so they
+ * are reported here rather than as checks. Keyed by kind, because the only interesting answer is
+ * the most recent one — an older green run on an older build is not evidence about this build,
+ * which is exactly what `buildRef` makes visible.
+ */
+export const qualificationSuiteResults = pgTable('qualification_suite_results', {
+  kind: text('kind').notNull().primaryKey(),
+  passed: boolean('passed').notNull().default(false),
+  buildRef: text('build_ref'),
+  detail: text('detail').notNull(),
+  testCount: integer('test_count'),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * The record of a real model touching a real repository.
+ *
+ * Deliberately verbose: provider, model, repository, commit, branch, resulting pull request,
+ * duration, and the version of the qualification procedure in force. This is the row that answers
+ * "on what basis do you believe live write works?" months later. No column here can hold a
+ * secret, and none is derived from one.
+ */
+export const liveQualificationEvidence = pgTable(
+  'live_qualification_evidence',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<'live_read' | 'live_write'>().notNull(),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => qualificationRuns.id, { onDelete: 'cascade' }),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    performedAt: timestamp('performed_at', { withTimezone: true }).notNull().defaultNow(),
+    providerName: text('provider_name'),
+    modelName: text('model_name'),
+    repositoryFullName: text('repository_full_name').notNull(),
+    commitSha: text('commit_sha'),
+    branchName: text('branch_name'),
+    pullRequestUrl: text('pull_request_url'),
+    pullRequestNumber: integer('pull_request_number'),
+    findingsCount: integer('findings_count'),
+    outputTokens: bigint('output_tokens', { mode: 'number' }),
+    durationMs: bigint('duration_ms', { mode: 'number' }),
+    qualificationVersion: text('qualification_version').notNull(),
+    summary: text('summary').notNull(),
+  },
+  (table) => [
+    index('live_qualification_evidence_run_idx').on(table.runId),
+    index('live_qualification_evidence_kind_idx').on(table.kind),
+  ],
+);
+
+/* --------------------------------------------------- Prompt 4: knowledge */
+
+/**
+ * A document, note, page or repository file Jarvis has ingested.
+ *
+ * A source is **data, never authority**. Nothing stored here can grant a capability, approve a
+ * mission or change a permission ceiling; retrieval renders it inside an explicit evidence fence
+ * (`renderSourcesForPrompt`) precisely because a PDF may contain text that tries to.
+ *
+ * `body_text` holds the normalised text so re-chunking never needs the original bytes, and the
+ * original bytes are not kept at all. `content_hash` is the identity that makes deduplication
+ * real; the partial unique index applies it only to sources that still exist, so deleting and
+ * re-adding the same file is allowed while adding it twice is not.
+ */
+export const knowledgeSources = pgTable(
+  'knowledge_sources',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<KnowledgeSourceKind>().notNull(),
+    state: text('state').$type<SourceState>().notNull().default('pending'),
+    title: text('title').notNull(),
+    /** The original filename, URL or note title. Safe for display; never a credential. */
+    origin: text('origin').notNull(),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    contentHash: text('content_hash').notNull(),
+    byteSize: bigint('byte_size', { mode: 'number' }).notNull().default(0),
+    charCount: integer('char_count').notNull().default(0),
+    chunkCount: integer('chunk_count').notNull().default(0),
+    version: integer('version').notNull().default(1),
+    contentType: text('content_type'),
+    /** Pages for a PDF, lines for text. Makes a locator mean something. */
+    unitCount: integer('unit_count'),
+    /** The normalised text. Emptied, not merely flagged, when a source is deleted. */
+    bodyText: text('body_text'),
+    tags: jsonb('tags')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    failureCode: text('failure_code').$type<SourceFailureCode>(),
+    failureMessage: text('failure_message'),
+    retryCount: integer('retry_count').notNull().default(0),
+    truncated: boolean('truncated').notNull().default(false),
+    addedBy: text('added_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    parsedAt: timestamp('parsed_at', { withTimezone: true }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    retainUntil: timestamp('retain_until', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('knowledge_sources_hash_idx')
+      .on(table.contentHash)
+      .where(sql`deleted_at is null`),
+    index('knowledge_sources_project_idx').on(table.projectId),
+    index('knowledge_sources_state_idx').on(table.state),
+    index('knowledge_sources_kind_idx').on(table.kind),
+  ],
+);
+
+/**
+ * One retrievable passage.
+ *
+ * `ordinal` is the machine-readable position and `locator` the human-readable one (`p. 4`,
+ * `lines 120-138`, `## Deployment`), so a citation both resolves and reads correctly.
+ *
+ * `search_vector` is a stored generated column rather than a trigger or an application-side
+ * write: a column the database maintains cannot drift out of step with the text beside it, and
+ * cannot be forgotten by a new insert path. The two-argument `to_tsvector` is required — the
+ * one-argument form is only STABLE and Postgres will refuse it here, which is the right refusal.
+ */
+export const knowledgeChunks = pgTable(
+  'knowledge_chunks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => knowledgeSources.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    ordinal: integer('ordinal').notNull(),
+    locator: text('locator').notNull(),
+    heading: text('heading'),
+    text: text('text').notNull(),
+    charCount: integer('char_count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    searchVector: tsvector('search_vector').generatedAlwaysAs(
+      sql`to_tsvector('english', coalesce("heading", '') || ' ' || "text")`,
+    ),
+  },
+  (table) => [
+    uniqueIndex('knowledge_chunks_ordinal_idx').on(table.sourceId, table.ordinal),
+    index('knowledge_chunks_source_idx').on(table.sourceId),
+    index('knowledge_chunks_project_idx').on(table.projectId),
+    index('knowledge_chunks_search_idx').using('gin', table.searchVector),
+  ],
+);
+
+/**
+ * One thing Jarvis believes, and why.
+ *
+ * `status` is the load-bearing column. Only `active` is retrievable, so a model-proposed memory
+ * cannot influence an answer before I have confirmed it — the difference between a system that
+ * learns and a system that quietly decides what is true about me.
+ *
+ * `supersedes_id` and `superseded_by_id` are plain columns rather than self-referencing keys, the
+ * same choice the factory made for `reviews_task_id`: the chain has to survive a row being
+ * removed without cascading a deletion through the history that explains it.
+ */
+export const knowledgeItems = pgTable(
+  'knowledge_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    scope: text('scope').$type<KnowledgeScope>().notNull(),
+    category: text('category').$type<KnowledgeCategory>().notNull(),
+    origin: text('origin').$type<KnowledgeOrigin>().notNull(),
+    status: text('status').$type<KnowledgeStatus>().notNull().default('suggested'),
+    /** The rule id that decided the initial status, so the decision is auditable later. */
+    statusRule: text('status_rule'),
+    statement: text('statement').notNull(),
+    detail: text('detail'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    sourceId: uuid('source_id').references(() => knowledgeSources.id, { onDelete: 'set null' }),
+    sourceRef: text('source_ref'),
+    excerpts: jsonb('excerpts')
+      .$type<KnowledgeExcerpt[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    tags: jsonb('tags')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    createdBy: text('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    confirmedBy: text('confirmed_by'),
+    reviewAt: timestamp('review_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    supersedesId: uuid('supersedes_id'),
+    supersededById: uuid('superseded_by_id'),
+    supersededReason: text('superseded_reason'),
+    rejectedReason: text('rejected_reason'),
+    forgottenAt: timestamp('forgotten_at', { withTimezone: true }),
+    useCount: integer('use_count').notNull().default(0),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    confidence: text('confidence').$type<KnowledgeConfidence>(),
+    searchVector: tsvector('search_vector').generatedAlwaysAs(
+      sql`to_tsvector('english', "statement" || ' ' || coalesce("detail", ''))`,
+    ),
+  },
+  (table) => [
+    index('knowledge_items_status_idx').on(table.status),
+    index('knowledge_items_scope_idx').on(table.scope),
+    index('knowledge_items_category_idx').on(table.category),
+    index('knowledge_items_project_idx').on(table.projectId),
+    index('knowledge_items_source_idx').on(table.sourceId),
+    index('knowledge_items_review_idx').on(table.reviewAt),
+    index('knowledge_items_search_idx').using('gin', table.searchVector),
+  ],
+);
+
+/**
+ * Two things that appear to disagree.
+ *
+ * A row here is a *question put to me*, not a decision taken on my behalf. Neither side is
+ * altered by detection, which is the whole point: an automatic winner would mean the newer
+ * statement silently rewrote the older one.
+ */
+export const knowledgeConflicts = pgTable(
+  'knowledge_conflicts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<ConflictKind>().notNull(),
+    state: text('state').$type<ConflictState>().notNull().default('open'),
+    leftId: uuid('left_id').notNull(),
+    rightId: uuid('right_id'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    summary: text('summary').notNull(),
+    detectedRule: text('detected_rule').notNull(),
+    resolution: text('resolution'),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('knowledge_conflicts_pair_idx').on(table.leftId, table.rightId, table.kind),
+    index('knowledge_conflicts_state_idx').on(table.state),
+    index('knowledge_conflicts_left_idx').on(table.leftId),
+  ],
+);
+
+/* ------------------------------------------------------ Prompt 4: answers */
+
+/**
+ * A question and the answer that was given, kept whole.
+ *
+ * Stored because an answer is a claim Jarvis made at a moment, and "what did it tell me on
+ * Tuesday, and on what basis?" is a question the system should be able to answer about itself.
+ * `claims` keeps its citations, so an answer can be re-checked against the evidence it cited even
+ * after that evidence has moved on.
+ */
+export const answers = pgTable(
+  'answers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    question: text('question').notNull(),
+    scope: text('scope').$type<AnswerScope>().notNull(),
+    projectIds: jsonb('project_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    headline: text('headline').notNull(),
+    claims: jsonb('claims')
+      .$type<AnswerClaim[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    considered: jsonb('considered').$type<AnswerCoverage>().notNull(),
+    method: text('method').$type<AnswerMethod>().notNull(),
+    /** Set when a model answer was rejected. Names the rule, so the refusal is explainable. */
+    rejectionRule: text('rejection_rule'),
+    rejectionReason: text('rejection_reason'),
+    missionSuggestion: jsonb('mission_suggestion').$type<MissionSuggestion | null>(),
+    savedView: text('saved_view'),
+    durationMs: integer('duration_ms'),
+    askedBy: text('asked_by').notNull(),
+    generatedAt: timestamp('generated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('answers_generated_idx').on(table.generatedAt),
+    index('answers_scope_idx').on(table.scope),
+  ],
+);
+
+/* ---------------------------------------------------- Prompt 4: schedules */
+
+/**
+ * A recurring job.
+ *
+ * The time is stored as **local wall-clock plus an IANA zone**, never as a UTC offset: an offset
+ * is wrong twice a year, and a schedule that drifts an hour every spring is a schedule nobody
+ * trusts. `last_occurrence_at` is the catch-up watermark — the last occurrence Jarvis has
+ * *accounted for*, whether it ran it or recorded it as missed.
+ *
+ * `kind` maps to an activation capability in code (`KIND_CAPABILITY`), and no kind maps to a
+ * write capability. A schedule cannot become permission to change code, because there is no kind
+ * that asks for it.
+ */
+export const schedules = pgTable(
+  'schedules',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<ScheduleKind>().notNull(),
+    name: text('name').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    cadence: text('cadence').$type<Cadence>().notNull(),
+    hour: integer('hour').notNull(),
+    minute: integer('minute').notNull().default(0),
+    timeZone: text('time_zone').notNull(),
+    weekday: integer('weekday'),
+    dayOfMonth: integer('day_of_month'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    catchUp: text('catch_up').$type<CatchUpPolicy>().notNull().default('run_latest'),
+    maxRetries: integer('max_retries').notNull().default(2),
+    instruction: text('instruction'),
+    createdBy: text('created_by').notNull().default('owner'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    lastOccurrenceAt: timestamp('last_occurrence_at', { withTimezone: true }),
+    pausedAt: timestamp('paused_at', { withTimezone: true }),
+    pausedReason: text('paused_reason'),
+  },
+  (table) => [
+    index('schedules_enabled_idx').on(table.enabled),
+    index('schedules_kind_idx').on(table.kind),
+    index('schedules_project_idx').on(table.projectId),
+  ],
+);
+
+/**
+ * One firing.
+ *
+ * `idempotency_key` is derived from the schedule and the **local wall-clock occurrence**, not from
+ * an instant, and it is unique. That is what makes a DST-repeated 01:30 run once rather than
+ * twice, and what makes a restart mid-run unable to duplicate a briefing.
+ */
+export const scheduleExecutions = pgTable(
+  'schedule_executions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => schedules.id, { onDelete: 'cascade' }),
+    state: text('state').$type<ExecutionState>().notNull().default('pending'),
+    occurrenceAt: timestamp('occurrence_at', { withTimezone: true }).notNull(),
+    /** The occurrence's local time, which the idempotency key is built from. */
+    occurrenceLocal: text('occurrence_local').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    attempt: integer('attempt').notNull().default(0),
+    nextRetryAt: timestamp('next_retry_at', { withTimezone: true }),
+    failureCode: text('failure_code'),
+    failureMessage: text('failure_message'),
+    evidenceWindowFrom: timestamp('evidence_window_from', { withTimezone: true }),
+    evidenceWindowTo: timestamp('evidence_window_to', { withTimezone: true }),
+    resultId: uuid('result_id'),
+    summary: text('summary'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('schedule_executions_idempotency_idx').on(table.idempotencyKey),
+    index('schedule_executions_schedule_idx').on(table.scheduleId),
+    index('schedule_executions_state_idx').on(table.state),
+    index('schedule_executions_occurrence_idx').on(table.occurrenceAt),
+  ],
+);
+
+/**
+ * A briefing, with the window it looked at.
+ *
+ * The window is stored explicitly so a reader can always distinguish "nothing changed" from
+ * "Jarvis did not look". `narration_rule` records the rule id when a model's narration was
+ * rejected, so a deterministic briefing that had a narration attempt is visibly different from
+ * one that never asked for one.
+ */
+export const briefings = pgTable(
+  'briefings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<BriefingKind>().notNull(),
+    executionId: uuid('execution_id').references(() => scheduleExecutions.id, {
+      onDelete: 'set null',
+    }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    windowFrom: timestamp('window_from', { withTimezone: true }).notNull(),
+    windowTo: timestamp('window_to', { withTimezone: true }).notNull(),
+    content: jsonb('content').$type<BriefingContent>().notNull(),
+    narration: jsonb('narration').$type<BriefingNarration | null>(),
+    narrationRule: text('narration_rule'),
+    method: text('method').$type<SummaryMethod>().notNull().default('deterministic'),
+    isQuiet: boolean('is_quiet').notNull().default(false),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('briefings_created_idx').on(table.createdAt),
+    index('briefings_kind_idx').on(table.kind),
+    index('briefings_project_idx').on(table.projectId),
+  ],
+);
+
+/* ------------------------------------------------ Prompt 4: notifications */
+
+/**
+ * Something worth telling me about.
+ *
+ * `title` and `body` are stored **already redacted**, because the redaction has to happen before
+ * the row exists rather than on the way out to each channel — one choke point, not four.
+ *
+ * The partial unique index on `dedupe_key` is what stops a failing sync producing four hundred
+ * rows overnight: while a notification is unacknowledged, a repeat increments `occurrence_count`
+ * instead of inserting.
+ */
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    category: text('category').$type<NotificationCategory>().notNull(),
+    severity: text('severity').$type<NotificationSeverity>().notNull(),
+    title: text('title').notNull(),
+    body: text('body'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
+    /** Always a Jarvis path. A notification cannot become an outbound link. */
+    href: text('href'),
+    dedupeKey: text('dedupe_key').notNull(),
+    occurrenceCount: integer('occurrence_count').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastOccurredAt: timestamp('last_occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('notifications_dedupe_open_idx')
+      .on(table.dedupeKey)
+      .where(sql`acknowledged_at is null`),
+    index('notifications_created_idx').on(table.createdAt),
+    index('notifications_category_idx').on(table.category),
+    index('notifications_unread_idx').on(table.readAt),
+  ],
+);
+
+/**
+ * One attempt to get a notification to one channel.
+ *
+ * Separate from the notification so a push failure is a fact about a delivery rather than about
+ * the event: a failed push must never change mission state, and must never cause the underlying
+ * action to run again.
+ */
+export const notificationDeliveries = pgTable(
+  'notification_deliveries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    notificationId: uuid('notification_id')
+      .notNull()
+      .references(() => notifications.id, { onDelete: 'cascade' }),
+    channel: text('channel').$type<NotificationChannel>().notNull(),
+    state: text('state').$type<DeliveryState>().notNull().default('pending'),
+    attempt: integer('attempt').notNull().default(0),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    failureMessage: text('failure_message'),
+    suppressedReason: text('suppressed_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('notification_deliveries_channel_idx').on(table.notificationId, table.channel),
+    index('notification_deliveries_state_idx').on(table.state),
+  ],
+);
+
+/** Per-category preferences. One row per category; absent means the code's default. */
+export const notificationPreferences = pgTable('notification_preferences', {
+  category: text('category').$type<NotificationCategory>().notNull().primaryKey(),
+  channels: jsonb('channels')
+    .$type<NotificationChannel[]>()
+    .notNull()
+    .default(sql`'["in_app"]'::jsonb`),
+  minSeverity: text('min_severity').$type<NotificationSeverity>().notNull().default('low'),
+  digest: boolean('digest').notNull().default(false),
+  enabled: boolean('enabled').notNull().default(true),
+  projectIds: jsonb('project_ids')
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * A browser push registration.
+ *
+ * The endpoint and its two keys are the browser's own credentials for its own push service, and
+ * they have to live server-side for a push to be sendable at all. They are therefore treated as
+ * credential material everywhere it matters: never exported, never logged, never rendered, and
+ * listed in the export's forbidden keys. `endpoint_hash` is what the interface displays and what
+ * deduplication uses, so no surface needs the value.
+ */
+export const pushSubscriptions = pgTable(
+  'push_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    endpointHash: text('endpoint_hash').notNull(),
+    endpoint: text('endpoint').notNull(),
+    keyP256dh: text('key_p256dh').notNull(),
+    keyAuth: text('key_auth').notNull(),
+    label: text('label'),
+    userAgent: text('user_agent'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    failureCount: integer('failure_count').notNull().default(0),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('push_subscriptions_endpoint_idx').on(table.endpointHash),
+    index('push_subscriptions_revoked_idx').on(table.revokedAt),
+  ],
+);
+
+/* -------------------------------------------------------- Prompt 4: voice */
+
+/**
+ * One voice capture.
+ *
+ * **There is no column for audio.** Not a nullable one, not a flag pointing at a blob store:
+ * transcription happens in the browser or against a provider and the audio is discarded, so
+ * "do not retain raw audio by default" is a property of the schema rather than a policy someone
+ * has to remember. `audio_retained` and `audio_delete_after` record whether the *client* was
+ * permitted to keep its own copy for a stated window, and when that permission lapses.
+ *
+ * `intent` is always the server's own classification. The client sends what it displayed so the
+ * two can be compared; it never sends the interpretation Jarvis acts on.
+ */
+export const voiceCaptures = pgTable(
+  'voice_captures',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    state: text('state').$type<CaptureState>().notNull().default('recording'),
+    transcript: text('transcript'),
+    editedTranscript: text('edited_transcript'),
+    intent: text('intent').$type<TranscriptIntent>(),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    durationMs: integer('duration_ms'),
+    byteSize: bigint('byte_size', { mode: 'number' }),
+    providerName: text('provider_name'),
+    confidence: doublePrecision('confidence'),
+    failureCode: text('failure_code').$type<CaptureFailureCode>(),
+    failureMessage: text('failure_message'),
+    audioRetained: boolean('audio_retained').notNull().default(false),
+    audioDeleteAfter: timestamp('audio_delete_after', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    /** What confirming produced: an answer id, a knowledge id, a mission id. */
+    resultKind: text('result_kind'),
+    resultId: uuid('result_id'),
+  },
+  (table) => [
+    index('voice_captures_created_idx').on(table.createdAt),
+    index('voice_captures_state_idx').on(table.state),
+  ],
+);
+
+/* ------------------------------------------------------- Prompt 4: money */
+
+/**
+ * One model call, as it actually happened.
+ *
+ * **Append-only, and the reason matters.** Task usage columns are *replaced* on each report, and
+ * `attempt` increments without clearing them, so a retried task's earlier spend disappears from
+ * `mission_tasks`. A budget built on that undercounts exactly when it matters most. Rows here are
+ * never updated, so retries, reviews and repair rounds all accumulate against the same budget.
+ *
+ * `reported_cost_usd` and `estimated_cost_usd` are separate columns on purpose. A provider figure
+ * and a figure computed from a price table are different kinds of claim, and `cost_basis` says
+ * which one a number is. Neither is ever defaulted to zero: unknown cost is null, and null is
+ * displayed as unknown.
+ */
+export const usageRecords = pgTable(
+  'usage_records',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<UsageKind>().notNull(),
+    providerName: text('provider_name'),
+    modelName: text('model_name'),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    taskId: uuid('task_id').references(() => missionTasks.id, { onDelete: 'set null' }),
+    runId: uuid('run_id').references(() => missionRuns.id, { onDelete: 'set null' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    repositoryFullName: text('repository_full_name'),
+    inputTokens: bigint('input_tokens', { mode: 'number' }),
+    outputTokens: bigint('output_tokens', { mode: 'number' }),
+    cachedInputTokens: bigint('cached_input_tokens', { mode: 'number' }),
+    reportedCostUsd: doublePrecision('reported_cost_usd'),
+    estimatedCostUsd: doublePrecision('estimated_cost_usd'),
+    costBasis: text('cost_basis').$type<CostBasis>().notNull().default('unknown'),
+    durationMs: bigint('duration_ms', { mode: 'number' }),
+    retryCount: integer('retry_count').notNull().default(0),
+    failed: boolean('failed').notNull().default(false),
+    failureCode: text('failure_code'),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Set by the reporter, so a replayed worker report cannot double-count. */
+    idempotencyKey: text('idempotency_key'),
+  },
+  (table) => [
+    uniqueIndex('usage_records_idempotency_idx')
+      .on(table.idempotencyKey)
+      .where(sql`idempotency_key is not null`),
+    index('usage_records_occurred_idx').on(table.occurredAt),
+    index('usage_records_mission_idx').on(table.missionId),
+    index('usage_records_task_idx').on(table.taskId),
+    index('usage_records_project_idx').on(table.projectId),
+    index('usage_records_model_idx').on(table.modelName),
+  ],
+);
+
+/**
+ * A limit.
+ *
+ * `kind` decides whether exceeding it warns or refuses. Enforcement lives at the dispatch
+ * boundary — inside the atomic claim statement and again before the model call — never in the
+ * interface, because a disabled button is not a permission system.
+ */
+export const budgets = pgTable(
+  'budgets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    scope: text('scope').$type<BudgetScope>().notNull(),
+    targetId: text('target_id'),
+    targetLabel: text('target_label'),
+    limitUsd: doublePrecision('limit_usd'),
+    limitOutputTokens: bigint('limit_output_tokens', { mode: 'number' }),
+    warnAtPercent: integer('warn_at_percent').notNull().default(80),
+    kind: text('kind').$type<BudgetKind>().notNull().default('warning'),
+    enabled: boolean('enabled').notNull().default(true),
+    resetPeriod: text('reset_period').$type<'day' | 'month' | null>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('budgets_scope_target_idx')
+      .on(table.scope, table.targetId)
+      .where(sql`target_id is not null`),
+    uniqueIndex('budgets_scope_global_idx')
+      .on(table.scope)
+      .where(sql`target_id is null`),
+    index('budgets_enabled_idx').on(table.enabled),
+  ],
+);
+
+/**
+ * A deliberate, dated relaxation of a hard limit.
+ *
+ * Kept as its own row rather than by editing the budget, because "the limit was raised, by me, on
+ * this date, for this reason" is the fact worth keeping. An expired override stops applying
+ * without anyone having to remember to put the limit back.
+ */
+export const budgetOverrides = pgTable(
+  'budget_overrides',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    budgetId: uuid('budget_id')
+      .notNull()
+      .references(() => budgets.id, { onDelete: 'cascade' }),
+    reason: text('reason').notNull(),
+    previousLimitUsd: doublePrecision('previous_limit_usd'),
+    newLimitUsd: doublePrecision('new_limit_usd'),
+    approvedBy: text('approved_by').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('budget_overrides_budget_idx').on(table.budgetId),
+    index('budget_overrides_expires_idx').on(table.expiresAt),
+  ],
+);
+
+/**
+ * A price, so an estimate can exist at all.
+ *
+ * Owner-entered and clearly labelled as the basis for *estimates*. An unpriced model produces a
+ * null cost rather than a zero one, which is why `estimateCostUsd` returns null instead of
+ * guessing — a made-up price would turn "we don't know" into "it was cheap".
+ */
+export const modelPrices = pgTable(
+  'model_prices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    modelName: text('model_name').notNull(),
+    providerName: text('provider_name'),
+    inputPerMillionUsd: doublePrecision('input_per_million_usd').notNull(),
+    outputPerMillionUsd: doublePrecision('output_per_million_usd').notNull(),
+    cachedInputPerMillionUsd: doublePrecision('cached_input_per_million_usd'),
+    note: text('note'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('model_prices_model_idx').on(table.modelName)],
+);
+
+/* --------------------------------------------------- Prompt 4: connectors */
+
+/**
+ * A connector's state, never its credential.
+ *
+ * There is no column that can hold a secret. `credential_configured` says one exists,
+ * `credential_identity` holds a safe identity (a login, an app name, a token prefix), and
+ * `credential_rotated_at` a date. What a connector may *do* is decided by its frozen manifest in
+ * code — a row can enable a connector, but it cannot widen one.
+ */
+export const connectors = pgTable(
+  'connectors',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    connectorId: text('connector_id').$type<ConnectorId>().notNull(),
+    state: text('state').$type<ConnectorState>().notNull().default('disabled'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    credentialConfigured: boolean('credential_configured').notNull().default(false),
+    credentialIdentity: text('credential_identity'),
+    credentialRotatedAt: timestamp('credential_rotated_at', { withTimezone: true }),
+    lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+    lastFailureAt: timestamp('last_failure_at', { withTimezone: true }),
+    lastFailureMessage: text('last_failure_message'),
+    rateLimitedUntil: timestamp('rate_limited_until', { withTimezone: true }),
+    enabledAt: timestamp('enabled_at', { withTimezone: true }),
+    enabledBy: text('enabled_by'),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedReason: text('revoked_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('connectors_scoped_idx')
+      .on(table.connectorId, table.projectId)
+      .where(sql`project_id is not null`),
+    uniqueIndex('connectors_global_idx')
+      .on(table.connectorId)
+      .where(sql`project_id is null`),
+    index('connectors_state_idx').on(table.state),
+  ],
+);
+
+/* ------------------------------------------------------ Prompt 4: safety */
+
+/**
+ * Inbound request counters.
+ *
+ * In the database rather than in process memory because a single-process rate limit is not a
+ * rate limit in a system that can restart, and because the worker and the web process must share
+ * one budget. `bucket_key` already includes the window, so an expired bucket is deleted by the
+ * sweeper rather than reset in place.
+ */
+export const rateLimitBuckets = pgTable(
+  'rate_limit_buckets',
+  {
+    bucketKey: text('bucket_key').notNull().primaryKey(),
+    windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
+    count: integer('count').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('rate_limit_buckets_window_idx').on(table.windowStartedAt)],
+);
+
+/**
+ * The audit trail, hash-chained.
+ *
+ * `sequence` is a gapless serial and `hash` covers the row plus `previous_hash`, so removing or
+ * editing an audit row breaks the chain at that point and `verifyAuditChain` can say where. This
+ * is integrity, not secrecy: it does not stop someone with database access from rewriting
+ * history, it stops them doing so *undetectably*.
+ *
+ * `detail` is deliberately small and redacted. An audit record needs to say what happened, not
+ * to become a second copy of the private content the action touched.
+ */
+export const auditEvents = pgTable(
+  'audit_events',
+  {
+    sequence: bigserial('sequence', { mode: 'number' }).primaryKey(),
+    id: uuid('id').notNull().defaultRandom(),
+    actor: text('actor').notNull(),
+    actorKind: text('actor_kind').notNull(),
+    action: text('action').notNull(),
+    subjectKind: text('subject_kind'),
+    subjectId: text('subject_id'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    outcome: text('outcome').$type<'allowed' | 'refused' | 'failed'>().notNull(),
+    /** The rule id that decided it, when a rule did. */
+    rule: text('rule'),
+    summary: text('summary').notNull(),
+    detail: jsonb('detail')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    previousHash: text('previous_hash'),
+    hash: text('hash').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('audit_events_id_idx').on(table.id),
+    index('audit_events_occurred_idx').on(table.occurredAt),
+    index('audit_events_action_idx').on(table.action),
+    index('audit_events_actor_idx').on(table.actor),
+  ],
+);
+
+/**
+ * The record that something was deleted, without the thing.
+ *
+ * "Deleted private material must not remain retrievable" and "the audit trail should show that a
+ * deletion occurred" are both true, and they are reconciled here: this row names the shape of
+ * what went and every index it was purged from, and holds none of the content.
+ */
+export const deletionReceipts = pgTable(
+  'deletion_receipts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    subjectKind: text('subject_kind').notNull(),
+    subjectId: text('subject_id').notNull(),
+    reason: text('reason').notNull(),
+    itemCount: integer('item_count').notNull().default(1),
+    requestedBy: text('requested_by').notNull(),
+    /** Every place the content was removed from: chunks, search vectors, excerpts, exports. */
+    scrubbedTargets: jsonb('scrubbed_targets')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('deletion_receipts_subject_idx').on(table.subjectKind, table.subjectId),
+    index('deletion_receipts_created_idx').on(table.createdAt),
+  ],
+);
+
 /* --------------------------------------------------------------- relations */
 
 export const missionRelations = relations(missions, ({ one, many }) => ({
@@ -1737,4 +2693,29 @@ export const schema = {
   projectRelations,
   projectSourceRelations,
   evidenceRelations,
+  qualificationRuns,
+  qualificationCheckResults,
+  qualificationSuiteResults,
+  liveQualificationEvidence,
+  knowledgeSources,
+  knowledgeChunks,
+  knowledgeItems,
+  knowledgeConflicts,
+  answers,
+  schedules,
+  scheduleExecutions,
+  briefings,
+  notifications,
+  notificationDeliveries,
+  notificationPreferences,
+  pushSubscriptions,
+  voiceCaptures,
+  usageRecords,
+  budgets,
+  budgetOverrides,
+  modelPrices,
+  connectors,
+  rateLimitBuckets,
+  auditEvents,
+  deletionReceipts,
 };
