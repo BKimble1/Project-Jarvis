@@ -54,3 +54,41 @@ export function buildImageOnlyPdf(pageCount = 2): Uint8Array {
 function escapePdfText(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
+
+/**
+ * A PDF that declares itself encrypted.
+ *
+ * Built by adding an `/Encrypt` dictionary to the trailer, which is what makes a reader ask for a
+ * password. The body is not really enciphered — it does not need to be, because the property under
+ * test is that Jarvis recognises "this needs a password" and says so, rather than either hanging,
+ * crashing, or reporting an empty document.
+ */
+export function buildEncryptedPdf(): Uint8Array {
+  const objects: string[] = [];
+  objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objects[2] = '<< /Type /Pages /Kids [3 0 R] /Count 1 >>';
+  objects[3] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>';
+  objects[4] = '<< /Length 44 >>\nstream\nBT /F1 12 Tf 72 720 Td (Locked away) Tj ET\nendstream';
+  /* A standard security handler with revision 4, which pdf.js reads as password-protected. */
+  objects[5] =
+    '<< /Filter /Standard /V 2 /R 3 /Length 128 ' +
+    `/O <${'ab'.repeat(32)}> /U <${'cd'.repeat(32)}> /P -3904 >>`;
+
+  let body = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  for (let index = 1; index <= 5; index += 1) {
+    offsets[index] = body.length;
+    body += `${index} 0 obj\n${objects[index] ?? '<< >>'}\nendobj\n`;
+  }
+
+  const xref = body.length;
+  body += 'xref\n0 6\n0000000000 65535 f \n';
+  for (let index = 1; index <= 5; index += 1) {
+    body += `${String(offsets[index] ?? 0).padStart(10, '0')} 00000 n \n`;
+  }
+  body +=
+    `trailer\n<< /Size 6 /Root 1 0 R /Encrypt 5 0 R ` +
+    `/ID [<${'11'.repeat(16)}> <${'22'.repeat(16)}>] >>\nstartxref\n${xref}\n%%EOF\n`;
+
+  return new TextEncoder().encode(body);
+}
