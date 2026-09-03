@@ -80,9 +80,20 @@ export class UnauthorizedError extends JarvisError {
   }
 }
 
+/**
+ * The request is well-formed, the caller is who they say they are, and the answer is still no.
+ *
+ * `details` is optional and matches `ValidationError` and `ConflictError` rather than inventing a
+ * third convention. Phase 4 refusals — an unqualified capability, an exhausted budget, a connector
+ * that may not be invoked by a model — all want to say *which* limit stopped them, and a refusal
+ * that cannot say why is a refusal somebody has to read the source to understand.
+ */
 export class ForbiddenError extends JarvisError {
-  constructor(message = 'This Jarvis instance is private.') {
-    super('forbidden', message);
+  constructor(
+    message = 'This Jarvis instance is private.',
+    details?: Readonly<Record<string, unknown>>,
+  ) {
+    super('forbidden', message, details ? { details } : {});
     this.name = 'ForbiddenError';
   }
 }
