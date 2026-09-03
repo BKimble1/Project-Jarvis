@@ -110,6 +110,7 @@ import { DrizzleRetrievalRepository } from './repositories/retrieval-drizzle';
 import { ParserRegistry } from './knowledge/parsers/registry';
 import { SafeUrlFetcher, type UrlFetcher } from './knowledge/url-fetcher';
 import { IngestionService } from './knowledge/ingestion-service';
+import { MemoryService } from './knowledge/memory-service';
 import { RetrievalService } from './knowledge/retrieval-service';
 import { DeterministicEmbeddingProvider, type EmbeddingProvider } from '@/domain/embedding';
 import { QualificationService } from './qualification/qualification-service';
@@ -243,6 +244,7 @@ export interface Services {
   readonly embeddings: EmbeddingProvider | null;
   readonly ingestion: IngestionService;
   readonly retrieval: RetrievalService;
+  readonly memoryService: MemoryService;
 }
 
 export interface BuildServicesOverrides {
@@ -520,6 +522,16 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  const memoryService = new MemoryService({
+    memories: knowledge,
+    conflicts,
+    revisions,
+    audit,
+    deletionReceipts,
+    embeddings,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
   const qualificationService = new QualificationService({
     qualification,
     workers: workerRepo,
@@ -621,6 +633,7 @@ export function buildServices(
     embeddings,
     ingestion,
     retrieval,
+    memoryService,
   };
 }
 

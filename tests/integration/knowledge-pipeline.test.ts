@@ -61,6 +61,10 @@ describe('the knowledge pipeline', () => {
       ...overrides,
     });
 
+  /** The owner's global scope, for a harness other than the default one. */
+  const ownerScopeFor = (_harness: TestHarness): ScopeFilter =>
+    buildScopeFilter({ audience: 'owner', scopes: ['global'], projectIds: [] });
+
   async function makeProject(name: string): Promise<string> {
     const project = await harness.services.projects.create(
       projectInputSchema.parse({ name, type: 'software' }),
@@ -578,7 +582,7 @@ describe('the knowledge pipeline', () => {
     let hybrid: TestHarness;
 
     beforeEach(async () => {
-      hybrid = await createHarness({ embeddings: new DeterministicEmbeddingProvider(128) });
+      hybrid = await createHarness({ embeddings: new DeterministicEmbeddingProvider(512) });
     });
 
     afterEach(async () => {
@@ -636,9 +640,58 @@ describe('the knowledge pipeline', () => {
         indexingVersion: '1.0.0',
         scope: buildScopeFilter({ audience: 'owner', scopes: ['global'] }),
         limit: 10,
+        minScore: 0,
         asOf: null,
       });
       expect(wrongWidth).toHaveLength(0);
+    });
+
+    it('does not return the nearest row when nothing is actually near', async () => {
+      /*
+       * Semantic search has no natural cut-off. Ask a nearest-neighbour index a question it has
+       * no answer to and it returns its closest row anyway, ranked and citable, and the layer
+       * above cannot tell that apart from a real hit. The provider's `minSimilarity` is what
+       * stops that, and this is the test that fails if the floor is ever removed: the only note
+       * in the database is about deployment, and the question is about something else entirely.
+       */
+      await hybrid.services.ingestion.addNote({
+        kind: 'note',
+        title: 'Deployment',
+        scope: 'global',
+        projectId: null,
+        sensitivity: 'internal',
+        addedBy: 'owner',
+        text: 'Netlify deployments run from the main branch once verification passes.',
+      });
+
+      const unrelated = await hybrid.services.retrieval.retrieve({
+        query: 'harpsichord marmoset upholstery',
+        scope: ownerScopeFor(hybrid),
+        purpose: 'owner_search',
+        limit: 20,
+        charBudget: 20_000,
+        sourceKinds: null,
+        includeMemories: true,
+        includeSources: true,
+        asOf: null,
+      });
+
+      expect(unrelated.diagnostics.semanticCandidates).toBe(0);
+      expect(unrelated.evidence).toHaveLength(0);
+
+      /* And the floor is not simply blocking everything: a real question still finds the note. */
+      const related = await hybrid.services.retrieval.retrieve({
+        query: 'netlify deployment branch',
+        scope: ownerScopeFor(hybrid),
+        purpose: 'owner_search',
+        limit: 20,
+        charBudget: 20_000,
+        sourceKinds: null,
+        includeMemories: true,
+        includeSources: true,
+        asOf: null,
+      });
+      expect(related.diagnostics.semanticCandidates).toBeGreaterThan(0);
     });
 
     it('keeps searching by text when the embedding provider fails', async () => {
@@ -656,8 +709,9 @@ describe('the knowledge pipeline', () => {
       const broken = {
         name: 'broken',
         model: 'jarvis-hashed-trigram',
-        dimensions: 128,
+        dimensions: 512,
         indexingVersion: '1.0.0',
+        minSimilarity: 0.45,
         isConfigured: () => true,
         embed: async () => {
           throw new Error('provider unavailable');

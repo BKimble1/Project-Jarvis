@@ -69,6 +69,8 @@ export function toKnowledgeItem(row: Row<typeof knowledgeItems>): KnowledgeItem 
     category: row.category,
     origin: row.origin,
     status: row.status,
+    statusRule: row.statusRule,
+    sensitivity: row.sensitivity,
     statement: row.statement,
     detail: row.detail,
     projectId: row.projectId,

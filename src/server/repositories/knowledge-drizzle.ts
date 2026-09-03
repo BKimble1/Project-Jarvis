@@ -363,6 +363,7 @@ export class DrizzleKnowledgeRepository implements KnowledgeRepository {
         supersedesId: input.supersedesId ?? null,
         confirmedAt: input.confirmedAt ?? null,
         confirmedBy: input.confirmedBy ?? null,
+        ...(input.sensitivity !== undefined ? { sensitivity: input.sensitivity } : {}),
       })
       .returning();
     if (!row) throw new NotFoundError('Knowledge item');
@@ -455,6 +456,7 @@ export class DrizzleKnowledgeRepository implements KnowledgeRepository {
         ...(patch.projectId !== undefined ? { projectId: patch.projectId } : {}),
         ...(patch.category !== undefined ? { category: patch.category } : {}),
         ...(patch.scope !== undefined ? { scope: patch.scope } : {}),
+        ...(patch.sensitivity !== undefined ? { sensitivity: patch.sensitivity } : {}),
         updatedAt: new Date(),
       })
       .where(eq(knowledgeItems.id, id))

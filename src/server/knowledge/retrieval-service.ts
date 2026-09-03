@@ -170,6 +170,15 @@ export class RetrievalService {
         durationMs: Date.now() - started,
         rankingVersion: RANKING_VERSION,
         apiVersion: RETRIEVAL_API_VERSION,
+        semanticIndex: this.options.embeddings
+          ? {
+              provider: this.options.embeddings.name,
+              model: this.options.embeddings.model,
+              indexingVersion: this.options.embeddings.indexingVersion,
+              dimensions: this.options.embeddings.dimensions,
+              minSimilarity: this.options.embeddings.minSimilarity,
+            }
+          : null,
       },
     };
   }
@@ -228,6 +237,7 @@ export class RetrievalService {
             indexingVersion: provider.indexingVersion,
             scope: request.scope,
             limit,
+            minScore: provider.minSimilarity,
             asOf: request.asOf,
           })
         : Promise.resolve([]),
@@ -238,6 +248,7 @@ export class RetrievalService {
             indexingVersion: provider.indexingVersion,
             scope: request.scope,
             limit,
+            minScore: provider.minSimilarity,
             asOf: request.asOf,
           })
         : Promise.resolve([]),

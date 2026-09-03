@@ -77,6 +77,17 @@ export interface SemanticQuery {
   readonly scope: ScopeFilter;
   readonly limit: number;
   readonly asOf: string | null;
+  /**
+   * The similarity below which a row is not a candidate.
+   *
+   * Applied in SQL rather than after the fact, for the same reason the scope filter is: a row
+   * that is not a match should never enter the result set, because everything downstream —
+   * fusion, the diversity cap, the character budget — treats what it is given as relevant.
+   *
+   * The value comes from the provider, which is the only thing that knows its own scale. Passing
+   * it explicitly rather than defaulting it here keeps that ownership visible at the call site.
+   */
+  readonly minScore: number;
 }
 
 export class DrizzleRetrievalRepository {
@@ -234,6 +245,10 @@ export class DrizzleRetrievalRepository {
         and e.indexing_version = ${query.indexingVersion}
         and e.dimensions = ${query.vector.dimensions}
         and array_length(e.embedding, 1) = ${query.vector.dimensions}
+        and (
+          select coalesce(sum(a * b), 0)
+          from unnest(e.embedding, ${literal}::real[]) as t(a, b)
+        ) >= ${query.minScore}
         and ${sourceVisible(query.scope, query.asOf)}
       order by score desc, c.id asc
       limit ${query.limit}
@@ -280,6 +295,10 @@ export class DrizzleRetrievalRepository {
         and e.indexing_version = ${query.indexingVersion}
         and e.dimensions = ${query.vector.dimensions}
         and array_length(e.embedding, 1) = ${query.vector.dimensions}
+        and (
+          select coalesce(sum(a * b), 0)
+          from unnest(e.embedding, ${literal}::real[]) as t(a, b)
+        ) >= ${query.minScore}
         and i.status = 'active'
         and i.forgotten_at is null
         and ${memoryVisible(query.scope)}

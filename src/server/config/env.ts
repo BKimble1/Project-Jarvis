@@ -162,7 +162,15 @@ const rawSchema = z.object({
    * genuine second channel that finds near-spellings, costing nothing and reaching no network.
    */
   JARVIS_KNOWLEDGE_EMBEDDINGS: z.enum(['none', 'deterministic']).default('none'),
-  JARVIS_KNOWLEDGE_EMBEDDING_DIMENSIONS: positiveInt(256, 4_096),
+  /**
+   * Vector width for the hashed-trigram provider.
+   *
+   * 512 rather than the smallest workable value, because the measured similarity between
+   * unrelated sentences falls as the width rises — 0.42 at 256, 0.35 at 512 — and that headroom
+   * under the 0.45 floor is what keeps an unrelated chunk out of a citation. The provider itself
+   * refuses anything below 256; this default sits above that on purpose.
+   */
+  JARVIS_KNOWLEDGE_EMBEDDING_DIMENSIONS: positiveInt(512, 4_096),
 
   /* ----------------------------------------------------------- scheduling */
   JARVIS_SCHEDULER_ENABLED: bool(true),

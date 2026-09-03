@@ -384,6 +384,22 @@ export interface RetrievalDiagnostics {
   readonly durationMs: number;
   readonly rankingVersion: string;
   readonly apiVersion: string;
+  /**
+   * Which index actually answered the semantic half, and how strict it was.
+   *
+   * `hybrid_ready` on its own is a label; a caller cannot tell from it whether the second channel
+   * is a language model or a hashing trick, and those deserve different confidence. Naming the
+   * model and its floor is what turns the mode into a checkable claim — and it is what stops a
+   * later phase from reporting "semantic search found this" about a channel that measures
+   * character shape.
+   */
+  readonly semanticIndex: {
+    readonly provider: string;
+    readonly model: string;
+    readonly indexingVersion: string;
+    readonly dimensions: number;
+    readonly minSimilarity: number;
+  } | null;
 }
 
 export interface RetrievalResponse {

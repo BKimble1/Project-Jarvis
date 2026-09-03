@@ -217,6 +217,22 @@ export interface KnowledgeItem {
   readonly category: KnowledgeCategory;
   readonly origin: KnowledgeOrigin;
   readonly status: KnowledgeStatus;
+  /**
+   * The rule that decided the initial status — `R-KN1` through `R-KN5`.
+   *
+   * On the item rather than only in the audit trail because "why is this active?" is a question
+   * the interface has to answer at a glance, and a reader should not have to correlate a log to
+   * learn that a definition auto-activated under R-KN4 rather than being confirmed by anyone.
+   */
+  readonly statusRule: string | null;
+  /**
+   * How sensitive this is, and therefore which audiences may ever see it.
+   *
+   * Retrieval clamps every audience to a ceiling, and the display audience's ceiling sits below
+   * `private` in code. This field is the other half of that: it is what makes a private note
+   * unreachable from a wallboard rather than merely unlikely to be selected for one.
+   */
+  readonly sensitivity: 'public' | 'internal' | 'private';
   /** One sentence, in my words where possible. This is what retrieval cites. */
   readonly statement: string;
   /** Optional elaboration. Never required, because a memory that needs a paragraph is a document. */
@@ -816,4 +832,99 @@ export function assertScopeConsistency(input: {
   if (input.scope !== 'mission' && input.missionId) {
     throw new ValidationError('Only a mission-scoped note may name a mission.');
   }
+}
+
+/* -------------------------------------------------------------- approval */
+
+/**
+ * Who is allowed to turn a proposal into memory.
+ *
+ * The rule the whole review queue exists to enforce is short: **a proposal cannot approve
+ * itself.** A mission may notice that I always deploy on Fridays and say so; it may not then
+ * decide that Jarvis now believes it. So approval authority is not a property of the request —
+ * it is a property of the actor, checked against the actor who proposed.
+ *
+ *  - **R-KA1** — only the owner approves. Not a worker, not an agent, not a schedule, not the
+ *    display. There is no "trusted service" tier here, because every origin that produces
+ *    suggestions is a service.
+ *  - **R-KA2** — the proposer may not approve, even if the proposer somehow presents as the
+ *    owner. This is the self-approval check proper, and it is separate from R-KA1 on purpose:
+ *    R-KA1 stops the ordinary case and R-KA2 stops the case where an actor string was forged or
+ *    a future code path runs an agent under owner identity.
+ *  - **R-KA3** — a decision needs something to decide. Approving what is already active, or
+ *    rejecting what was already forgotten, is refused rather than silently ignored, because a
+ *    silent no-op reads as success to the caller that asked.
+ */
+export interface ApprovalCheck {
+  readonly allowed: boolean;
+  readonly rule: string | null;
+  readonly reason: string | null;
+}
+
+export type MemoryActorKind = 'owner' | 'system' | 'worker' | 'agent' | 'schedule' | 'display';
+
+export function canDecide(input: {
+  readonly actor: string;
+  readonly actorKind: MemoryActorKind;
+  readonly item: Pick<KnowledgeItem, 'status' | 'createdBy' | 'origin'>;
+  readonly decision: 'approve' | 'reject' | 'archive' | 'forget' | 'restore';
+}): ApprovalCheck {
+  if (input.actorKind !== 'owner') {
+    return {
+      allowed: false,
+      rule: 'R-KA1',
+      reason: 'Only you can decide what Jarvis remembers.',
+    };
+  }
+
+  /*
+   * Self-approval, checked on identity rather than on kind. An item proposed by an agent carries
+   * that agent's name in `createdBy`; if the same name arrives claiming to be the owner, this is
+   * the check that still refuses.
+   */
+  if (
+    input.decision === 'approve' &&
+    input.item.origin !== 'explicit' &&
+    input.item.createdBy === input.actor
+  ) {
+    return {
+      allowed: false,
+      rule: 'R-KA2',
+      reason: 'Whatever proposed this cannot also approve it.',
+    };
+  }
+
+  const status = input.item.status;
+  if (status === 'forgotten') {
+    return {
+      allowed: false,
+      rule: 'R-KA3',
+      reason: 'That was forgotten. There is nothing left to act on.',
+    };
+  }
+  if (input.decision === 'approve' && status === 'active') {
+    return { allowed: false, rule: 'R-KA3', reason: 'That is already in use.' };
+  }
+  if (input.decision === 'restore' && status !== 'archived' && status !== 'rejected') {
+    return {
+      allowed: false,
+      rule: 'R-KA3',
+      reason: 'Only something archived or rejected can be restored.',
+    };
+  }
+
+  return { allowed: true, rule: null, reason: null };
+}
+
+/**
+ * The default sensitivity for a new memory.
+ *
+ * Restrictive by category rather than uniform, because the alternative — everything private —
+ * makes the wallboard useless and trains me to downgrade things by reflex, which is how a real
+ * secret eventually gets marked public. A preference or a decision is about me and stays private;
+ * a definition or a procedure is working material and is internal; nothing defaults to public,
+ * because "safe to show on a screen in the kitchen" is a judgement only I can make.
+ */
+export function defaultSensitivity(category: KnowledgeCategory): 'public' | 'internal' | 'private' {
+  return isOwnerOnlyCategory(category) ? 'private' : 'internal';
 }

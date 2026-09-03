@@ -502,6 +502,50 @@ export class DrizzleRevisionRepository {
    * encoding of the text it was made from, and "forgotten" has to mean the semantic index cannot
    * return it either.
    */
+  /**
+   * Active memories with no current vector.
+   *
+   * "Current" means matching this model *and* this indexing version. A vector produced by an
+   * earlier version is not a vector for the present index — it will never be compared against
+   * today's queries — so an item holding one is still pending rather than done.
+   *
+   * Forgotten items are excluded here as well as in retrieval. Belt and braces on purpose: this
+   * is the query that would otherwise re-embed a tombstone's placeholder text and put a row back
+   * into the vector index for something that was deliberately destroyed.
+   */
+  async memoriesNeedingEmbedding(input: {
+    readonly model: string;
+    readonly indexingVersion: string;
+    readonly limit?: number;
+  }): Promise<readonly { readonly id: string }[]> {
+    const rows = await this.db.execute(sql`
+      select i.id
+      from knowledge_items i
+      left join knowledge_embeddings e
+        on e.item_id = i.id
+       and e.model = ${input.model}
+       and e.indexing_version = ${input.indexingVersion}
+       and e.state = 'ready'
+      where i.status = 'active'
+        and i.forgotten_at is null
+        and e.id is null
+      order by i.updated_at desc
+      limit ${input.limit ?? 200}
+    `);
+    return extractRows(rows).map((row) => ({ id: String(row.id) }));
+  }
+
+  /** Whether a memory currently has any stored vector. Used to report index state honestly. */
+  async memoryHasEmbedding(itemId: string): Promise<boolean> {
+    const rows = await this.db.execute(sql`
+      select 1 as present
+      from knowledge_embeddings
+      where item_id = ${itemId}::uuid and state = 'ready'
+      limit 1
+    `);
+    return extractRows(rows).length > 0;
+  }
+
   async deleteMemoryEmbeddings(itemId: string): Promise<number> {
     const removed = await this.db
       .delete(knowledgeEmbeddings)

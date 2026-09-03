@@ -155,6 +155,7 @@ export interface KnowledgeCreateInput {
   readonly supersedesId?: string | null;
   readonly confirmedAt?: Date | null;
   readonly confirmedBy?: string | null;
+  readonly sensitivity?: Sensitivity;
 }
 
 export interface KnowledgePatch {
@@ -174,6 +175,7 @@ export interface KnowledgePatch {
   readonly projectId?: string | null;
   readonly category?: KnowledgeCategory;
   readonly scope?: KnowledgeScope;
+  readonly sensitivity?: Sensitivity;
 }
 
 export interface KnowledgeListFilter {
