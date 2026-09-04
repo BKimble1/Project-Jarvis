@@ -273,7 +273,7 @@ describe('GitHubDelivery', () => {
     expect(methods.filter((name) => forbidden.test(name))).toEqual([]);
   });
 
-  it('exposes exactly the four operations delivery needs', () => {
+  it('exposes exactly the five operations delivery needs, only three of which write', () => {
     const methods = Object.getOwnPropertyNames(GitHubRestDelivery.prototype).filter(
       (name) => name !== 'constructor' && !name.startsWith('_') && name !== 'request',
     );
@@ -281,6 +281,8 @@ describe('GitHubDelivery', () => {
       'checkStatus',
       'comment',
       'createDraftPullRequest',
+      /* A read. Delivery calls it before creating, so a retry adopts rather than duplicates. */
+      'findOpenPullRequest',
       'updatePullRequestBody',
     ]);
   });

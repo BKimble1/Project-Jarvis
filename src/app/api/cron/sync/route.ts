@@ -57,17 +57,29 @@ async function run(request: Request): Promise<NextResponse> {
       });
     }
 
+    /*
+     * Release anything a departed worker is holding.
+     *
+     * Unattended, but not model work and not a GitHub write, so the activation lock has nothing
+     * to say about it: it only ever confirms a stop the owner already asked for. Without it a
+     * stop requested of a worker that never returns leaves the mission in `stopping` for ever.
+     */
+    const reconciled = await services.missions.reconcileLostWorkers();
+
     /* Housekeeping that keeps the database from growing without bound. */
     await services.sessions.purgeExpired();
     await services.oauthStates.purgeExpired();
     logger().info('scheduled sync finished', {
       projects: outcomes.length,
       modelNarration: narration.allowed,
+      stopsConfirmed: reconciled.stoppedConfirmed,
+      stalledMissions: reconciled.stalled,
     });
     return json({
       ok: true,
       projects: outcomes.length,
       outcomes,
+      reconciled,
       narration: {
         modelAllowed: narration.allowed,
         required: narration.required,

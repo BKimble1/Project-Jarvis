@@ -623,18 +623,35 @@ export class TaskRunner {
     });
 
     try {
-      const pull = await this.deps.delivery.createDraftPullRequest({
-        owner: repository.owner,
-        repo: repository.name,
-        head: branch,
-        base: workspace.baseBranch,
-        title: this.assignment.missionTitle.slice(0, 120),
-        body,
-      });
+      /*
+       * Adopt before creating. A delivery task retried after a worker restart must not open a
+       * second draft pull request for a branch that already has one — see the same guard in
+       * `MissionRunner`.
+       */
+      const existing = await this.deps.delivery
+        .findOpenPullRequest(repository.owner, repository.name, branch)
+        .catch(() => null);
+      if (existing) {
+        await this.deps.delivery
+          .updatePullRequestBody(repository.owner, repository.name, existing.number, body)
+          .catch(() => undefined);
+      }
+      const pull =
+        existing ??
+        (await this.deps.delivery.createDraftPullRequest({
+          owner: repository.owner,
+          repo: repository.name,
+          head: branch,
+          base: workspace.baseBranch,
+          title: this.assignment.missionTitle.slice(0, 120),
+          body,
+        }));
       await this.emit(
         'pull_request_created',
-        `Opened draft pull request #${pull.number}. It is not merged.`,
-        { url: pull.url },
+        existing
+          ? `Draft pull request #${pull.number} was already open for this branch, so it was updated rather than duplicated. It is not merged.`
+          : `Opened draft pull request #${pull.number}. It is not merged.`,
+        { url: pull.url, adopted: existing !== null },
       );
       await this.report('succeeded', {
         currentAction: null,

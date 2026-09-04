@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { MissionAssignment, PendingCommand } from '@/domain/worker-protocol';
+import { WORKER_VERSION } from '@/domain/worker-protocol';
 import type { MissionState } from '@/domain/mission';
 import { assertTransition } from '@/domain/mission-state';
 import type {
@@ -178,7 +179,8 @@ describe('MissionRunner', () => {
       allowWebResearch: false,
       runtime: 'scripted',
       sandboxRepositories: new Map(),
-      version: 'test',
+      /* The real constant: the claim boundary refuses a worker on a different major. */
+      version: WORKER_VERSION,
       diagnostics: [],
       ...overrides,
     };
@@ -214,6 +216,7 @@ describe('MissionRunner', () => {
       },
       branchName: `jarvis/${MISSION_ID}-improve-the-readme`,
       resumeSessionId: null,
+      missionState: 'claimed',
       clarifications: [],
       projectContext: [],
       allowWebResearch: false,
@@ -246,8 +249,15 @@ describe('MissionRunner', () => {
     } = {},
   ): Promise<{ recorder: RecordingClient; runtime: ScriptedRuntime; runner: MissionRunner }> {
     const recorder = options.recorder ?? new RecordingClient();
-    /* Where the control plane really has the mission when each kind of run starts. */
-    recorder.missionState = options.assignment?.kind === 'inspection' ? 'inspecting' : 'claimed';
+    /*
+     * Where the control plane really has the mission when this run starts.
+     *
+     * An explicit `missionState` on the assignment is how a *re-*claim is expressed: the worker
+     * restarted, and the run it still holds was handed straight back to it.
+     */
+    recorder.missionState =
+      options.assignment?.missionState ??
+      (options.assignment?.kind === 'inspection' ? 'inspecting' : 'claimed');
     const runtime = new ScriptedRuntime({
       steps,
       ...(options.onMessage ? { onMessage: options.onMessage } : {}),
@@ -674,6 +684,112 @@ describe('MissionRunner', () => {
     expect(recorder.states).toContain('failed');
     expect(String(recorder.last.failureMessage)).toContain('already exists');
     expect(String(recorder.last.failureMessage)).toContain('remove it deliberately');
+  });
+
+  /* ---------------------------------------------------- restart and resume */
+
+  /**
+   * What a restarted worker does with the run it is still holding.
+   *
+   * All three of these go through `RecordingClient.runState`, which runs the real state machine —
+   * so a report the live Jarvis would answer with a 409 fails the test the same way it failed the
+   * mission. That is exactly how the defect these cover used to present: the restarted worker
+   * announced `preparing_workspace`, the machine refused it, the non-retryable 409 was classified
+   * as `worker_lost`, and a mission whose work was sitting intact on disk was marked failed.
+   */
+  it('picks a running mission back up after a restart instead of failing it', async () => {
+    const { recorder } = await run(
+      [
+        {
+          kind: 'tool',
+          toolName: 'Edit',
+          input: { file_path: 'README.md' },
+          effect: editReadme('# Sandbox\n\nFinished after the restart.\n'),
+        },
+        { kind: 'done', result: 'Finished after the restart.' },
+      ],
+      {
+        assignment: { missionState: 'running', resumeSessionId: 'agent-session-1' },
+        config: { githubToken: 'ghp_fake_worker_token_for_tests_only_00' },
+      },
+    );
+
+    /* The mission finished. Before the fix this was `failed` with `worker_lost`. */
+    expect(recorder.states).not.toContain('failed');
+    expect(recorder.states).toContain('pull_request_ready');
+
+    /*
+     * And it did not re-announce a state the mission had already left. This is the assertion that
+     * would fail if the opening report were restored, not merely a description of one.
+     */
+    expect(recorder.states).not.toContain('preparing_workspace');
+    expect(recorder.summary()).toContain('after a worker restart');
+  });
+
+  it('delivers an interrupted pull request without running the agent again', async () => {
+    const delivery = new FakeDelivery();
+    const withCredential = { githubToken: 'ghp_fake_worker_token_for_tests_only_00' };
+
+    /* A first run that gets as far as a commit, a push and one draft pull request. */
+    await run(
+      [
+        {
+          kind: 'tool',
+          toolName: 'Edit',
+          input: { file_path: 'README.md' },
+          effect: editReadme('# Sandbox\n\nWork that was already committed.\n'),
+        },
+        { kind: 'done', result: 'Committed.' },
+      ],
+      { delivery, config: withCredential },
+    );
+    expect(delivery.created).toHaveLength(1);
+
+    /*
+     * Now the worker comes back to a mission the control plane left in `creating_pull_request`:
+     * killed after the commit, somewhere around the delivery.
+     */
+    const recorder = new RecordingClient();
+    const runtime = new ScriptedRuntime({ steps: [{ kind: 'done', result: 'should not run' }] });
+    recorder.missionState = 'creating_pull_request';
+    const resumed = new MissionRunner(
+      { config: config(withCredential), client: asClient(recorder), runtime, delivery },
+      assignment({ missionState: 'creating_pull_request', resumeSessionId: 'agent-session-1' }),
+    );
+    await resumed.run();
+
+    /* No second pull request, and no second run of the model. */
+    expect(delivery.created).toHaveLength(1);
+    expect(runtime.prompts).toHaveLength(0);
+
+    /* The existing one was adopted and its body brought up to date. */
+    expect(delivery.bodyUpdates).toHaveLength(1);
+    expect(recorder.states).toContain('pull_request_ready');
+    expect(recorder.last.pullRequestNumber).toBe(1);
+    expect(recorder.summary()).toContain('already open for this branch');
+    expect(recorder.summary()).toContain('the agent is not run again');
+  });
+
+  it('confirms a stop it was restarted before it could confirm', async () => {
+    const recorder = new RecordingClient();
+    recorder.missionState = 'stopping';
+    const runtime = new ScriptedRuntime({ steps: [{ kind: 'done', result: 'should not run' }] });
+    const runner = new MissionRunner(
+      {
+        config: config(),
+        client: asClient(recorder),
+        runtime,
+        delivery: new FakeDelivery(),
+      },
+      assignment({ missionState: 'stopping' }),
+    );
+    await runner.run();
+
+    /* The owner's decision stands: nothing resumed, no agent, no clone. */
+    expect(recorder.states).toEqual(['stopped']);
+    expect(runtime.prompts).toHaveLength(0);
+    expect(recorder.last.workspacePreserved).toBe(true);
+    expect(recorder.summary()).toContain('Nothing was resumed');
   });
 
   it('completes without delivering when the agent changed nothing', async () => {

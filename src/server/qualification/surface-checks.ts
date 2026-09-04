@@ -32,6 +32,13 @@ export const ALLOWED_DELIVERY_METHODS: readonly string[] = [
   'constructor',
   'createDraftPullRequest',
   'updatePullRequestBody',
+  /*
+   * A read, added deliberately. Delivery calls it before it creates, so a worker restarted
+   * between pushing its branch and opening its pull request adopts the existing one rather than
+   * opening a second for the same commit. It widens nothing: the writes are still the three
+   * below, and the credential's scopes are unchanged.
+   */
+  'findOpenPullRequest',
   'checkStatus',
   'comment',
 ];

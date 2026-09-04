@@ -9,9 +9,13 @@ import { DeliveryError } from '@/worker/delivery';
 /**
  * A GitHub delivery that records rather than calls.
  *
- * It implements exactly the same four-method interface as the real one, which is the point: a
+ * It implements exactly the same five-method interface as the real one, which is the point: a
  * test that passes here is exercising the same call sites, and the interface still offers nothing
  * that could merge, deploy or publish.
+ *
+ * `findOpenPullRequest` answers from what this fake has actually created, so a test that drives
+ * delivery twice sees the same adoption the real client would perform rather than a stub that
+ * always says "none".
  */
 export class FakeDelivery implements GitHubDelivery {
   readonly created: DraftPullRequestInput[] = [];
@@ -39,6 +43,22 @@ export class FakeDelivery implements GitHubDelivery {
     return {
       number,
       url: `https://github.test/${input.owner}/${input.repo}/pull/${number}`,
+      draft: true,
+    };
+  }
+
+  async findOpenPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+  ): Promise<PullRequestResult | null> {
+    const index = this.created.findIndex(
+      (input) => input.owner === owner && input.repo === repo && input.head === head,
+    );
+    if (index === -1) return null;
+    return {
+      number: index + 1,
+      url: `https://github.test/${owner}/${repo}/pull/${index + 1}`,
       draft: true,
     };
   }

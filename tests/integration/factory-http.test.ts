@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { getServices } from '@/server/container';
 import type { MissionTask } from '@/domain/mission-task';
+import { WORKER_VERSION } from '@/domain/worker-protocol';
 
 /**
  * The multi-agent factory's HTTP layer, exercised through the real shipping handlers.
@@ -106,6 +107,8 @@ const params = <T extends Record<string, string>>(value: T) => ({ params: Promis
 
 const HEARTBEAT = {
   status: 'idle' as const,
+  /* Either claim route refuses a worker whose build does not match, so this reports a real one. */
+  version: WORKER_VERSION,
   runtimeAvailable: true,
   workspaceHealthy: true,
   githubDeliveryConfigured: true,

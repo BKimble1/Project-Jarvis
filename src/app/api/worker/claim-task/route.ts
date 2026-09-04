@@ -31,6 +31,12 @@ export const POST = workerRoute(
   { name: 'worker.claimTask', idempotent: true },
   async ({ services, workerId, body }) => {
     await services.workerService.heartbeat(workerId, body.heartbeat);
+    /*
+     * The same build check the mission claim makes. Recorded first, refused second: an
+     * incompatible worker's heartbeat is still worth having, because it is what makes the
+     * mismatch visible in Operations rather than only in this refusal.
+     */
+    services.workerService.assertCompatibleBuild(body.heartbeat.version);
     const assignment = await services.taskWorkerService.claimTask(workerId, body.roles);
     return json({ assignment });
   },

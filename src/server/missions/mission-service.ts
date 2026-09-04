@@ -1097,6 +1097,62 @@ export class MissionService {
     );
   }
 
+  /**
+   * Release the missions a departed worker left behind.
+   *
+   * The rule this enforces is narrow on purpose, and it is the same one `isStalled` states: a
+   * mission whose worker went silent is **not** failed. The work on disk is very likely fine, the
+   * worker very likely comes back, and inventing a `failed` for a process that was merely
+   * restarted would throw away a run that is about to resume.
+   *
+   * `stopping` is the one exception, and it is not really an exception at all — the owner has
+   * already decided the mission's ending. A stop is confirmed by the worker, so a stop requested
+   * of a worker that never comes back would otherwise leave the mission in `stopping` for ever:
+   * not stopped, not resumable, not retryable. That is the deadlock this clears, and `stop()`
+   * has always documented that this function is what clears it.
+   *
+   * Everything else is *reported* rather than changed. The count comes back so the caller can
+   * log it, and the missions themselves already surface as stalled in the interface.
+   */
+  async reconcileLostWorkers(): Promise<{
+    readonly stoppedConfirmed: number;
+    readonly stalled: number;
+  }> {
+    const now = this.clock();
+    const workers = await this.deps.workers.list();
+    const health = new Map(
+      workers.map((worker) => [worker.id, deriveWorkerHealth(worker, now)] as const),
+    );
+    const gone = (workerId: string | null): boolean => {
+      if (!workerId) return true;
+      const status = health.get(workerId)?.effectiveStatus;
+      return status === undefined || status === 'disconnected' || status === 'revoked';
+    };
+
+    /*
+     * `listOpen` rather than `listActive`: `stopping` is deliberately not an active state, so the
+     * very missions this exists for are the ones `listActive` would not return.
+     */
+    const open = await this.deps.missions.listOpen();
+
+    let stoppedConfirmed = 0;
+    for (const mission of open) {
+      if (mission.state !== 'stopping') continue;
+      if (!gone(mission.claimedByWorkerId)) continue;
+      await this.confirmStopped(
+        mission,
+        'The worker holding this mission is no longer reachable, so Jarvis recorded the stop you asked for. Its workspace and branch are untouched.',
+      );
+      stoppedConfirmed += 1;
+    }
+
+    const stalled = open.filter(
+      (mission) => isActiveState(mission.state) && gone(mission.claimedByWorkerId),
+    ).length;
+
+    return { stoppedConfirmed, stalled };
+  }
+
   /** Has the repository moved since the approved plan was written? */
   async validateApprovedPlan(
     mission: Mission,

@@ -66,6 +66,29 @@ const server = createServer((request, response) => {
       return;
     }
 
+    /*
+     * GET /repos/:owner/:repo/pulls?head=owner:branch — what delivery reads before it creates.
+     *
+     * Answering honestly is what lets a test prove the second delivery attempt adopts the first
+     * pull request instead of opening a second one.
+     */
+    const list = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/.exec(path);
+    if (list && method === 'GET') {
+      const head = url.searchParams.get('head');
+      const branch = head?.includes(':') ? head.slice(head.indexOf(':') + 1) : head;
+      const matches = [...pulls.values()].filter((pull) => !branch || pull.head === branch);
+      json(
+        response,
+        200,
+        matches.map((pull) => ({
+          number: pull.number,
+          html_url: `https://github.test/${list[1]}/${list[2]}/pull/${pull.number}`,
+          draft: pull.draft,
+        })),
+      );
+      return;
+    }
+
     /* POST /repos/:owner/:repo/pulls — open a pull request. */
     const create = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/.exec(path);
     if (create && method === 'POST') {

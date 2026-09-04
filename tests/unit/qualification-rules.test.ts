@@ -271,11 +271,19 @@ describe('the activation lock', () => {
 });
 
 describe('the surfaces qualification asserts', () => {
-  it('finds the delivery client restricted to four methods', () => {
+  it('finds the delivery client restricted to three writes and two reads', () => {
     const verdict = checkDeliveryRestricted();
     expect(verdict.ok).toBe(true);
+    /*
+     * Written out in full rather than counted, so *which* methods exist is the assertion. The
+     * count would have accepted a merge arriving as a method was removed; the list does not.
+     *
+     * `findOpenPullRequest` is a read, added so that delivery can adopt an existing pull request
+     * instead of opening a second one for the same commit after a worker restart. The writes are
+     * still exactly `createDraftPullRequest`, `updatePullRequestBody` and `comment`.
+     */
     expect(verdict.evidence.methods).toBe(
-      'checkStatus, comment, createDraftPullRequest, updatePullRequestBody',
+      'checkStatus, comment, createDraftPullRequest, findOpenPullRequest, updatePullRequestBody',
     );
   });
 

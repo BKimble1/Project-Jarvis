@@ -6,11 +6,17 @@ import { summariseVerification } from './verification';
 /**
  * GitHub delivery.
  *
- * The interface has exactly four methods, and that is the security boundary: there is no
- * `merge`, no `createRelease`, no `updateRepository`, no `setSecret` and no `createDeployment`
- * for anything — a persuaded agent, a confused worker, a future contributor — to call. A test
- * asserts this at runtime by inspecting the prototype, so adding a fifth write method fails the
- * suite rather than quietly widening what Jarvis can do.
+ * The interface has exactly five methods — **two of which write** — and that is the security
+ * boundary: there is no `merge`, no `createRelease`, no `updateRepository`, no `setSecret` and no
+ * `createDeployment` for anything — a persuaded agent, a confused worker, a future contributor —
+ * to call. A test asserts this at runtime by inspecting the prototype, so adding a sixth method
+ * fails the suite rather than quietly widening what Jarvis can do.
+ *
+ * `findOpenPullRequest` is the fifth, and it is a **read**. It exists so that opening a draft
+ * pull request is idempotent: a worker restarted between pushing its branch and opening the pull
+ * request would otherwise open a second one for the same commit. Adding a read widens nothing —
+ * the write surface is still `createDraftPullRequest`, `updatePullRequestBody` and `comment`, and
+ * the credential's scopes are unchanged.
  *
  * The credential this uses is documented as a fine-grained token with **Contents: read and
  * write** (to push a branch) and **Pull requests: read and write** (to open a draft PR) — nothing
@@ -41,6 +47,12 @@ export interface CheckStatus {
 export interface GitHubDelivery {
   /** Open a draft pull request. `draft: true` is not a parameter the caller chooses. */
   createDraftPullRequest(input: DraftPullRequestInput): Promise<PullRequestResult>;
+  /**
+   * The open pull request for this head branch, if one already exists.
+   *
+   * Read-only, and the reason delivery can be retried safely. Returns null when there is none.
+   */
+  findOpenPullRequest(owner: string, repo: string, head: string): Promise<PullRequestResult | null>;
   /** Update only the title and body of a pull request this mission opened. */
   updatePullRequestBody(owner: string, repo: string, number: number, body: string): Promise<void>;
   /** Read CI status for the mission branch. */
@@ -85,6 +97,31 @@ export class GitHubRestDelivery implements GitHubDelivery {
       draft?: boolean;
     };
     return { number: body.number, url: body.html_url, draft: body.draft ?? true };
+  }
+
+  /**
+   * Find the open pull request whose head is this branch.
+   *
+   * `head` is qualified with the repository owner, which is what GitHub's filter expects and what
+   * keeps a fork's identically-named branch from matching. A pull request that has been closed is
+   * deliberately *not* adopted: reopening someone's closed review is not delivery's business, and
+   * creating a fresh one in that case is the honest outcome.
+   */
+  async findOpenPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+  ): Promise<PullRequestResult | null> {
+    const query = `head=${encodeURIComponent(`${owner}:${head}`)}&state=open&per_page=1`;
+    const response = await this.#request('GET', `/repos/${owner}/${repo}/pulls?${query}`);
+    const rows = (await response.json()) as {
+      number: number;
+      html_url: string;
+      draft?: boolean;
+    }[];
+    const first = Array.isArray(rows) ? rows[0] : undefined;
+    if (!first) return null;
+    return { number: first.number, url: first.html_url, draft: first.draft ?? false };
   }
 
   async updatePullRequestBody(
@@ -146,7 +183,7 @@ export class GitHubRestDelivery implements GitHubDelivery {
    * holding the object can reach it with a cast. That matters here more than almost anywhere
    * else, because this method takes an arbitrary method and path — it is every forbidden
    * operation at once for anyone who can call it. `#request` is not on the prototype at all, so
-   * the four-method boundary this class documents is now a property of the runtime rather than
+   * the five-method boundary this class documents is now a property of the runtime rather than
    * of the type checker.
    */
   async #request(

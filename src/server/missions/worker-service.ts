@@ -14,6 +14,7 @@ import type {
   WorkerPollResponse,
   WorkerRunStateInput,
 } from '@/domain/worker-protocol';
+import { WORKER_VERSION, isCompatibleWorkerVersion } from '@/domain/worker-protocol';
 import { classifyMissionRisk } from '@/domain/mission-risk';
 import { assertMissionBranchName, buildBranchName } from '@/domain/workspace-safety';
 import type { WorkerEnrolment } from '@/domain/worker';
@@ -155,6 +156,26 @@ export class WorkerService {
     await this.applyHeartbeat(workerId, input, this.clock());
   }
 
+  /**
+   * Refuse *work* to a worker whose build disagrees with this control plane.
+   *
+   * Called before either kind of claim, and deliberately not before a report. A worker on the
+   * wrong major version still needs to say how the mission it is already holding ended — cutting
+   * that off would strand a live run to protect a claim that has not happened yet.
+   *
+   * The refusal is a 403, which the worker treats as fatal: it logs this message and exits,
+   * rather than looping against a control plane that will never give it anything. Until now the
+   * mismatch was only *observed*, by a qualification check, while the incompatible worker went on
+   * claiming missions.
+   */
+  assertCompatibleBuild(version: string | null | undefined): void {
+    if (isCompatibleWorkerVersion(version)) return;
+    throw new ForbiddenError(
+      `This worker reports version ${version?.trim() || 'none'}, and this Jarvis expects ${WORKER_VERSION}. ` +
+        'Update the worker to the same release as the application, then start it again. No work was assigned.',
+    );
+  }
+
   async poll(workerId: string, input: WorkerPollInput): Promise<WorkerPollResponse> {
     const now = this.clock();
     await this.applyHeartbeat(workerId, input.heartbeat, now);
@@ -207,6 +228,7 @@ export class WorkerService {
     const worker = await this.deps.workers.findById(workerId);
     if (!worker) throw new NotFoundError('Worker');
     if (worker.revokedAt) throw new ForbiddenError('This worker has been revoked.');
+    this.assertCompatibleBuild(input.heartbeat.version);
 
     /* A worker already holding a run gets that run back rather than a second one. */
     const held = await this.currentAssignment(workerId);
@@ -716,6 +738,13 @@ export class WorkerService {
       repository: resolveMissionRepository(mission, sources),
       branchName,
       resumeSessionId: run.agentSessionId,
+      /*
+       * So the worker can tell a first claim from a re-claim after its own restart. Sent as the
+       * record's own state rather than as a derived "isResume" flag: a boolean would have to be
+       * computed here, and the worker would then be trusting this service's reading of the state
+       * machine instead of the state machine.
+       */
+      missionState: mission.state,
       clarifications: clarifications
         .filter((record) => record.answer !== null)
         .map((record) => ({

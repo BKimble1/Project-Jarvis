@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { getServices } from '@/server/container';
 import type { MissionPlanContent } from '@/domain/mission-plan';
+import { WORKER_VERSION } from '@/domain/worker-protocol';
 
 /**
  * Mission Control's HTTP layer, exercised through the real shipping handlers.
@@ -89,6 +90,8 @@ const params = <T extends Record<string, string>>(value: T) => ({ params: Promis
 
 const HEARTBEAT = {
   status: 'idle' as const,
+  /* A claim is refused unless the worker's build matches, so the fixture reports a real one. */
+  version: WORKER_VERSION,
   runtimeAvailable: true,
   workspaceHealthy: true,
   githubDeliveryConfigured: true,
@@ -588,6 +591,53 @@ describe('Mission Control HTTP handlers', () => {
   });
 
   /* -------------------------------------------------------------- claiming */
+
+  it('refuses work to a worker on an incompatible build, and says which version it expects', async () => {
+    /*
+     * The mismatch used to be *observed* — a qualification check counted it — while the
+     * incompatible worker went on claiming missions and reporting states this control plane may
+     * read differently. A 403 is fatal to the worker client, so it exits with the message rather
+     * than looping.
+     */
+    const missionId = await approvedMission();
+    const { token } = await enrolWorker('old-worker');
+    const claim = await import('@/app/api/worker/claim/route');
+
+    const refused = await claim.POST(
+      workerPost('/api/worker/claim', token, {
+        heartbeat: { ...HEARTBEAT, version: '1.4.2' },
+        accepts: ['execution'],
+      }),
+    );
+    expect(refused.status).toBe(403);
+    const message = (await body(refused)).error.message as string;
+    expect(message).toContain('1.4.2');
+    expect(message).toContain(WORKER_VERSION);
+
+    /* Refused, not merely warned: the mission is untouched and still claimable. */
+    expect((await services.missionRepo.findById(missionId))?.state).toBe('queued');
+
+    /* A worker reporting no version at all is in the same position, not a lenient one. */
+    const { token: silent } = await enrolWorker('silent-worker');
+    const noVersion = await claim.POST(
+      workerPost('/api/worker/claim', silent, {
+        heartbeat: { ...HEARTBEAT, version: null },
+        accepts: ['execution'],
+      }),
+    );
+    expect(noVersion.status).toBe(403);
+
+    /* And the matching build still gets the mission. */
+    const { token: current } = await enrolWorker('current-worker');
+    const accepted = await claim.POST(
+      workerPost('/api/worker/claim', current, {
+        heartbeat: HEARTBEAT,
+        accepts: ['execution'],
+      }),
+    );
+    expect(accepted.status).toBe(200);
+    expect((await body(accepted)).assignment).toBeTruthy();
+  });
 
   it('lets exactly one of two workers claim the same queued mission', async () => {
     const missionId = await approvedMission();
@@ -1255,6 +1305,53 @@ describe('Mission Control HTTP handlers', () => {
     const mission = await services.missionRepo.findById(missionId);
     expect(mission?.state).toBe('stopping');
     expect(mission?.cancellationReason).toBe('Changed my mind.');
+  });
+
+  it('completes a stop whose worker never came back, and fails nothing else', async () => {
+    /*
+     * The deadlock this clears. `stop()` moves a mission to `stopping` and waits for the worker
+     * to confirm; a worker that never returns leaves it there for ever — not stopped, not
+     * resumable, not retryable — and `stop()`'s own comment has always named this function as
+     * what resolves that.
+     *
+     * The second half is the more important half: a mission that is merely *running* under the
+     * same absent worker is left exactly where it is. Its work is very likely intact on disk, and
+     * inventing a `failed` for a process that was restarted would throw away a run that is about
+     * to resume.
+     */
+    const stopping = await approvedMission();
+    const running = await approvedMission();
+    const worker = await enrolWorker();
+
+    /*
+     * Both missions are put in the worker's hands directly rather than through two claims: a
+     * worker holds one run at a time, and what is under test is the reconciliation, not the
+     * claim. The states below are walked through the real transitions all the same.
+     */
+    await services.missionRepo.patch(stopping, { claimedByWorkerId: worker.id });
+    await services.missionRepo.patch(running, { claimedByWorkerId: worker.id });
+    await services.missionRepo.transition(stopping, 'claimed', {});
+    await services.missionRepo.transition(stopping, 'preparing_workspace', {});
+    await services.missionRepo.transition(stopping, 'running', {});
+    await services.missionRepo.transition(stopping, 'stopping', {});
+    await services.missionRepo.transition(running, 'claimed', {});
+    await services.missionRepo.transition(running, 'preparing_workspace', {});
+    await services.missionRepo.transition(running, 'running', {});
+
+    /* Nothing changes while the worker is still reachable. */
+    const quiet = await services.missions.reconcileLostWorkers();
+    expect(quiet.stoppedConfirmed).toBe(0);
+    expect((await services.missionRepo.findById(stopping))?.state).toBe('stopping');
+
+    await services.workerService.revoke(worker.id, 'the machine was retired');
+
+    const result = await services.missions.reconcileLostWorkers();
+    expect(result.stoppedConfirmed).toBe(1);
+    expect(result.stalled).toBe(1);
+
+    expect((await services.missionRepo.findById(stopping))?.state).toBe('stopped');
+    /* Left alone, deliberately. Not failed, not stopped, not silently retried. */
+    expect((await services.missionRepo.findById(running))?.state).toBe('running');
   });
 
   it('refuses to retry a mission that failed for a policy reason', async () => {

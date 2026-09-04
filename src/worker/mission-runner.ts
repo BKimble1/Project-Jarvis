@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { MissionFailureCode, MissionState } from '@/domain/mission';
 import { isReadOnlyMissionType } from '@/domain/mission';
+import { isMissionAlreadyUnderway } from '@/domain/mission-state';
 import type { MissionEventInput, VerificationInput } from '@/domain/mission-run';
 import type { MissionPlanContent } from '@/domain/mission-plan';
 import type { MissionAssignment, PendingCommand } from '@/domain/worker-protocol';
@@ -10,6 +11,7 @@ import { ControlPlaneError, type ControlPlaneClient } from './client';
 import type { WorkerConfig } from './config';
 import { DeliveryError, buildPullRequestBody, type GitHubDelivery } from './delivery';
 import { changedFiles, git, headSha, pushMissionBranch } from './git';
+import { filesAgainstBase } from './integration';
 import {
   buildPolicyPrompt,
   evaluateToolUse,
@@ -148,8 +150,23 @@ export class MissionRunner {
 
   async run(): Promise<void> {
     try {
-      if (this.assignment.kind === 'inspection') await this.runInspection();
-      else await this.runExecution();
+      /*
+       * Three ways in, decided by where the control plane says this mission already is.
+       *
+       * A worker that restarts is handed back the run it still holds, through the same call that
+       * hands out a first claim. Treating every assignment as a fresh start is what used to make
+       * a restart destructive: it re-ran an agent whose work was already committed, and it
+       * announced a state the mission had long since left.
+       */
+      if (this.assignment.missionState === 'stopping') {
+        await this.confirmStoppedAfterRestart();
+      } else if (this.assignment.kind === 'inspection') {
+        await this.runInspection();
+      } else if (this.assignment.missionState === 'creating_pull_request') {
+        await this.resumeDelivery();
+      } else {
+        await this.runExecution();
+      }
     } catch (error) {
       await this.fail(classifyFailure(error), describe(error));
     } finally {
@@ -244,8 +261,29 @@ export class MissionRunner {
 
   private async runExecution(): Promise<void> {
     const readOnly = isReadOnlyMissionType(this.assignment.missionType);
+    const continuing = isMissionAlreadyUnderway(this.assignment.missionState);
 
-    await this.report('preparing_workspace', { currentAction: 'Preparing the workspace' });
+    if (continuing) {
+      /*
+       * A re-claim. The mission is already past `preparing_workspace` in the control plane's
+       * record — the worker restarted, or its process was replaced, and the run it still holds
+       * was handed straight back to it.
+       *
+       * Announcing `preparing_workspace` here is what used to kill these missions: it is not a
+       * move a `running` mission allows, the 409 is not retryable, and the failure classifier
+       * read that as `worker_lost` and failed a mission whose work was sitting intact on disk.
+       * So the state is left where it is and the `running` report below re-synchronises it,
+       * which every state a re-claim can arrive in does permit.
+       */
+      await this.emit(
+        'info',
+        'Picking this mission back up after a worker restart. Its workspace and branch are preserved.',
+        { resumed: true, missionState: this.assignment.missionState },
+        'notice',
+      );
+    } else {
+      await this.report('preparing_workspace', { currentAction: 'Preparing the workspace' });
+    }
 
     const repository = await this.repositoryForRun();
     this.workspace = repository
@@ -256,8 +294,15 @@ export class MissionRunner {
           branchName: readOnly ? null : this.assignment.branchName,
           credentialToken: this.deps.config.githubToken,
           readOnly,
-          /* A resume continues in the preserved workspace; a fresh attempt refuses to reuse one. */
-          reuseExisting: this.assignment.resumeSessionId !== null,
+          /*
+           * A resume continues in the preserved workspace; a fresh attempt refuses to reuse one.
+           *
+           * The mission's state decides this alongside the session id, because the two can
+           * disagree: a worker killed before it ever reported a session id leaves a mission
+           * `running` with `agentSessionId` null, and reading only the session id would then
+           * refuse the very workspace the run had already built.
+           */
+          reuseExisting: this.assignment.resumeSessionId !== null || continuing,
           onProgress: (message) => void this.emit('info', message),
         })
       : await prepareScratchWorkspace(this.deps.config.workspaceRoot, this.assignment.missionId);
@@ -295,6 +340,94 @@ export class MissionRunner {
     }
 
     await this.verifyAndDeliver(messages.join('\n\n'));
+  }
+
+  /**
+   * Resume a run that was interrupted between committing and opening the pull request.
+   *
+   * The agent is deliberately **not** run again. Its work is already committed on the mission
+   * branch; re-running it would spend the model a second time, could produce a different commit
+   * from the one that was verified, and would have nothing to commit at the end of it.
+   *
+   * So this picks up exactly where the previous process died: reuse the workspace, push the
+   * branch (a no-op if the push already landed), and adopt or open the draft pull request. The
+   * verifications are not re-run either — they were reported to the control plane as they
+   * happened, and the record of them is there rather than in this process's memory.
+   */
+  private async resumeDelivery(): Promise<void> {
+    const repository = await this.repositoryForRun();
+    if (!repository || !this.assignment.branchName) {
+      await this.fail(
+        'worker_lost',
+        'This run was interrupted while opening its pull request, but it has no repository or branch to resume from.',
+      );
+      return;
+    }
+    if (!this.deps.delivery || !this.deps.config.githubToken) {
+      await this.fail(
+        'github_auth_error',
+        'This run was interrupted while opening its pull request, and this worker has no GitHub write credential to finish it with. The commit is safe on the mission branch.',
+      );
+      return;
+    }
+
+    await this.emit(
+      'info',
+      'The previous run was interrupted after committing, while opening the draft pull request. Resuming at delivery — the agent is not run again.',
+      { resumed: true, missionState: this.assignment.missionState },
+      'notice',
+    );
+
+    this.workspace = await prepareWorkspace({
+      workspaceRoot: this.deps.config.workspaceRoot,
+      missionId: this.assignment.missionId,
+      repository,
+      branchName: this.assignment.branchName,
+      credentialToken: this.deps.config.githubToken,
+      readOnly: false,
+      reuseExisting: true,
+      onProgress: (message) => void this.emit('info', message),
+    });
+
+    const gitOptions = {
+      cwd: this.workspace.repoPath,
+      credentialToken: this.deps.config.githubToken,
+    };
+    const head = await headSha(gitOptions);
+    const files = await filesAgainstBase(
+      this.workspace.repoPath,
+      this.workspace.baseBranch,
+      this.deps.config.githubToken,
+    );
+
+    await this.deliverBranch({
+      head,
+      files,
+      /*
+       * The transcript died with the previous process. Saying so is better than inventing a
+       * summary, and better than an empty one that reads like the agent had nothing to report.
+       */
+      summary:
+        'This run was interrupted after its work was committed and verified. The pull request below delivers that exact commit; the narrative summary from the interrupted run was not recovered.',
+    });
+  }
+
+  /**
+   * The mission was already stopping when this worker came back.
+   *
+   * It is not resumed and no agent is started: the owner asked for a stop, and a restart is not
+   * a reason to overrule that. Confirming it here is what releases a mission that would otherwise
+   * sit in `stopping` forever waiting for a process that no longer exists.
+   */
+  private async confirmStoppedAfterRestart(): Promise<void> {
+    await this.emit(
+      'run_finished',
+      'You asked for this mission to stop, and the worker restarted before it could confirm. Nothing was resumed; its workspace and branch are untouched on disk.',
+      { resumed: true },
+      'warning',
+    );
+    await this.report('stopped', { currentAction: null, workspacePreserved: true });
+    this.finished = true;
   }
 
   /* ------------------------------------------------------------- the agent */
@@ -524,6 +657,30 @@ export class MissionRunner {
       return;
     }
 
+    await this.deliverBranch({ head, files, summary });
+  }
+
+  /**
+   * Push the mission branch and deliver the draft pull request.
+   *
+   * Split out of `verifyAndDeliver` because a run interrupted mid-delivery re-enters here and
+   * nowhere else: one copy of the push, the adoption check and the `pull_request_ready` report
+   * means a resumed delivery cannot drift from a first-time one.
+   */
+  private async deliverBranch(input: {
+    head: string;
+    files: readonly string[];
+    summary: string;
+  }): Promise<void> {
+    const workspace = this.workspace;
+    if (!workspace?.branch) throw new Error('There is no mission branch to deliver.');
+    if (!this.deps.delivery || !this.deps.config.githubToken || !this.assignment.repository) {
+      throw new Error('This worker has no GitHub write credential.');
+    }
+    const { head, files, summary } = input;
+    const delivery = this.deps.delivery;
+    const repository = this.assignment.repository;
+
     await this.report('creating_pull_request', {
       currentAction: 'Pushing the mission branch',
       headSha: head,
@@ -552,24 +709,47 @@ export class MissionRunner {
       openQuestions: [],
     });
 
-    const pull = await this.deps.delivery.createDraftPullRequest({
-      owner: this.assignment.repository.owner,
-      repo: this.assignment.repository.name,
-      title: this.assignment.missionTitle,
-      body,
-      head: workspace.branch,
-      base: workspace.baseBranch,
-    });
+    /*
+     * Look before opening.
+     *
+     * The window between pushing the branch and opening the pull request is small, but a worker
+     * killed inside it used to come back and open a second draft pull request for the same
+     * commit. The branch is this mission's alone, so an open pull request already pointing at it
+     * is this mission's pull request — it is adopted, not duplicated.
+     */
+    const existing = await delivery
+      .findOpenPullRequest(repository.owner, repository.name, workspace.branch)
+      .catch(() => null);
+
+    if (existing) {
+      /* Bring the body up to date with the run that actually finished. */
+      await delivery
+        .updatePullRequestBody(repository.owner, repository.name, existing.number, body)
+        .catch(() => undefined);
+    }
+
+    const pull =
+      existing ??
+      (await delivery.createDraftPullRequest({
+        owner: repository.owner,
+        repo: repository.name,
+        title: this.assignment.missionTitle,
+        body,
+        head: workspace.branch,
+        base: workspace.baseBranch,
+      }));
 
     await this.emit(
       'pull_request_created',
-      `Opened draft pull request #${pull.number}. It is not merged.`,
-      { url: pull.url, number: pull.number, draft: pull.draft },
+      existing
+        ? `Draft pull request #${pull.number} was already open for this branch, so it was updated rather than duplicated. It is not merged.`
+        : `Opened draft pull request #${pull.number}. It is not merged.`,
+      { url: pull.url, number: pull.number, draft: pull.draft, adopted: existing !== null },
       'notice',
     );
 
-    const checks = await this.deps.delivery
-      .checkStatus(this.assignment.repository.owner, this.assignment.repository.name, head)
+    const checks = await delivery
+      .checkStatus(repository.owner, repository.name, head)
       .catch(() => null);
     if (checks) {
       await this.emit('ci_status', `CI: ${checks.summary}`, { state: checks.state });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { getServices } from '@/server/container';
 import type { TaskAssignment } from '@/domain/worker-protocol';
+import { WORKER_VERSION } from '@/domain/worker-protocol';
 import type { WorkerConfig } from '@/worker/config';
 import type { AgentSessionRequest } from '@/worker/runtime/types';
 import { TaskRunner } from '@/worker/task-runner';
@@ -111,6 +112,8 @@ const params = <T extends Record<string, string>>(value: T) => ({ params: Promis
 
 const HEARTBEAT = {
   status: 'idle' as const,
+  /* Either claim route refuses a worker whose build does not match, so this reports a real one. */
+  version: WORKER_VERSION,
   runtimeAvailable: true,
   workspaceHealthy: true,
   githubDeliveryConfigured: true,
@@ -286,7 +289,8 @@ describe('the multi-agent factory, end to end', () => {
       runtime: 'scripted',
       /* Sandbox mode: every clone of the mission's repository comes from the local bare repo. */
       sandboxRepositories: new Map([['test-owner/sandbox', repo.remotePath]]),
-      version: 'test',
+      /* The real constant: the claim boundary refuses a worker on a different major. */
+      version: WORKER_VERSION,
       diagnostics: [],
     };
   }
@@ -706,16 +710,22 @@ describe('the multi-agent factory, end to end', () => {
     ]);
     /*
      * There is no merge, force-push, release or workflow-dispatch *assertion* to make, because
-     * there is no such method to call: `GitHubDelivery` has four, and this is all of them. A
-     * capability that does not exist cannot be used by mistake, which is a better guarantee than
-     * a counter that happens to read zero.
+     * there is no such method to call: `GitHubDelivery` has five — three writes and two reads —
+     * and this is all of them. A capability that does not exist cannot be used by mistake, which
+     * is a better guarantee than a counter that happens to read zero.
      */
     const { FakeDelivery: DeliveryClass } = await import('../helpers/fake-delivery');
     expect(
       Object.getOwnPropertyNames(DeliveryClass.prototype)
         .filter((name) => name !== 'constructor')
         .sort(),
-    ).toEqual(['checkStatus', 'comment', 'createDraftPullRequest', 'updatePullRequestBody']);
+    ).toEqual([
+      'checkStatus',
+      'comment',
+      'createDraftPullRequest',
+      'findOpenPullRequest',
+      'updatePullRequestBody',
+    ]);
 
     /* And the mission ended somewhere honest. */
     const finished = await services.missionRepo.findById(missionId);

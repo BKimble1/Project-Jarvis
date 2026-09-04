@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { MISSION_FAILURE_CODES, MISSION_STATES, type MissionType } from './mission';
+import {
+  MISSION_FAILURE_CODES,
+  MISSION_STATES,
+  type MissionState,
+  type MissionType,
+} from './mission';
 import type { MissionPlanContent } from './mission-plan';
 import { missionPlanContentSchema } from './mission-plan';
 import {
@@ -103,6 +108,19 @@ export interface MissionAssignment {
   readonly repository: AssignmentRepository | null;
   readonly branchName: string | null;
   readonly resumeSessionId: string | null;
+  /**
+   * Where the control plane believes this mission is, at the moment it was handed over.
+   *
+   * The worker needs it to tell a *first* claim from a *re-*claim. Both arrive through the same
+   * call — a worker that restarts mid-run polls, is given the run it already holds, and gets an
+   * assignment indistinguishable from a fresh one — and the difference matters: announcing
+   * `preparing_workspace` is correct from `claimed` and is not a move a `running` mission allows,
+   * so a worker that could not tell them apart killed every mission it was restarted during.
+   *
+   * It is a *fact about the record*, not an instruction. The worker still reports what it is
+   * actually doing and the state machine still decides whether that is allowed.
+   */
+  readonly missionState: MissionState;
   /** Owner answers and Jarvis assumptions, so the agent is not asked to re-derive them. */
   readonly clarifications: readonly { question: string; answer: string; assumed: boolean }[];
   /** Read-only project facts from Jarvis's own evidence, so the agent starts informed. */

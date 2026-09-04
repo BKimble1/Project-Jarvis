@@ -160,6 +160,32 @@ export function findTransition(from: MissionState, to: MissionState): MissionTra
   return TRANSITION_INDEX.get(`${from}→${to}`) ?? null;
 }
 
+/**
+ * States an execution run has already passed the starting line in.
+ *
+ * A worker that restarts polls, is handed back the run it still holds, and receives an assignment
+ * shaped exactly like a first claim. This is how it tells the two apart. Everything listed here
+ * permits `running` from a worker — either as a real transition or, for `running` itself, as the
+ * same-state no-op — which is what makes "skip the opening report and re-synchronise on `running`"
+ * safe for every one of them.
+ *
+ * `claimed` is deliberately absent: that *is* the first claim, and it is the one state from which
+ * announcing `preparing_workspace` is both correct and necessary.
+ */
+const UNDERWAY_STATES = new Set<MissionState>([
+  'preparing_workspace',
+  'running',
+  'waiting_for_permission',
+  'waiting_for_input',
+  'pausing',
+  'resuming',
+  'verifying',
+]);
+
+export function isMissionAlreadyUnderway(state: MissionState): boolean {
+  return UNDERWAY_STATES.has(state);
+}
+
 export function allowedNextStates(
   from: MissionState,
   actor?: MissionActor,
