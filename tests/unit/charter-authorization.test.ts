@@ -111,6 +111,8 @@ function context(overrides: Partial<AuthorizationContext> = {}): AuthorizationCo
     mode: 'operator',
     charter: { versionId: 'charter-1', digest: 'digest-1', content: charter() },
     qualificationLevel: 'production',
+    /* A measurable, quiet ledger by default; the money tests supply their own. */
+    spend: { rollingDayUsd: 0, rollingWeekUsd: 0, measurable: true },
     now: NOW,
     ...overrides,
   };
@@ -520,6 +522,113 @@ describe('things that must not become authority', () => {
 
     expect(decision.outcome).toBe('needs_owner');
     expect(decision.verdicts[0]?.rule).toBe('R-AU7');
+  });
+
+  /*
+   * The defect this replaced: `checkLimits` compared the estimate to the limit and nothing else,
+   * so a $20 daily limit would authorise twenty $19 missions in a row and report each one as
+   * within budget. A limit is about a total, not about one plan's opinion of itself.
+   */
+  it('counts what has already been spent, not just what this plan expects to', () => {
+    const content = charter({
+      grants: [grant({ capability: 'research.read', scope: { projects: [SCOPE_ALL] } })],
+      limits: { dailySpendUsd: 20 },
+    });
+    const charterContext = { versionId: 'v1', digest: 'd1', content };
+
+    const fresh = authorize(
+      request([ask({ capability: 'research.read' })], { estimatedSpendUsd: 19 }),
+      context({
+        charter: charterContext,
+        spend: { rollingDayUsd: 0, rollingWeekUsd: 0, measurable: true },
+      }),
+    );
+    expect(fresh.outcome).toBe('authorized');
+
+    const again = authorize(
+      request([ask({ capability: 'research.read' })], { estimatedSpendUsd: 19 }),
+      context({
+        charter: charterContext,
+        spend: { rollingDayUsd: 19, rollingWeekUsd: 19, measurable: true },
+      }),
+    );
+    expect(again.outcome).toBe('needs_owner');
+    expect(again.verdicts[0]?.rule).toBe('R-AU7');
+    expect(again.verdicts[0]?.reason).toMatch(/already spent/);
+  });
+
+  it('refuses once the limit is reached, whatever the next plan costs', () => {
+    const content = charter({
+      grants: [grant({ capability: 'research.read', scope: { projects: [SCOPE_ALL] } })],
+      limits: { dailySpendUsd: 20 },
+    });
+    const decision = authorize(
+      request([ask({ capability: 'research.read' })], { estimatedSpendUsd: 0.01 }),
+      context({
+        charter: { versionId: 'v1', digest: 'd1', content },
+        spend: { rollingDayUsd: 20, rollingWeekUsd: 20, measurable: true },
+      }),
+    );
+    expect(decision.outcome).toBe('needs_owner');
+    expect(decision.verdicts[0]?.reason).toMatch(/at or over/);
+  });
+
+  it('enforces the weekly limit as well as the daily one', () => {
+    const content = charter({
+      grants: [grant({ capability: 'research.read', scope: { projects: [SCOPE_ALL] } })],
+      limits: { dailySpendUsd: 20, weeklySpendUsd: 50 },
+    });
+    const decision = authorize(
+      request([ask({ capability: 'research.read' })], { estimatedSpendUsd: 5 }),
+      context({
+        charter: { versionId: 'v1', digest: 'd1', content },
+        spend: { rollingDayUsd: 1, rollingWeekUsd: 48, measurable: true },
+      }),
+    );
+    expect(decision.outcome).toBe('needs_owner');
+    expect(decision.verdicts[0]?.reason).toMatch(/this week/);
+  });
+
+  /*
+   * A limit that cannot be measured is not a limit, and pretending otherwise is worse than saying
+   * so: the owner would be told a ceiling applied when nothing was actually counting.
+   */
+  it('refuses a spending limit it cannot measure itself against', () => {
+    const content = charter({
+      grants: [grant({ capability: 'research.read', scope: { projects: [SCOPE_ALL] } })],
+      limits: { dailySpendUsd: 20 },
+    });
+    const charterContext = { versionId: 'v1', digest: 'd1', content };
+
+    const unreadable = authorize(
+      request([ask({ capability: 'research.read' })], { estimatedSpendUsd: 1 }),
+      context({ charter: charterContext, spend: null }),
+    );
+    expect(unreadable.outcome).toBe('needs_owner');
+    expect(unreadable.verdicts[0]?.reason).toMatch(/cannot read what it has spent/);
+
+    const untrustworthy = authorize(
+      request([ask({ capability: 'research.read' })], { estimatedSpendUsd: 1 }),
+      context({
+        charter: charterContext,
+        spend: { rollingDayUsd: 1, rollingWeekUsd: 1, measurable: false },
+      }),
+    );
+    expect(untrustworthy.outcome).toBe('needs_owner');
+    expect(untrustworthy.verdicts[0]?.reason).toMatch(/no cost attached/);
+  });
+
+  /* A charter with no money limit asks no money questions, measurable or not. */
+  it('says nothing about spending when the charter sets no spending limit', () => {
+    const content = charter({
+      grants: [grant({ capability: 'research.read', scope: { projects: [SCOPE_ALL] } })],
+      limits: { dailySpendUsd: null, weeklySpendUsd: null },
+    });
+    const decision = authorize(
+      request([ask({ capability: 'research.read' })], { estimatedSpendUsd: null }),
+      context({ charter: { versionId: 'v1', digest: 'd1', content }, spend: null }),
+    );
+    expect(decision.outcome).toBe('authorized');
   });
 
   it('authorises nothing at all outside Operator mode', () => {

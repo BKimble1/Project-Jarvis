@@ -396,22 +396,23 @@ export class DrizzleTaskRepository implements TaskRepository {
      * nothing a caller passes can widen the SQL, and an empty intersection degrades to
      * `not m.autonomous` rather than to "everything".
      */
-    const unattendedRoles = sql.raw(
-      AGENT_ROLES.filter((role) => request.unattendedRoles.includes(role))
-        .map((role) => `'${role}'`)
-        .join(', '),
-    );
-    const unattendedTypes = sql.raw(
-      TASK_TYPES.filter((type) => request.unattendedTaskTypes.includes(type))
-        .map((type) => `'${type}'`)
-        .join(', '),
-    );
+    const allowedRoles = AGENT_ROLES.filter((role) => request.unattendedRoles.includes(role));
+    const allowedTypes = TASK_TYPES.filter((type) => request.unattendedTaskTypes.includes(type));
+    /*
+     * Guarded on the *intersections*, not on what the caller passed. A caller handing over values
+     * that are not in the closed vocabularies would otherwise leave an empty list interpolated into
+     * `in ()`, which is a syntax error rather than a refusal — and a claim path that throws instead
+     * of returning nothing is a worker that stops polling.
+     */
     const unattendedClause =
-      request.unattendedRoles.length === 0 || request.unattendedTaskTypes.length === 0
+      allowedRoles.length === 0 || allowedTypes.length === 0
         ? sql`and not m.autonomous`
         : sql`and (
             not m.autonomous
-            or (c.role in (${unattendedRoles}) and c.task_type in (${unattendedTypes}))
+            or (
+              c.role in (${sql.raw(allowedRoles.map((role) => `'${role}'`).join(', '))})
+              and c.task_type in (${sql.raw(allowedTypes.map((type) => `'${type}'`).join(', '))})
+            )
           )`;
 
     const claimed = await this.db.execute(sql`

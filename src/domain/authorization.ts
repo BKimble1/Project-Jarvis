@@ -143,10 +143,36 @@ export interface ActiveCharter {
   readonly content: CharterContent;
 }
 
+/**
+ * What Jarvis has actually spent, over the two windows the charter's limits describe.
+ *
+ * Rolling windows rather than calendar days, and the reason is that a calendar day needs a time
+ * zone and a time zone can be gamed: spend the limit at 23:00, spend it again at 00:01, and a
+ * "daily" limit has authorised twice what the owner wrote. A rolling twenty-four hours needs no
+ * zone and has no seam.
+ *
+ * `measurable` is false when a meaningful share of the underlying records carry no cost at all. A
+ * limit computed from an understated total is a limit that does not hold, and saying so is better
+ * than enforcing a number that is quietly wrong.
+ */
+export interface SpendToDate {
+  readonly rollingDayUsd: number;
+  readonly rollingWeekUsd: number;
+  readonly measurable: boolean;
+}
+
 export interface AuthorizationContext {
   readonly mode: OperatingMode;
   readonly charter: ActiveCharter | null;
   readonly qualificationLevel: QualificationLevel;
+  /**
+   * What has already gone.
+   *
+   * `null` means Jarvis could not read it, which is not the same as zero and is not treated as
+   * zero: a charter that sets a spending limit and a system that cannot see its own spending is a
+   * refusal, because the limit cannot be honoured.
+   */
+  readonly spend: SpendToDate | null;
   readonly now: Date;
 }
 
@@ -269,7 +295,7 @@ export function authorize(
   }
 
   /* R-AU7 — the plan's own shape against the charter's ceilings. */
-  const limitProblem = checkLimits(request, charter.content);
+  const limitProblem = checkLimits(request, charter.content, context.spend);
   if (limitProblem) {
     return {
       ...base,
@@ -449,22 +475,74 @@ interface LimitProblem {
  * estimate, that is a refusal rather than a pass — the alternative is that "I don't know" becomes
  * the cheapest possible answer.
  */
-function checkLimits(request: AuthorizationRequest, content: CharterContent): LimitProblem | null {
+function checkLimits(
+  request: AuthorizationRequest,
+  content: CharterContent,
+  spend: SpendToDate | null,
+): LimitProblem | null {
   const { limits } = content;
 
-  if (limits.dailySpendUsd !== null) {
+  const spendLimited = limits.dailySpendUsd !== null || limits.weeklySpendUsd !== null;
+  if (spendLimited) {
     if (request.estimatedSpendUsd === null) {
       return {
         reason: 'this plan cannot say what it would cost, and your charter sets a spending limit',
         remedy: 'Approve it once, or remove the spending limit.',
       };
     }
-    if (request.estimatedSpendUsd > limits.dailySpendUsd) {
+    /*
+     * A limit Jarvis cannot measure itself against is not a limit. Refusing here is the honest
+     * failure: the alternative is authorising against an unknown total and reporting a ceiling
+     * that was never actually applied.
+     */
+    if (spend === null) {
       return {
-        reason: `this plan expects to spend about $${request.estimatedSpendUsd.toFixed(2)}, over your $${limits.dailySpendUsd.toFixed(2)} daily limit`,
-        remedy: 'Approve it once, or raise the daily limit.',
+        reason:
+          'Jarvis cannot read what it has spent recently, and your charter sets a spending limit',
+        remedy: 'Approve it once, or remove the spending limit until spending can be measured.',
       };
     }
+    if (!spend.measurable) {
+      return {
+        reason:
+          'too much recent work has no cost attached for Jarvis to trust its own spending total, and your charter sets a limit',
+        remedy: 'Approve it once, or remove the spending limit until costs are being reported.',
+      };
+    }
+  }
+
+  const window = (
+    label: string,
+    limit: number | null,
+    already: number,
+    period: string,
+  ): LimitProblem | null => {
+    if (limit === null) return null;
+    /*
+     * Spent *plus* the estimate, not the estimate alone. Comparing only the estimate is how a
+     * $20 daily limit authorises twenty $19 missions, which is the defect this replaced.
+     */
+    if (already >= limit) {
+      return {
+        reason: `Jarvis has already spent $${already.toFixed(2)} ${period}, at or over your $${limit.toFixed(2)} ${label} limit`,
+        remedy: `Approve it once, or raise the ${label} limit.`,
+      };
+    }
+    const projected = already + (request.estimatedSpendUsd ?? 0);
+    if (projected > limit) {
+      return {
+        reason: `this plan expects to spend about $${(request.estimatedSpendUsd ?? 0).toFixed(2)} on top of the $${already.toFixed(2)} already spent ${period}, over your $${limit.toFixed(2)} ${label} limit`,
+        remedy: `Approve it once, or raise the ${label} limit.`,
+      };
+    }
+    return null;
+  };
+
+  if (spend) {
+    const daily = window('daily', limits.dailySpendUsd, spend.rollingDayUsd, 'in the last day');
+    if (daily) return daily;
+    const weekly = window('weekly', limits.weeklySpendUsd, spend.rollingWeekUsd, 'this week');
+    if (weekly) return weekly;
   }
 
   if (request.estimatedMinutes !== null && request.estimatedMinutes > limits.maxMissionMinutes) {

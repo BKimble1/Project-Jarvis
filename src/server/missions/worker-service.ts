@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/domain/errors';
-import type { Mission, MissionState, MissionType } from '@/domain/mission';
+import type {
+  Mission,
+  MissionFailureCode,
+  MissionState,
+  MissionType,
+} from '@/domain/mission';
 import { isReadOnlyMissionType } from '@/domain/mission';
 import type { QualificationLevel } from '@/domain/qualification';
 import {
-  assertUnattended,
   missionUnattendedCapabilities,
   unattendedMissionTypes,
+  unattendedVerdict,
 } from '@/domain/unattended';
 import type { MissionRun } from '@/domain/mission-run';
 import type {
@@ -48,6 +53,7 @@ import type {
   SourceRepository,
 } from '@/server/repositories/types';
 import type { TaskRepository } from '../repositories/factory-types';
+import type { UsageRepository } from '../repositories/accounting-types';
 import { resolveMissionRepository } from './repository-resolution';
 import { issueWorkerToken } from '@/server/workers/auth';
 import type { MissionService } from './mission-service';
@@ -74,6 +80,8 @@ export interface WorkerServiceDeps {
   readonly verifications: VerificationRepository;
   readonly artifacts: ArtifactRepository;
   readonly workers: WorkerRepository;
+  /** The spend ledger. Written from here because this is where a run reports what it cost. */
+  readonly usage: UsageRepository;
   /** Present since Prompt 3, so a task run can be authorised against its own task. */
   readonly tasks?: TaskRepository;
   readonly projects: ProjectRepository;
@@ -274,29 +282,38 @@ export class WorkerService {
       unattendedMissionTypes: unattendedMissionTypes(level),
     });
     if (!claimed) return null;
+
+    /*
+     * The exact gate, after the claim, and the unwind that has to come with it.
+     *
+     * Reaching this is a bug — the filter inside the claim should have skipped the row — but a
+     * gate that only holds while an adjacent SQL clause is correct is not a gate. Getting here
+     * means the two have drifted, and the mission must go back to the queue rather than sit in
+     * `claimed` with a run nobody is executing.
+     *
+     * It returns null rather than throwing. A 403 would kill the worker's poll loop over a
+     * control-plane defect the worker has no part in; the refused mission's own timeline is where
+     * this belongs, and it is written there.
+     */
     if (claimed.mission.autonomous) {
-      assertUnattended(missionUnattendedCapabilities(claimed.mission.type), level);
+      const verdict = unattendedVerdict(missionUnattendedCapabilities(claimed.mission.type), level);
+      if (!verdict.allowed) {
+        await this.releaseClaim(claimed.mission, claimed.run.id, now, {
+          failureCode: 'policy_violation',
+          failureMessage: verdict.reason ?? 'Not qualified to run unattended.',
+        });
+        return null;
+      }
     }
 
     /* Re-validate the approval after claiming: the guard inside the SQL is necessary, not sufficient. */
     const approval = await this.deps.approvals.activeFor(claimed.mission.id);
     if (!approval || approval.planVersion !== claimed.mission.currentPlanVersion) {
-      await this.deps.runs.patch(claimed.run.id, {
-        state: 'failed',
-        finishedAt: now,
+      await this.releaseClaim(claimed.mission, claimed.run.id, now, {
         failureCode: 'plan_superseded',
         failureMessage: 'The approved plan version changed between queueing and claiming.',
+        returnTo: 'awaiting_plan_approval',
       });
-      await this.deps.missions.patch(claimed.mission.id, {
-        activeRunId: null,
-        claimedByWorkerId: null,
-      });
-      await this.deps.missionService.tryMove(
-        claimed.mission,
-        'awaiting_plan_approval',
-        'system',
-        {},
-      );
       return null;
     }
 
@@ -312,6 +329,61 @@ export class WorkerService {
     ]);
 
     return this.buildAssignment(claimed.mission, claimed.run);
+  }
+
+  /**
+   * Undo a claim that should not have happened.
+   *
+   * Both post-claim checks land here, because the unwind is the part that is easy to get subtly
+   * wrong twice: the run has to be failed with a reason, the mission has to let go of it, and the
+   * mission has to end up somewhere a later claim can find it. A mission left in `claimed` with no
+   * worker is invisible to every queue and to every ceiling, and stays that way until somebody
+   * notices it by hand.
+   *
+   * The event is written last and deliberately: it is the only place an owner can see that a
+   * mission was picked up and put down again, which otherwise looks exactly like nothing having
+   * happened at all.
+   */
+  private async releaseClaim(
+    mission: Mission,
+    runId: string,
+    now: Date,
+    input: {
+      readonly failureCode: MissionFailureCode;
+      readonly failureMessage: string;
+      /** Where it should end up after being released. Reached *through* `queued`, see below. */
+      readonly returnTo?: MissionState;
+    },
+  ): Promise<void> {
+    await this.deps.runs.patch(runId, {
+      state: 'failed',
+      finishedAt: now,
+      failureCode: input.failureCode,
+      failureMessage: input.failureMessage,
+    });
+    await this.deps.missions.patch(mission.id, { activeRunId: null, claimedByWorkerId: null });
+
+    /*
+     * Out through `queued`, always, and then on if it needs to go further.
+     *
+     * `claimed → queued` is the only exit from `claimed` the state machine gives the system, and
+     * the previous version of this unwind went straight for `awaiting_plan_approval` — which is
+     * not in the table, so `tryMove` swallowed the conflict and left the mission sitting in
+     * `claimed` with no run and no worker. A mission in that state is invisible to every queue and
+     * every ceiling, and stays there until somebody finds it by hand.
+     */
+    const released = await this.deps.missionService.tryMove(mission, 'queued', 'system', {});
+    if (input.returnTo && input.returnTo !== 'queued') {
+      await this.deps.missionService.tryMove(released, input.returnTo, 'system', {});
+    }
+
+    await this.deps.events.record(mission.id, {
+      type: 'policy_refusal',
+      actor: 'system',
+      level: 'warning',
+      summary: input.failureMessage,
+      detail: { runId, failureCode: input.failureCode },
+    });
   }
 
   /** Planning runs bypass the execution queue: they change nothing, so they need no approval. */
@@ -518,6 +590,45 @@ export class WorkerService {
         ? { failureMessage: input.failureMessage ?? null }
         : {}),
     };
+
+    /*
+     * The ledger.
+     *
+     * Written on every report that carries usage rather than only on the last, because a run that
+     * dies without a final report still spent what it spent. `upsertForRun` replaces one row keyed
+     * on the run, so repeating the report cannot double-count — the worker sends the run's total
+     * so far, not the delta, and appending those would count the same tokens once per report.
+     *
+     * `costBasis` is `reported` only when the provider actually told us a number. An absent cost
+     * is recorded as unknown, never as zero: zero is a claim that something was free, and a budget
+     * computed from zeroes is a budget that does not hold.
+     */
+    if (input.usage) {
+      await this.deps.usage.upsertForRun({
+        /*
+         * Derived from the run rather than from the task, because the task would cost a query on
+         * every report to distinguish a review from a repair — a distinction that changes a label
+         * and nothing else. An inspection is separated because it is genuinely a different kind of
+         * spending: read-only, and the one kind that runs before anybody approved anything.
+         */
+        kind: run.kind === 'inspection' ? 'inspection' : 'agent_task',
+        runId: run.id,
+        missionId: mission.id,
+        taskId: run.taskId ?? null,
+        projectId: mission.projectId,
+        inputTokens: input.usage.inputTokens ?? null,
+        outputTokens: input.usage.outputTokens ?? null,
+        cachedInputTokens: input.usage.cacheReadTokens ?? null,
+        reportedCostUsd: input.usage.totalCostUsd ?? null,
+        costBasis: input.usage.totalCostUsd === null || input.usage.totalCostUsd === undefined
+          ? 'unknown'
+          : 'reported',
+        durationMs: input.usage.durationMs ?? null,
+        failed: input.missionState === 'failed',
+        failureCode: input.failureCode ?? null,
+        occurredAt: run.startedAt ? new Date(run.startedAt) : now,
+      });
+    }
 
     if (!input.missionState) {
       /* Metadata only: record the activity and leave the state machine untouched. */

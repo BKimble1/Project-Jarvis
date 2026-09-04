@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { NotFoundError } from '@/domain/errors';
+import { ConflictError, NotFoundError } from '@/domain/errors';
 import { EMPTY_TOTALS } from '@/domain/budget';
 import type { Budget, ModelPrice, UsageKind, UsageRecord, UsageTotals } from '@/domain/budget';
 import type { ConnectorId, ConnectorRecord, ConnectorState } from '@/domain/connector';
@@ -88,6 +88,76 @@ export class DrizzleUsageRepository implements UsageRepository {
       .returning();
     const row = rows[0];
     return row ? toUsageRecord(row) : null;
+  }
+
+  /**
+   * Write or replace the ledger entry for one run.
+   *
+   * `onConflictDoUpdate` on the same partial index `record` uses, so a run that reports its usage
+   * six times leaves one row carrying the sixth report rather than six rows carrying a running
+   * total six times over. The key is derived here rather than taken from the caller, so there is
+   * exactly one shape of it and no way for two call sites to disagree about what identifies a run.
+   */
+  async upsertForRun(input: UsageCreateInput & { readonly runId: string }): Promise<UsageRecord> {
+    const key = `mission_run:${input.runId}`;
+    const values = {
+      kind: input.kind,
+      providerName: input.providerName ?? null,
+      modelName: input.modelName ?? null,
+      missionId: input.missionId ?? null,
+      taskId: input.taskId ?? null,
+      runId: input.runId,
+      projectId: input.projectId ?? null,
+      repositoryFullName: input.repositoryFullName ?? null,
+      inputTokens: input.inputTokens ?? null,
+      outputTokens: input.outputTokens ?? null,
+      cachedInputTokens: input.cachedInputTokens ?? null,
+      reportedCostUsd: input.reportedCostUsd ?? null,
+      estimatedCostUsd: input.estimatedCostUsd ?? null,
+      costBasis: input.costBasis,
+      durationMs: input.durationMs ?? null,
+      retryCount: input.retryCount ?? 0,
+      failed: input.failed ?? false,
+      failureCode: input.failureCode ?? null,
+      idempotencyKey: key,
+    };
+
+    const rows = await this.db
+      .insert(usageRecords)
+      .values({ ...values, ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}) })
+      .onConflictDoUpdate({
+        target: usageRecords.idempotencyKey,
+        /*
+         * `targetWhere`, not `where`. The unique index is partial, so its predicate belongs in the
+         * conflict *target* — `on conflict (key) where … do update` — and Drizzle's plain `where`
+         * emits it after the SET instead, which Postgres rejects outright with "there is no unique
+         * or exclusion constraint matching the ON CONFLICT specification".
+         */
+        targetWhere: sql`${usageRecords.idempotencyKey} is not null`,
+        set: {
+          modelName: values.modelName,
+          providerName: values.providerName,
+          taskId: values.taskId,
+          inputTokens: values.inputTokens,
+          outputTokens: values.outputTokens,
+          cachedInputTokens: values.cachedInputTokens,
+          reportedCostUsd: values.reportedCostUsd,
+          estimatedCostUsd: values.estimatedCostUsd,
+          costBasis: values.costBasis,
+          durationMs: values.durationMs,
+          failed: values.failed,
+          failureCode: values.failureCode,
+          /*
+           * `occurred_at` deliberately keeps its original value. A long run should count against
+           * the window it started in rather than sliding forward every time it reports, or a
+           * mission that ran for two hours would never appear to have spent anything yesterday.
+           */
+        },
+      })
+      .returning();
+    const row = rows[0];
+    if (!row) throw new ConflictError('The usage record could not be written.');
+    return toUsageRecord(row);
   }
 
   async list(

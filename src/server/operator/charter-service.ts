@@ -11,7 +11,9 @@ import {
   type AuthorizationDecision,
   type AuthorizationRequest,
   type CapabilityRequest,
+  type SpendToDate,
 } from '@/domain/authorization';
+import { enforceableSpend, spendIsMeasurable } from '@/domain/budget';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/domain/errors';
 import {
   assertModeChange,
@@ -22,6 +24,7 @@ import {
 } from '@/domain/operating-mode';
 import type { QualificationLevel } from '@/domain/qualification';
 import type { AuditRepository } from '@/server/repositories/accounting-types';
+import type { UsageRepository } from '@/server/repositories/accounting-types';
 import type {
   AuthorizationDecisionRepository,
   CharterRepository,
@@ -52,11 +55,15 @@ import type {
  * refactor could invert.
  */
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export interface CharterServiceDeps {
   readonly charters: CharterRepository;
   readonly state: OperatorStateRepository;
   readonly decisions: AuthorizationDecisionRepository;
   readonly audit: AuditRepository;
+  /** The spend ledger. Read at decision time, so a charter's money limit is about real money. */
+  readonly usage: UsageRepository;
   /** Asked at decision time, never cached: a demotion mid-shift must take effect immediately. */
   readonly currentLevel: () => Promise<QualificationLevel>;
   readonly clock?: () => Date;
@@ -338,6 +345,7 @@ export class CharterService {
         ? { versionId: usable.id, digest: usable.digest, content: usable.content }
         : null,
       qualificationLevel,
+      spend: await this.spendToDate(now),
       now,
     });
 
@@ -421,6 +429,34 @@ export class CharterService {
      * the values, not another `?? throw`.
      */
     return { ...stored, charterVersionId: charter.id, charterDigest: charter.digest };
+  }
+
+  /**
+   * What Jarvis has spent over the two windows the charter's limits describe.
+   *
+   * Rolling windows, computed here rather than by the pure decision procedure because they are a
+   * database question. `null` on failure rather than zero — a spend total that could not be read
+   * is not a spend total of nothing, and `checkLimits` refuses on the difference.
+   */
+  private async spendToDate(now: Date): Promise<SpendToDate | null> {
+    try {
+      const [day, week] = await Promise.all([
+        this.deps.usage.totals({ from: new Date(now.getTime() - DAY_MS), to: now }),
+        this.deps.usage.totals({ from: new Date(now.getTime() - 7 * DAY_MS), to: now }),
+      ]);
+      return {
+        rollingDayUsd: enforceableSpend(day),
+        rollingWeekUsd: enforceableSpend(week),
+        /*
+         * Measured over the week, not the day. A quiet morning with two unpriced calls would
+         * otherwise look unmeasurable and stop everything, while the week's total is exactly the
+         * figure the weekly limit is enforced against.
+         */
+        measurable: spendIsMeasurable(week),
+      };
+    } catch {
+      return null;
+    }
   }
 
   async decisionsForMission(missionId: string): Promise<readonly StoredAuthorizationDecision[]> {

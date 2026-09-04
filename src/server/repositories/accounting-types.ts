@@ -57,6 +57,17 @@ export interface UsageFilter {
 export interface UsageRepository {
   /** Returns null when the idempotency key has already been recorded. */
   record(input: UsageCreateInput): Promise<UsageRecord | null>;
+  /**
+   * Write or *replace* the ledger entry for one run.
+   *
+   * The distinction from `record` is the whole reason this exists. A worker reports its usage
+   * repeatedly during a run, and each report carries the run's total so far rather than the delta
+   * since the last one. Appending those would count the same tokens once per report; ignoring all
+   * but the last would lose the usage of any run that ended without a final report. Replacing a
+   * single row keyed on the run does neither, and it matches how the run's own usage columns
+   * already behave.
+   */
+  upsertForRun(input: UsageCreateInput & { readonly runId: string }): Promise<UsageRecord>;
   list(filter?: UsageFilter & { readonly limit?: number }): Promise<readonly UsageRecord[]>;
   /**
    * Aggregate in the database rather than by reading rows into memory.

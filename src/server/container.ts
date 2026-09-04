@@ -404,6 +404,9 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  /* Declared before the worker service, which writes the spend ledger from every run report. */
+  const usage = new DrizzleUsageRepository(db);
+
   /* Declared before the worker service, which authorises a task run against its own task. */
   const graphs = new DrizzleTaskGraphRepository(db);
 
@@ -437,6 +440,7 @@ export function buildServices(
     sources,
     evidence,
     missionService: missions,
+    usage,
     concurrencyLimit: config.missions.concurrencyLimit,
     allowWebResearch: config.missions.allowWebResearch,
     currentLevel,
@@ -519,7 +523,6 @@ export function buildServices(
   const notificationPreferences = new DrizzlePreferenceRepository(db);
   const push = new DrizzlePushRepository(db);
   const voice = new DrizzleVoiceRepository(db);
-  const usage = new DrizzleUsageRepository(db);
   const budgetRepo = new DrizzleBudgetRepository(db);
   const prices = new DrizzlePriceRepository(db);
   const connectorRepo = new DrizzleConnectorRepository(db);
@@ -689,6 +692,7 @@ export function buildServices(
     state: operatorStateRepo,
     decisions: authorizationDecisions,
     audit,
+    usage,
     currentLevel,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });

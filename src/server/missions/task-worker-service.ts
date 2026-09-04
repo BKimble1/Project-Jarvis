@@ -3,10 +3,10 @@ import { ConflictError, ForbiddenError, NotFoundError } from '@/domain/errors';
 import { AGENT_ROLES, isReviewRole, isWriteRole, type AgentRole } from '@/domain/agent-role';
 import type { QualificationLevel } from '@/domain/qualification';
 import {
-  assertUnattended,
   taskUnattendedCapabilities,
   unattendedTaskRoles,
   unattendedTaskTypes,
+  unattendedVerdict,
 } from '@/domain/unattended';
 import {
   assertTaskTransition,
@@ -136,9 +136,45 @@ export class TaskWorkerService {
     });
     if (!claimed) return null;
 
+    /*
+     * The exact gate, and the unwind that has to come with it.
+     *
+     * Reaching the refusal is a bug — the two filters above should have skipped the row — but a
+     * gate that only holds while an adjacent SQL clause is correct is not a gate. If it fires, the
+     * task has to go back to `ready` rather than sit in `claimed` with a run nobody is executing,
+     * where it is invisible to every ceiling and blocks its own mission indefinitely.
+     *
+     * It returns null rather than throwing: a 403 would kill the worker's poll loop over a
+     * control-plane defect the worker had no part in.
+     */
     const mission = await this.deps.missions.findById(claimed.task.missionId);
     if (mission?.autonomous) {
-      assertUnattended(taskUnattendedCapabilities(claimed.task.role, claimed.task.taskType), level);
+      const verdict = unattendedVerdict(
+        taskUnattendedCapabilities(claimed.task.role, claimed.task.taskType),
+        level,
+      );
+      if (!verdict.allowed) {
+        await this.deps.runs.patch(claimed.runId, {
+          state: 'failed',
+          finishedAt: this.clock(),
+          failureCode: 'policy_violation',
+          failureMessage: verdict.reason ?? 'Not qualified to run unattended.',
+        });
+        await this.deps.tasks.transition(
+          claimed.task.id,
+          'ready',
+          { assignedWorkerId: null, activeRunId: null, lastActivityAt: this.clock() },
+          'claimed',
+        );
+        await this.deps.events.record(claimed.task.missionId, {
+          type: 'policy_refusal',
+          actor: 'system',
+          level: 'warning',
+          summary: verdict.reason ?? 'Not qualified to run unattended.',
+          detail: { taskKey: claimed.task.key, runId: claimed.runId },
+        });
+        return null;
+      }
     }
 
     await this.deps.events.record(claimed.task.missionId, {

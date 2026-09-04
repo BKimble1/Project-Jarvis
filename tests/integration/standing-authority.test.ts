@@ -363,6 +363,215 @@ describe('standing authority', () => {
     });
   });
 
+  /* ------------------------------------------------------------- releasing */
+
+  describe('putting a mission back down', () => {
+    /*
+     * The unwind, which had never been exercised.
+     *
+     * When an approval turns out to be invalid between queueing and claiming, the mission has to
+     * go back somewhere a later claim can find it. The previous version went straight for
+     * `awaiting_plan_approval` — a move the state machine does not have from `claimed` — so
+     * `tryMove` swallowed the conflict and the mission stayed in `claimed` with no run and no
+     * worker: invisible to every queue and every ceiling, and stuck there until found by hand.
+     */
+    it('returns a mission whose approval vanished, rather than leaving it stuck', async () => {
+      const { missions, missionRepo, approvals, workerService } = harness.services;
+
+      const project = await harness.services.projects.create(
+        projectInputSchema.parse({ name: 'Released', type: 'software' }),
+      );
+      await harness.services.sources.addGithubSource(project.id, {
+        owner: 'test-owner',
+        repo: 'released',
+        isPrimary: true,
+      });
+      const mission = await missionRepo.create({
+        rawRequest: 'Tidy the importer.',
+        title: 'Tidy the importer',
+        type: 'code_change',
+        priority: 'medium',
+        riskLevel: 'low',
+        riskRuleIds: [],
+        riskReasons: [],
+        ownerLogin: 'owner',
+        state: 'planning',
+        constraints: [],
+        doNotTouch: [],
+        acceptanceCriteria: [],
+        projectId: project.id,
+      });
+      await missions.storePlan(mission, PLAN, 'jarvis_deterministic', 'verified', null);
+      await missions.approvePlan(
+        mission.id,
+        { planVersion: 1, acknowledgedRiskLevel: 'low', pausedProjectOverride: false },
+        'owner',
+      );
+
+      /* The approval goes without the mission's own columns changing, so the claim still matches. */
+      await approvals.revokeAll(mission.id, 'Withdrawn.');
+
+      const enrolled = await workerService.enrol('release-worker', 2);
+      const claimed = await workerService.claim(enrolled.worker.id, {
+        heartbeat: HEARTBEAT,
+        accepts: ['execution'],
+      });
+
+      expect(claimed).toBeNull();
+      const after = await missionRepo.findById(mission.id);
+      expect(after?.state).toBe('awaiting_plan_approval');
+      expect(after?.activeRunId).toBeNull();
+      expect(after?.claimedByWorkerId).toBeNull();
+
+      /* And an owner can see that it was picked up and put down again. */
+      const detail = await missions.detail(mission.id);
+      expect(detail.events.some((event) => event.type === 'policy_refusal')).toBe(true);
+    });
+  });
+
+  /* -------------------------------------------------------------- the money */
+
+  describe('the spend ledger', () => {
+    let counter = 0;
+
+    async function runningMission() {
+      counter += 1;
+      const project = await harness.services.projects.create(
+        projectInputSchema.parse({ name: `Ledger ${counter}`, type: 'software' }),
+      );
+      await harness.services.sources.addGithubSource(project.id, {
+        owner: 'test-owner',
+        repo: `ledger-${counter}`,
+        isPrimary: true,
+      });
+      const mission = await harness.services.missionRepo.create({
+        rawRequest: 'Tidy the importer.',
+        title: `Tidy the importer ${counter}`,
+        type: 'code_change',
+        priority: 'medium',
+        riskLevel: 'low',
+        riskRuleIds: [],
+        riskReasons: [],
+        ownerLogin: 'owner',
+        state: 'planning',
+        constraints: [],
+        doNotTouch: [],
+        acceptanceCriteria: [],
+        projectId: project.id,
+      });
+      await harness.services.missions.storePlan(
+        mission,
+        PLAN,
+        'jarvis_deterministic',
+        'verified',
+        null,
+      );
+      await harness.services.missions.approvePlan(
+        mission.id,
+        { planVersion: 1, acknowledgedRiskLevel: 'low', pausedProjectOverride: false },
+        'owner',
+      );
+      const enrolled = await harness.services.workerService.enrol(`ledger-worker-${counter}`, 2);
+      const assignment = await harness.services.workerService.claim(enrolled.worker.id, {
+        heartbeat: HEARTBEAT,
+        accepts: ['execution'],
+      });
+      expect(assignment).not.toBeNull();
+      return { workerId: enrolled.worker.id, runId: assignment!.runId, missionId: mission.id };
+    }
+
+    /*
+     * The worker reports the run's total so far, not the delta since its last report. Appending
+     * those would count the same tokens once per report, which is how a spending ledger comes to
+     * say a mission cost four times what it did.
+     */
+    it('replaces one row per run rather than appending a running total', async () => {
+      const { workerId, runId, missionId } = await runningMission();
+
+      await harness.services.workerService.reportRunState(workerId, {
+        runId,
+        usage: { inputTokens: 1000, outputTokens: 200, totalCostUsd: 0.4, turns: 2 },
+      });
+      await harness.services.workerService.reportRunState(workerId, {
+        runId,
+        usage: { inputTokens: 3000, outputTokens: 900, totalCostUsd: 1.25, turns: 6 },
+      });
+
+      const records = await harness.services.usage.list({ missionId });
+      expect(records).toHaveLength(1);
+      expect(records[0]?.outputTokens).toBe(900);
+      expect(records[0]?.reportedCostUsd).toBeCloseTo(1.25, 6);
+      expect(records[0]?.costBasis).toBe('reported');
+
+      const totals = await harness.services.usage.totals({ missionId });
+      expect(totals.reportedUsd).toBeCloseTo(1.25, 6);
+      expect(totals.recordCount).toBe(1);
+    });
+
+    /*
+     * An absent cost is unknown, never zero. Zero is a claim that something was free, and a budget
+     * computed from zeroes is a budget that does not hold — which `spendIsMeasurable` then says.
+     */
+    it('records an absent cost as unknown rather than as free', async () => {
+      const { workerId, runId, missionId } = await runningMission();
+      await harness.services.workerService.reportRunState(workerId, {
+        runId,
+        usage: { inputTokens: 500, outputTokens: 100 },
+      });
+
+      const totals = await harness.services.usage.totals({ missionId });
+      expect(totals.unknownCount).toBe(1);
+      expect(totals.reportedUsd).toBe(0);
+      const records = await harness.services.usage.list({ missionId });
+      expect(records[0]?.costBasis).toBe('unknown');
+      expect(records[0]?.reportedCostUsd).toBeNull();
+    });
+
+    /*
+     * The whole point of the ledger, exercised through the decision that reads it: a charter's
+     * daily limit is about a total, so once the total is reached the next plan is refused however
+     * cheap it claims to be.
+     */
+    it('refuses a plan once the charter’s daily limit has already gone', async () => {
+      const { charterService } = harness.services;
+      const version = await charterService.draft({
+        content: charter({
+          grants: [{ capability: 'project.status.update', scope: { projects: ['*'] } } as GrantInput],
+          limits: { dailySpendUsd: 1 },
+        }),
+        authoredBy: 'owner',
+      });
+      await charterService.activate(version.id, 'owner');
+      await charterService.setMode({ to: 'supervised', actor: 'owner', changedBy: 'owner' });
+      await charterService.setMode({ to: 'operator', actor: 'owner', changedBy: 'owner' });
+
+      const cheap = await charterService.decide(
+        request({
+          capabilities: [ask({ capability: 'project.status.update' })],
+          estimatedSpendUsd: 0.1,
+        }),
+      );
+      expect(cheap.decision.outcome).not.toBe('needs_owner');
+
+      /* Spend the limit through a real run report, not by writing the ledger directly. */
+      const { workerId, runId } = await runningMission();
+      await harness.services.workerService.reportRunState(workerId, {
+        runId,
+        usage: { inputTokens: 40_000, outputTokens: 9_000, totalCostUsd: 1.5 },
+      });
+
+      const after = await charterService.decide(
+        request({
+          capabilities: [ask({ capability: 'project.status.update' })],
+          estimatedSpendUsd: 0.1,
+        }),
+      );
+      expect(after.decision.outcome).toBe('needs_owner');
+      expect(after.decision.verdicts[0]?.rule).toBe('R-AU7');
+      expect(after.decision.verdicts[0]?.reason).toMatch(/already spent/);
+    });
+  });
+
   /* ------------------------------------------- the whole path, end to end */
 
   describe('approving on standing authority', () => {
