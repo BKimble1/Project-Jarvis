@@ -509,11 +509,12 @@ evidence sent to the model.
 
 ## Part 13 — missing configuration
 
-| what                           | effect while absent                                               |
-| ------------------------------ | ----------------------------------------------------------------- |
-| An answer provider             | Every answer is `evidence_only`. Honest, and useful.              |
-| An embedding provider          | Retrieval is `lexical_only` and says so in every answer's gaps.   |
-| `JARVIS_ASK_SCRIPTED_PROVIDER` | Only meaningful outside production, only with a test-auth secret. |
+| what                           | effect while absent                                                           |
+| ------------------------------ | ----------------------------------------------------------------------------- |
+| An answer provider             | Every answer is `evidence_only`. Honest, and useful.                          |
+| An embedding provider          | Retrieval is `lexical_only` and says so in every answer's gaps.               |
+| `JARVIS_ASK_SCRIPTED_PROVIDER` | Only meaningful outside production, only with a test-auth secret.             |
+| `JARVIS_E2E`                   | Read only by `next.config.ts`, to drop source maps during the end-to-end run. |
 
 ---
 
