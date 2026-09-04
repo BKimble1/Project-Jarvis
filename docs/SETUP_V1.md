@@ -227,8 +227,10 @@ show a repository name, a branch, a diff, a file path, a transcript, a pull-requ
 credential — and there is no display-authenticated write of any kind, so approve, pause, stop and
 retry are unreachable rather than hidden.
 
-Kiosk instructions for Android and the Raspberry Pi are in [OPERATIONS.md](OPERATIONS.md). Do not
-put the display token in a script you commit.
+Kiosk instructions for Android and the Raspberry Pi are in [WALLBOARD.md](WALLBOARD.md) — how to
+keep the screen on, how to make it come back after a reboot, and how to revoke a screen you no
+longer control. Do not put the display token in a script you commit; it is typed on the device
+once and lives in that browser's cookie store afterwards.
 
 ## 18. Make it start after a reboot
 

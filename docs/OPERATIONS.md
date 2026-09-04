@@ -88,6 +88,12 @@ is served: a future field named `pullRequestUrl` fails the request rather than r
 touching the device. Revoke a display you have lost, sold, or lent to a room you no longer control
 — and revoke rather than trying to recover a token, because a token cannot be recovered.
 
+### Setting one up
+
+[WALLBOARD.md](WALLBOARD.md) has the exact steps for an Android tablet and a Raspberry Pi kiosk:
+keeping the screen awake, starting full-screen after a reboot, and where the credential lives
+(the device's own cookie store, never a script).
+
 ### The screen itself
 
 Designed to be read from across a room: large type, high contrast, the numbers that matter

@@ -10,6 +10,7 @@ import { RANKING_VERSION, buildScopeFilter } from '@/domain/retrieval';
 import { requireOwnerPage } from '@/server/auth/guard';
 import { getServices } from '@/server/container';
 import { CapacityControls } from '@/components/operations/capacity-controls';
+import { ReadinessPanel } from '@/components/operations/readiness-panel';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { RelativeTime } from '@/components/relative-time';
@@ -104,6 +105,15 @@ export default async function OperationsPage() {
         </span>
         <span className="ml-auto text-xs text-[var(--color-accent-text)]">See what was proved</span>
       </Link>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Readiness</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <ReadinessPanel />
+        </CardContent>
+      </Card>
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="Right now">
         <Tile

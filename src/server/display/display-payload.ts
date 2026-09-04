@@ -144,8 +144,6 @@ export async function buildDisplayPayload(
       failingChecks,
       awaitingOwner,
     },
-    /* Stage names only — never a build number, a bundle identifier or a repository. */
-    testFlight: [],
   };
 
   /*

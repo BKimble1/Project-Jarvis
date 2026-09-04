@@ -170,11 +170,6 @@ export interface DisplayPayload {
     readonly failingChecks: number;
     readonly awaitingOwner: number;
   };
-  readonly testFlight: readonly {
-    readonly project: string;
-    readonly stage: string;
-    readonly state: string;
-  }[];
 }
 
 /**
