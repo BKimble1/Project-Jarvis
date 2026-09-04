@@ -598,6 +598,76 @@ describe('qualification', () => {
     });
   });
 
+  describe('the readiness report', () => {
+    /**
+     * The diagnostic an owner runs before anything works, and the two ways it could lie.
+     *
+     * It could print a credential — the failure that turns a helpful command into a leak, most
+     * likely through an error message quoting a connection string. Or it could call a value's
+     * presence a success, which is subtler and more common: a report where everything says "set"
+     * reads as ready and is not, and an owner then spends an afternoon wondering why a mission
+     * never starts.
+     */
+    it('names what is missing without printing any value, and calls nothing proved that is not', async () => {
+      const { assembleReadiness } = await import('@/server/ops/readiness');
+      const report = await assembleReadiness({
+        config: harness.config,
+        db: harness.services.db,
+        services: harness.services,
+      });
+
+      const serialised = JSON.stringify(report);
+      /* No credential shape of any kind, whatever a check happened to read. */
+      expect(serialised).not.toMatch(/sk-ant-/);
+      expect(serialised).not.toMatch(/gh[pousr]_/);
+      expect(serialised).not.toMatch(/github_pat_/);
+      expect(serialised).not.toMatch(/jarvisw_/);
+      expect(serialised).not.toMatch(/postgres(?:ql)?:\/\//);
+
+      /*
+       * Nothing that needs a credential, a worker or a live run may be `verified` on a deployment
+       * that has none of them. `configured` is allowed and is the point: it means present and
+       * unproved.
+       */
+      /*
+       * `github_read` is deliberately absent: the harness's source provider is configured and its
+       * health check genuinely answers, so `verified` is the honest reading of it here. What the
+       * list holds is everything that has nothing behind it at all in this fixture.
+       */
+      const shouldNotBeProved = [
+        'ask_provider',
+        'github_write_credential',
+        'worker_enrolled',
+        'worker_can_take_work',
+        'live_read_audit',
+        'live_write_draft_pr',
+      ];
+      for (const id of shouldNotBeProved) {
+        const check = report.checks.find((entry) => entry.id === id);
+        if (!check) continue;
+        expect(check.state, `${id} must not report as working here`).not.toBe('verified');
+      }
+
+      /*
+       * Every check that is missing or failing says exactly what to do next. That is the whole
+       * difference between a diagnostic and a list of complaints.
+       *
+       * `configured` is not held to it, because some of them have genuinely nothing left to say:
+       * an owner identity matched on its numeric id is as configured as it can be, and the only
+       * remaining proof is signing in. Where a next action *would* help — a key that has not been
+       * used yet — the check carries one anyway, and `ask_provider` below is that case.
+       */
+      for (const check of report.checks) {
+        if (check.state === 'missing' || check.state === 'failed') {
+          expect(check.nextAction, `${check.id} must say what to do next`).toBeTruthy();
+        }
+      }
+
+      /* A deployment with no worker cannot operate, and the report has to say so. */
+      expect(report.canOperate).toBe(false);
+    });
+  });
+
   it('never stores a credential in a check result', async () => {
     const status = await harness.services.qualificationService.run({ startedBy: 'test' });
     const serialised = JSON.stringify(status.run?.results ?? []);

@@ -139,6 +139,11 @@ The end-to-end suite runs as two Playwright invocations, one per browser project
 topology Phase 4C stabilised over five consecutive clean runs, and `npm run verify` now runs it the
 same way so the two cannot drift apart.
 
+The diagnostic has its own coverage, because a diagnostic that lies is worse than none: one test
+asserts no credential shape of any kind survives into the report, that nothing needing a
+credential or a worker reports as _working_ on a deployment that has neither, and that every
+missing or failing check says what to do next.
+
 The skipped cases are deliberate: the mission smoke test and the viewport sweep each run once, under
 the desktop project, because they prove a backend property and set their own viewports respectively.
 Each says so in the file.
