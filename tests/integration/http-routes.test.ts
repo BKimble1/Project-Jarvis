@@ -424,6 +424,225 @@ describe('HTTP route handlers', () => {
     expect(response.status).toBe(403);
   });
 
+
+  /* ---------------------------------------------------------------- operator */
+
+  describe('standing authority', () => {
+    const CHARTER = {
+      goals: [{ id: 'g1', statement: 'Keep the invoice work moving', priority: 1 }],
+      projectIds: [],
+      grants: [{ capability: 'project.status.update', scope: { projects: ['*'] } }],
+      limits: {},
+      communication: {},
+    };
+
+    async function draftAndActivate(): Promise<string> {
+      const charter = await import('@/app/api/operator/charter/route');
+      const created = await charter.POST(
+        post('/api/operator/charter', { json: { content: CHARTER } }),
+      );
+      expect(created.status).toBe(201);
+      const id = (await body(created)).charter.id as string;
+
+      const activate = await import('@/app/api/operator/charter/[id]/activate/route');
+      const activated = await activate.POST(
+        post(`/api/operator/charter/${id}/activate`),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(activated.status).toBe(200);
+      return id;
+    }
+
+    it('refuses every operator endpoint without a session', async () => {
+      const [operator, charter, mode, decisions] = await Promise.all([
+        import('@/app/api/operator/route'),
+        import('@/app/api/operator/charter/route'),
+        import('@/app/api/operator/mode/route'),
+        import('@/app/api/operator/decisions/route'),
+      ]);
+
+      const responses = await Promise.all([
+        operator.GET(new Request(`${BASE}/api/operator`)),
+        charter.POST(post('/api/operator/charter', { json: { content: CHARTER } })),
+        mode.POST(post('/api/operator/mode', { json: { mode: 'operator' } })),
+        decisions.GET(new Request(`${BASE}/api/operator/decisions`)),
+      ]);
+
+      for (const response of responses) {
+        expect(response.status).toBe(401);
+        expect((await body(response)).error.code).toBe('unauthorized');
+      }
+    });
+
+    /*
+     * A charter is the owner's document, so writing one is a cross-origin-protected owner action
+     * like every other write. A CSRF-shaped request that could grant Jarvis capabilities would be
+     * the worst possible one to leave open.
+     */
+    it('refuses a charter written from another origin', async () => {
+      await signIn();
+      const charter = await import('@/app/api/operator/charter/route');
+      const response = await charter.POST(
+        post('/api/operator/charter', { json: { content: CHARTER }, origin: 'https://evil.test' }),
+      );
+      expect(response.status).toBe(403);
+    });
+
+    it('saves a charter as a draft that is explicitly not in force', async () => {
+      await signIn();
+      const charter = await import('@/app/api/operator/charter/route');
+      const response = await charter.POST(
+        post('/api/operator/charter', { json: { content: CHARTER } }),
+      );
+
+      expect(response.status).toBe(201);
+      const payload = await body(response);
+      expect(payload.inForce).toBe(false);
+      expect(payload.message).toContain('authorises nothing until you activate it');
+
+      const operator = await import('@/app/api/operator/route');
+      const state = await body(await operator.GET(new Request(`${BASE}/api/operator`)));
+      expect(state.charter).toBeNull();
+      expect(state.mode.current).toBe('off');
+    });
+
+    it('refuses a charter whose grants cannot be honoured as written', async () => {
+      await signIn();
+      const charter = await import('@/app/api/operator/charter/route');
+      const response = await charter.POST(
+        post('/api/operator/charter', {
+          json: {
+            content: {
+              ...CHARTER,
+              /* `deploy.website` must name its environments; `*` is not an answer. */
+              grants: [{ capability: 'deploy.website', scope: { environments: ['*'] } }],
+            },
+          },
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect((await body(response)).error.message).toContain('cannot be honoured');
+    });
+
+    /*
+     * The one move that stops a person approving each mission needs a typed phrase. It is not a
+     * second factor and does not pretend to be — the session already authenticated the owner.
+     * It is there so the move cannot be made by a mis-click on a page somebody was skimming.
+     */
+    it('will not hand over standing authority on a mis-click', async () => {
+      await signIn();
+      await draftAndActivate();
+      const mode = await import('@/app/api/operator/mode/route');
+
+      await mode.POST(post('/api/operator/mode', { json: { mode: 'supervised' } }));
+      const unconfirmed = await mode.POST(
+        post('/api/operator/mode', { json: { mode: 'operator' } }),
+      );
+      expect(unconfirmed.status).toBe(422);
+      expect((await body(unconfirmed)).error.code).toBe('confirmation_required');
+
+      const confirmed = await mode.POST(
+        post('/api/operator/mode', {
+          json: { mode: 'operator', confirmation: 'let Jarvis operate on its own' },
+        }),
+      );
+      expect(confirmed.status).toBe(200);
+      expect((await body(confirmed)).mode).toBe('operator');
+    });
+
+    /* Reaching for the brake must never require typing a sentence first. */
+    it('accepts an emergency stop with no ceremony at all', async () => {
+      await signIn();
+      await draftAndActivate();
+      const mode = await import('@/app/api/operator/mode/route');
+      await mode.POST(post('/api/operator/mode', { json: { mode: 'supervised' } }));
+      await mode.POST(
+        post('/api/operator/mode', {
+          json: { mode: 'operator', confirmation: 'let Jarvis operate on its own' },
+        }),
+      );
+
+      const stopped = await mode.POST(
+        post('/api/operator/mode', { json: { mode: 'emergency_stop' } }),
+      );
+      expect(stopped.status).toBe(200);
+      expect((await body(stopped)).mode).toBe('emergency_stop');
+    });
+
+    it('refuses operator mode with no charter in force', async () => {
+      await signIn();
+      const mode = await import('@/app/api/operator/mode/route');
+      await mode.POST(post('/api/operator/mode', { json: { mode: 'supervised' } }));
+
+      const response = await mode.POST(
+        post('/api/operator/mode', {
+          json: { mode: 'operator', confirmation: 'let Jarvis operate on its own' },
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect((await body(response)).error.message).toContain('without a charter in force');
+    });
+
+    /*
+     * The three answers stay separate. Operating *and* still refusing to write code is the normal
+     * state of a fresh deployment, and an interface that could not say so would read as broken.
+     */
+    it('reports the mode, the charter and the rung as three separate answers', async () => {
+      await signIn();
+      await draftAndActivate();
+      const mode = await import('@/app/api/operator/mode/route');
+      await mode.POST(post('/api/operator/mode', { json: { mode: 'supervised' } }));
+      await mode.POST(
+        post('/api/operator/mode', {
+          json: { mode: 'operator', confirmation: 'let Jarvis operate on its own' },
+        }),
+      );
+
+      const operator = await import('@/app/api/operator/route');
+      const payload = await body(await operator.GET(new Request(`${BASE}/api/operator`)));
+
+      expect(payload.mode.current).toBe('operator');
+      expect(payload.charter).not.toBeNull();
+      expect(payload.qualification.level).toBe('built');
+      expect(payload.standingAuthority).toBe(true);
+      expect(Array.isArray(payload.exceptionalActions)).toBe(true);
+      expect(JSON.stringify(payload)).not.toMatch(/sk-ant-|gh[pousr]_|-----BEGIN/);
+    });
+
+    it('lists refusals, because they are what "why has nothing happened?" reads', async () => {
+      await signIn();
+      await draftAndActivate();
+
+      await services.charterService.decide({
+        missionId: null,
+        capabilities: [
+          {
+            capability: 'marketing.publish',
+            projectId: null,
+            repository: null,
+            branch: null,
+            environment: null,
+            releaseChannel: null,
+            connectorId: null,
+            reason: 'wanted to',
+          },
+        ],
+        estimatedSpendUsd: null,
+        estimatedMinutes: null,
+        parallelAgents: 1,
+        exceptional: [],
+      });
+
+      const decisions = await import('@/app/api/operator/decisions/route');
+      const payload = await body(
+        await decisions.GET(new Request(`${BASE}/api/operator/decisions`)),
+      );
+      expect(payload.decisions).toHaveLength(1);
+      expect(payload.decisions[0].outcome).not.toBe('authorized');
+      expect(payload.decisions[0].requested).toContain('marketing.publish');
+    });
+  });
+
   it('never populates the test-auth secret in production, whatever the environment says', async () => {
     const { buildConfig } = await import('@/server/config/env');
     const production = buildConfig({

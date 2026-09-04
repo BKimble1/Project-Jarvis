@@ -108,6 +108,17 @@ export interface MissionApproval {
   readonly note: string | null;
   readonly revokedAt: string | null;
   readonly revokedReason: string | null;
+
+  /**
+   * V2: which standing authority approved this, when a person did not.
+   *
+   * All three null on an owner approval, all three set on a charter one. `approvedBy` reads
+   * `charter` in that case, and the digest is stored beside the version id so a later audit can
+   * prove the charter it reads now is the charter that was read then.
+   */
+  readonly charterVersionId: string | null;
+  readonly charterDigest: string | null;
+  readonly authorizationDecisionId: string | null;
 }
 
 export const planApprovalSchema = z.object({

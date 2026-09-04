@@ -121,6 +121,9 @@ export function toMissionApproval(row: Row<typeof missionApprovals>): MissionApp
     note: row.note,
     revokedAt: iso(row.revokedAt),
     revokedReason: row.revokedReason,
+    charterVersionId: row.charterVersionId,
+    charterDigest: row.charterDigest,
+    authorizationDecisionId: row.authorizationDecisionId,
   };
 }
 

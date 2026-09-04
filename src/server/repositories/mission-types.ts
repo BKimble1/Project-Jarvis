@@ -104,6 +104,10 @@ export interface MissionStatePatch {
   readonly integrationBranch?: string | null;
   readonly repairRoundsUsed?: number;
   readonly receiptId?: string | null;
+  /* V2: which authority queued it. Written only by the approval path. */
+  readonly autonomous?: boolean;
+  readonly charterVersionId?: string | null;
+  readonly authorizationDecisionId?: string | null;
 }
 
 export interface ClaimRequest {
@@ -188,6 +192,10 @@ export interface ApprovalRepository {
     approvedRiskLevel: MissionRiskLevel;
     approvedScope: readonly string[];
     note?: string | null;
+    /* V2: present only when standing authority approved, absent when a person did. */
+    charterVersionId?: string | null;
+    charterDigest?: string | null;
+    authorizationDecisionId?: string | null;
   }): Promise<MissionApproval>;
   activeFor(missionId: string): Promise<MissionApproval | null>;
   revokeAll(missionId: string, reason: string): Promise<number>;

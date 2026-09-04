@@ -361,6 +361,9 @@ function buildPatch(patch: MissionStatePatch): Record<string, unknown> {
   assign('integrationBranch', 'integrationBranch');
   assign('repairRoundsUsed', 'repairRoundsUsed');
   assign('receiptId', 'receiptId');
+  assign('autonomous', 'autonomous');
+  assign('charterVersionId', 'charterVersionId');
+  assign('authorizationDecisionId', 'authorizationDecisionId');
   assign('workingBranch', 'workingBranch');
   assign('baseBranch', 'baseBranch');
   assign('baseSha', 'baseSha');
@@ -477,6 +480,9 @@ export class DrizzleApprovalRepository implements ApprovalRepository {
         approvedRiskLevel: input.approvedRiskLevel,
         approvedScope: [...input.approvedScope],
         note: input.note ?? null,
+        charterVersionId: input.charterVersionId ?? null,
+        charterDigest: input.charterDigest ?? null,
+        authorizationDecisionId: input.authorizationDecisionId ?? null,
       })
       .returning();
     if (!row) throw new ConflictError('This plan version is already approved.');

@@ -6,12 +6,12 @@ import {
   CAPABILITY_BY_CLASS,
   SCOPE_ALL,
   branchScopeContains,
-  capabilityGrantSchema,
   charterDigest,
   charterContentSchema,
   scopeContains,
   validateGrants,
   type CharterContent,
+  type capabilityGrantSchema,
 } from '@/domain/charter';
 import {
   authorize,

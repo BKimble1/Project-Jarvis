@@ -88,6 +88,17 @@ import type {
   VoiceRepository,
 } from './repositories/automation-types';
 import {
+  DrizzleAuthorizationDecisionRepository,
+  DrizzleCharterRepository,
+  DrizzleOperatorStateRepository,
+} from './repositories/charter-drizzle';
+import type {
+  AuthorizationDecisionRepository,
+  CharterRepository,
+  OperatorStateRepository,
+} from './repositories/charter-types';
+import { CharterService } from './operator/charter-service';
+import {
   DrizzleAuditRepository,
   DrizzleBudgetRepository,
   DrizzleConnectorRepository,
@@ -260,6 +271,12 @@ export interface Services {
   readonly answerRuns: DrizzleAnswerRunRepository;
   readonly answerProvider: AnswerProvider;
   readonly answerService: AnswerService;
+
+  /* V2: standing authority. */
+  readonly charters: CharterRepository;
+  readonly operatorState: OperatorStateRepository;
+  readonly authorizationDecisions: AuthorizationDecisionRepository;
+  readonly charterService: CharterService;
 }
 
 export interface BuildServicesOverrides {
@@ -376,6 +393,14 @@ export function buildServices(
     evidence,
     activity,
     concurrencyLimit: config.missions.concurrencyLimit,
+    /*
+     * Wired as a thunk to a service declared further down, exactly like `currentLevel`. The
+     * mission service needs a yes and two identifiers, not the charter subsystem, and keeping the
+     * dependency this thin is what stops "approve on standing authority" from becoming reachable
+     * by anything that happens to hold a `MissionService`.
+     */
+    confirmStandingAuthority: (decisionId, missionId) =>
+      charterService.confirmDecision(decisionId, missionId),
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -649,6 +674,25 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  /* ------------------------------------------ V2: the autonomous operator */
+
+  /*
+   * Built after the qualification service for the same reason the CI controller is: standing
+   * authority and the activation ladder are two independent questions, and the service that asks
+   * the first must be able to ask the second at the moment it decides.
+   */
+  const charters = new DrizzleCharterRepository(db);
+  const operatorStateRepo = new DrizzleOperatorStateRepository(db);
+  const authorizationDecisions = new DrizzleAuthorizationDecisionRepository(db);
+  const charterService = new CharterService({
+    charters,
+    state: operatorStateRepo,
+    decisions: authorizationDecisions,
+    audit,
+    currentLevel,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
   const router = new StatusQueryRouter({
     projects,
     briefings,
@@ -740,6 +784,10 @@ export function buildServices(
     answerRuns,
     answerProvider,
     answerService,
+    charters,
+    operatorState: operatorStateRepo,
+    authorizationDecisions,
+    charterService,
   };
 }
 

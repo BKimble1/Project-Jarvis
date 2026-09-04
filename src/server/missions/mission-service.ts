@@ -90,8 +90,35 @@ export interface MissionServiceDeps {
   readonly evidence: EvidenceRepository;
   readonly activity: ActivityLogService;
   readonly concurrencyLimit: number;
+  /**
+   * Re-read a recorded authorisation decision and prove it still authorises this mission.
+   *
+   * A function rather than the whole charter service, for two reasons. It keeps `MissionService`
+   * ignorant of charters — it needs a yes and two identifiers, not a subsystem — and it makes the
+   * one security-relevant behaviour trivially substitutable in a test. Required, not optional: a
+   * missing verifier must be a type error, never a silently unverified approval.
+   */
+  readonly confirmStandingAuthority: (
+    decisionId: string,
+    missionId: string,
+  ) => Promise<{
+    readonly id: string;
+    readonly charterVersionId: string;
+    readonly charterDigest: string;
+  }>;
   readonly clock?: () => Date;
 }
+
+/**
+ * Who is approving.
+ *
+ * Owner approvals carry nothing extra: a person clicked a button on a page that showed them the
+ * plan. A standing-authority approval must name the recorded decision that permitted it, and the
+ * decision is re-read rather than trusted — an id is a string until somebody looks it up.
+ */
+export type ApprovalAuthority =
+  | { readonly kind: 'owner' }
+  | { readonly kind: 'charter'; readonly decisionId: string };
 
 export interface MissionDetail {
   readonly mission: Mission;
@@ -585,11 +612,27 @@ export class MissionService {
    * Deliberately one operation. Approving and queueing separately would create a window in which
    * an approval exists but the mission is not runnable, and every guard would have to be checked
    * twice — once when approving, once when queueing — with the second check able to drift.
+   *
+   * ## Standing authority takes the same path, and that is the point
+   *
+   * A charter approval is not a shortcut past this method; it is this method with a different
+   * `authority`. Every check below — the state, the plan version being current, the risk level
+   * being the one the approver was shown, `canQueueMission` — runs identically. What changes is
+   * three things and nothing else: the decision is re-read and must still hold, the approval and
+   * the mission record which charter said so, and the state moves under the `charter` actor so the
+   * timeline shows that nobody was watching.
+   *
+   * `acknowledgedRiskLevel` is *not* relaxed for the charter path. It exists to catch an approval
+   * made against a stale view of the risk, and a machine can hold a stale view exactly as easily
+   * as a browser tab can — it just gets one by deciding at T and approving at T+1. The operator
+   * loop passes the level it decided against, and if the mission has changed underneath it, this
+   * refuses and the loop authorises again.
    */
   async approvePlan(
     missionId: string,
     input: PlanApprovalInput,
     approvedBy: string,
+    authority: ApprovalAuthority = { kind: 'owner' },
   ): Promise<Mission> {
     const mission = await this.require(missionId);
     if (mission.state !== 'awaiting_plan_approval') {
@@ -635,39 +678,86 @@ export class MissionService {
       throw new ForbiddenError(guard.reason ?? 'This mission cannot run.');
     }
 
+    /*
+     * Prove the standing authority before anything is written.
+     *
+     * `confirmStandingAuthority` re-reads the decision and checks it came out authorised, was made
+     * for *this* mission, and cites the charter that is still in force with the same digest. It
+     * throws otherwise, which is why it runs here rather than beside the approval row: a refusal
+     * must leave the mission exactly as it found it.
+     */
+    const confirmed =
+      authority.kind === 'charter'
+        ? await this.deps.confirmStandingAuthority(authority.decisionId, missionId)
+        : null;
+
+    /*
+     * The recorded approver is derived, never passed through.
+     *
+     * A caller supplying an owner's name alongside a charter decision would otherwise produce an
+     * approval that reads as a person's while being nobody's, and the audit trail would be wrong
+     * in the one way that matters.
+     */
+    const actor: MissionActor = authority.kind === 'charter' ? 'charter' : 'owner';
+    const recordedApprover = authority.kind === 'charter' ? 'charter' : approvedBy;
+
     await this.deps.approvals.revokeAll(missionId, 'Superseded by a newer approval.');
     await this.deps.approvals.create({
       missionId,
       planId: plan.id,
       planVersion: plan.version,
-      approvedBy,
+      approvedBy: recordedApprover,
       approvedRiskLevel: withOverride.riskLevel,
       approvedScope: plan.content.scope,
       note: input.note ?? null,
+      charterVersionId: confirmed?.charterVersionId ?? null,
+      charterDigest: confirmed?.charterDigest ?? null,
+      authorizationDecisionId: confirmed?.id ?? null,
     });
 
-    await this.deps.missions.patch(missionId, { approvedPlanVersion: plan.version });
+    /*
+     * `autonomous` is written on both paths, not only the charter one.
+     *
+     * An owner approving a mission standing authority had queued earlier is taking responsibility
+     * for it, and the flag has to come back down or the mission stays gated on a ladder rung that
+     * no longer applies to it.
+     */
+    await this.deps.missions.patch(missionId, {
+      approvedPlanVersion: plan.version,
+      autonomous: authority.kind === 'charter',
+      charterVersionId: confirmed?.charterVersionId ?? null,
+      authorizationDecisionId: confirmed?.id ?? null,
+    });
     await this.deps.events.record(missionId, {
       type: 'plan_approved',
-      actor: 'owner',
+      actor,
       level: 'notice',
-      summary: `You approved plan version ${plan.version}.`,
+      summary:
+        authority.kind === 'charter'
+          ? `Standing authority approved plan version ${plan.version} without asking you.`
+          : `You approved plan version ${plan.version}.`,
       detail: {
         planVersion: plan.version,
-        approvedBy,
+        approvedBy: recordedApprover,
         riskLevel: withOverride.riskLevel,
         note: input.note ?? null,
+        charterVersionId: confirmed?.charterVersionId ?? null,
+        charterDigest: confirmed?.charterDigest ?? null,
+        authorizationDecisionId: confirmed?.id ?? null,
       },
     });
     await this.deps.activity.record({
       projectId: mission.projectId,
       kind: 'decision_recorded',
-      summary: `Approved mission plan: ${mission.title}`,
-      detail: { missionId, planVersion: plan.version },
+      summary:
+        authority.kind === 'charter'
+          ? `Jarvis approved its own mission plan under the charter: ${mission.title}`
+          : `Approved mission plan: ${mission.title}`,
+      detail: { missionId, planVersion: plan.version, authority: authority.kind },
     });
 
     const approved = await this.require(missionId);
-    return this.move(approved, 'queued', 'owner', {
+    return this.move(approved, 'queued', actor, {
       workingBranch:
         approved.workingBranch ??
         (isReadOnlyMissionType(approved.type)
