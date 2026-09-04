@@ -236,6 +236,18 @@ export const ANSWER_EVIDENCE_LIMITS = Object.freeze({
 });
 
 /**
+ * What replaces an excerpt whose source the owner has since destroyed.
+ *
+ * A frozen snapshot is a second copy of content, and deletion has to reach every copy or it is
+ * not deletion. But dropping the row would leave an answer citing an identifier that resolves to
+ * nothing, which reads as a bug rather than as a consequence. So the row survives, saying exactly
+ * what happened, and the sentence does not.
+ */
+export const REMOVED_EVIDENCE_TEXT =
+  'This cited something you have since deleted. The content was removed, so this part of the answer can no longer be checked.';
+export const REMOVED_EVIDENCE_LABEL = 'Removed at your request';
+
+/**
  * Freeze a gathered list into a snapshot.
  *
  * Bounded twice — by item count and by characters — and it reports `truncated` when either bound

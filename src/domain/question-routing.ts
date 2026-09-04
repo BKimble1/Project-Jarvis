@@ -83,10 +83,24 @@ const STATUS =
   /\b(?:where (?:are|is|do) we|status|standing|stand|progress|how (?:is|are) .* (?:going|doing)|closest to shipping|ship(?:ping|ped)?|ready to (?:ship|release)|being worked on|working on (?:right )?now|in flight)\b/i;
 const CHANGES =
   /\b(?:what (?:has )?changed|changes?|since (?:last|yesterday|this)|this week|recently|new since|latest activity)\b/i;
+/*
+ * Pending, not past. "What needs my approval?" is a question about the attention queue; "What did
+ * we decide about authentication?" is a question about a document, and a bare `decide|approve`
+ * alternative swallowed the second into the first — answering a knowledge question from the
+ * attention service, which has nothing to say about it.
+ */
 const NEEDS_OWNER =
-  /\b(?:needs? (?:my|your|owner) (?:approval|attention|decision|input)|waiting (?:on|for) me|approve|approval|decide|decision)\b/i;
+  /\b(?:needs? (?:my|your|our|the owner'?s?|an?) (?:approval|attention|decision|input|sign[- ]?off|review)|need(?:s)? (?:to be )?approv(?:ed|ing)|waiting (?:on|for) (?:me|you|my|your)|awaiting (?:my|your)|pending (?:my|your)|requires? (?:my|your) (?:approval|attention|decision|input)|(?:should|do|can) i (?:need to )?(?:approve|decide)|anything (?:to|i need to) (?:approve|decide))\b/i;
 const BLOCKED =
   /\b(?:blocked|blocker|stuck|failing|failed|why did .* fail|broken|error|not working)\b/i;
+/*
+ * A decision already taken. Checked before every other pattern because the words people use for a
+ * recorded decision collide with other intents — "what was the decision on the pricing model?"
+ * contains a competitor-research keyword, and "what did we decide about auth?" contains an
+ * attention-queue one. Where a question is explicitly about the past, the past wins.
+ */
+const RECORDED_DECISION =
+  /\b(?:what (?:did|have) we decided?|what was (?:the|our) decision|we (?:already )?decided|why did we (?:decide|choose|pick))\b/i;
 const KNOWLEDGE =
   /\b(?:decide[sd]?|decision|document|doc|pdf|note|wrote|says?|according to|policy|runbook|spec|design|convention|standard|architecture|which projects? use|have we (?:tried|done|used)|previously)\b/i;
 const PREFERENCE =
@@ -115,8 +129,20 @@ export function routeQuestion(question: string): RoutingDecision {
     requiresCurrentExternal: false,
   };
 
+  if (RECORDED_DECISION.test(q)) {
+    return {
+      ...base,
+      intent: 'knowledge',
+      needsKnowledge: true,
+      needsMemories: true,
+      needsStatus: true,
+      rule: 'R-QR11',
+      reason: 'This asks what was already decided, so it is answered from what was recorded then.',
+    };
+  }
+
   /*
-   * Research first. "Research competitors for this app" also matches the action verbs, and
+   * Research next. "Research competitors for this app" also matches the action verbs, and
    * classifying it as a build request would offer to write code for a question asking for
    * information — the read-only research draft is the honest response.
    */

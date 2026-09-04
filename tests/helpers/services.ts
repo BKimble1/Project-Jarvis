@@ -6,6 +6,7 @@ import { testConfig } from './test-config';
 import { FakeSourceProvider } from './fake-provider';
 import { FakeUrlFetcher } from './fake-url-fetcher';
 import type { EmbeddingProvider } from '@/domain/embedding';
+import type { AnswerProvider } from '@/server/ask/answer-provider';
 
 /**
  * A fully wired service graph backed by a migrated in-memory PostgreSQL database and a fake
@@ -33,6 +34,14 @@ export async function createHarness(
      * assert hybrid behaviour it did not ask for.
      */
     embeddings?: EmbeddingProvider | null;
+    /**
+     * A scripted answer provider.
+     *
+     * Omitted means none, which is production's default and yields evidence-only answers. A test
+     * that wants the model path supplies one, so no test can accidentally assert model behaviour
+     * it did not ask for.
+     */
+    answerProvider?: AnswerProvider;
   } = {},
 ): Promise<TestHarness> {
   const { db, close } = await createTestDatabase();
@@ -43,6 +52,7 @@ export async function createHarness(
     provider,
     urlFetcher,
     ...(options.embeddings !== undefined ? { embeddings: options.embeddings } : {}),
+    ...(options.answerProvider ? { answerProvider: options.answerProvider } : {}),
     ...(options.narrator ? { narrator: options.narrator } : {}),
     ...(options.clock ? { clock: options.clock } : {}),
   });

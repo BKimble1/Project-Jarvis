@@ -21,10 +21,11 @@ const draftSchema = z.object({
  * create a mission; the most it can produce is a `MissionSuggestion`, which is a description.
  *
  * This route is the separate, owner-initiated act that turns one into a draft, and it does so
- * through the same `missions.create` every other caller uses. That call sets state `draft`. A
- * draft is not work: no worker is enrolled, no repository is cloned, no branch is created, no
- * task is queued, no CI is dispatched and no pull request exists. Starting requires plan approval
- * through the existing route, by a person, afterwards.
+ * through the same `missions.create` every other caller uses — which means it lands wherever
+ * intake decides: `draft`, or `needs_clarification` when the request is vague enough to be worth
+ * a question first. Neither is work: no worker is enrolled, no repository is cloned, no branch is
+ * created, no task is queued, no CI is dispatched and no pull request exists. Starting requires
+ * plan approval through the existing route, by a person, afterwards.
  *
  * The suggestion is re-read from the stored answer rather than trusted from the request body, so
  * a caller cannot post an arbitrary mission through this path and have it look like something

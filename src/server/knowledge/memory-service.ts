@@ -31,6 +31,7 @@ import type {
   KnowledgeRepository,
 } from '@/server/repositories/knowledge-types';
 import type { DrizzleRevisionRepository } from '@/server/repositories/revision-drizzle';
+import type { FrozenEvidenceScrubber } from '@/server/repositories/ask-drizzle';
 
 /**
  * What Jarvis remembers, and how a thing becomes something it remembers.
@@ -70,6 +71,14 @@ export interface MemoryServiceOptions {
   readonly audit: AuditRepository;
   readonly deletionReceipts: DeletionReceiptRepository;
   readonly embeddings: EmbeddingProvider | null;
+  /**
+   * Frozen copies kept by answers.
+   *
+   * Forgetting has to reach every copy, and Phase 4C created a new one: an answer's evidence
+   * snapshot quotes the memory so the answer stays checkable later. That is worth having, and it
+   * is also a second place the sentence lives, so this path scrubs it too.
+   */
+  readonly frozenEvidence: FrozenEvidenceScrubber;
   readonly clock?: () => Date;
 }
 
@@ -452,6 +461,8 @@ export class MemoryService {
 
     const excerptCount = item.excerpts.length;
     const embeddingsRemoved = await this.options.revisions.deleteMemoryEmbeddings(id);
+    /* An answer that quoted this kept a copy. It goes now, or forgetting was only partial. */
+    const frozenScrubbed = await this.options.frozenEvidence.scrubSubjects([id]);
     const forgotten = await this.options.memories.forget(id, this.clock());
 
     /*
@@ -473,6 +484,8 @@ export class MemoryService {
         'knowledge_items.source_ref',
         'knowledge_items.search_vector',
         'knowledge_embeddings',
+        'answer_evidence.excerpt',
+        'answers.claims',
       ],
     });
 
@@ -494,6 +507,7 @@ export class MemoryService {
         origin: item.origin,
         excerptsRemoved: excerptCount,
         embeddingsRemoved,
+        frozenAnswerCopiesRemoved: frozenScrubbed,
       },
     });
 

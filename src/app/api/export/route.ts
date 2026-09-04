@@ -126,7 +126,7 @@ function assertNothingForgotten(memories: readonly { readonly status: string }[]
   }
 }
 
-export const GET = ownerRoute(async ({ services }) => {
+export const GET = ownerRoute(async ({ services, session }) => {
   const projects = await services.projects.listAllForAssessment(true);
   const ids = projects.map((project) => project.id);
   const aggregates = await services.projects.aggregateMany(ids);
@@ -243,6 +243,66 @@ export const GET = ownerRoute(async ({ services }) => {
     await Promise.all(ids.map((projectId) => services.releaseApprovals.listForProject(projectId)))
   ).flat();
 
+  /*
+   * Ask Jarvis conversations: the questions, and what Jarvis answered.
+   *
+   * The evidence snapshots are deliberately **not** here. They are frozen copies of documents and
+   * notes, and those are already exported once under `knowledge` — under the rules that apply
+   * there, where a deleted source is absent and a forgotten memory is absent. Exporting the
+   * snapshots too would be a second copy governed by nothing, and it would be the copy through
+   * which deleted material came back. What is exported instead is how many pieces of evidence an
+   * answer stood on, which is the checkable part.
+   *
+   * The claims are included because they are the answer itself — what Jarvis actually told the
+   * owner about their own work — and an export that omitted them would not be an export.
+   */
+  const ownerId = session.githubLogin ?? session.id;
+  const conversationRows = await services.answerService.listConversations(ownerId);
+  const conversations = await Promise.all(
+    conversationRows.map(async (conversation) => {
+      const runs = await services.answerRuns.listForConversation(conversation.id, ownerId, 200);
+      const answers = await Promise.all(
+        runs.map(async (run) => {
+          const stored = await services.answers.findById(run.id);
+          return {
+            id: run.id,
+            question: run.question,
+            scope: run.scope,
+            projectIds: run.projectIds,
+            state: run.state,
+            mode: run.mode,
+            method: run.method,
+            headline: run.headline,
+            claims: stored?.claims ?? [],
+            limitations: run.limitations,
+            rejectionRule: run.rejectionRule,
+            retrievalMode: run.retrievalMode,
+            provider: run.provider,
+            model: run.model,
+            /* Numbers, and null where the provider reported nothing. Never zero for missing. */
+            inputTokens: run.inputTokens,
+            outputTokens: run.outputTokens,
+            cachedInputTokens: run.cachedInputTokens,
+            costUsd: run.costUsd,
+            latencyMs: run.latencyMs,
+            evidenceCount: (await services.answerRuns.listEvidence(run.id)).length,
+            askedAt: run.createdAt,
+          };
+        }),
+      );
+      return {
+        id: conversation.id,
+        title: conversation.title,
+        scope: conversation.scope,
+        projectIds: conversation.projectIds,
+        answerCount: conversation.answerCount,
+        createdAt: conversation.createdAt,
+        lastAnsweredAt: conversation.lastAnsweredAt,
+        answers,
+      };
+    }),
+  );
+
   const payload = {
     exportedAt: new Date().toISOString(),
     version: 4,
@@ -266,6 +326,7 @@ export const GET = ownerRoute(async ({ services }) => {
       deletionReceipts,
       forgottenCount: allMemories.length - memories.length,
     },
+    conversations,
     projects: await Promise.all(
       [...aggregates.values()].map(async (aggregate) => ({
         ...aggregate,

@@ -524,6 +524,13 @@ export function buildServices(
         ? new DeterministicEmbeddingProvider(config.knowledge.embeddingDimensions)
         : null;
 
+  /*
+   * Built before ingestion and memories, because both deletion paths need it: an answer's frozen
+   * evidence is a copy of their content, and forgetting or deleting has to reach the copy.
+   */
+  const conversations = new DrizzleConversationRepository(db);
+  const answerRuns = new DrizzleAnswerRunRepository(db);
+
   const ingestion = new IngestionService({
     sources: knowledgeSources,
     revisions,
@@ -532,6 +539,7 @@ export function buildServices(
     provider,
     projectSources: sources,
     embeddings,
+    frozenEvidence: answerRuns,
     config,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
@@ -543,9 +551,6 @@ export function buildServices(
   });
 
   /* ------------------------------------------------------ Prompt 4C */
-  const conversations = new DrizzleConversationRepository(db);
-  const answerRuns = new DrizzleAnswerRunRepository(db);
-
   const gatherer = new EvidenceGatherer({
     projects,
     briefings,
@@ -568,6 +573,7 @@ export function buildServices(
     audit,
     deletionReceipts,
     embeddings,
+    frozenEvidence: answerRuns,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

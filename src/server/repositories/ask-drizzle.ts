@@ -1,4 +1,5 @@
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 
 import type {
   AnswerClaim,
@@ -8,7 +9,11 @@ import type {
   MissionSuggestion,
 } from '@/domain/answer';
 import type { AnswerEvidenceItem, AnswerMode, AnswerRun, AnswerState } from '@/domain/answer-run';
-import { applyTerminalTransition } from '@/domain/answer-run';
+import {
+  REMOVED_EVIDENCE_LABEL,
+  REMOVED_EVIDENCE_TEXT,
+  applyTerminalTransition,
+} from '@/domain/answer-run';
 import type { Conversation } from '@/domain/conversation';
 import { ConflictError, NotFoundError } from '@/domain/errors';
 import { answerConversations, answerEvidence, answers } from '@/server/db/schema';
@@ -221,7 +226,24 @@ export interface AnswerRunFinish {
   readonly latencyMs?: number | null;
 }
 
-export class DrizzleAnswerRunRepository {
+/**
+ * Reaching frozen copies when the original is destroyed.
+ *
+ * An evidence snapshot is deliberately a *copy*: that is what makes an old answer checkable after
+ * its sources move on. It is also, just as deliberately, a second place the owner's private
+ * material lives — so the two deletion paths that destroy content, forgetting a memory and
+ * deleting a source, have to reach it or the promise those paths make is false.
+ *
+ * Narrow on purpose. Nothing that holds this may read an answer, only remove from one.
+ */
+export interface FrozenEvidenceScrubber {
+  /** For memories, whose evidence rows carry the item id as their subject. */
+  scrubSubjects(subjectIds: readonly string[]): Promise<number>;
+  /** For sources, whose evidence rows carry the revision they were frozen from. */
+  scrubRevisions(revisionIds: readonly string[]): Promise<number>;
+}
+
+export class DrizzleAnswerRunRepository implements FrozenEvidenceScrubber {
   constructor(private readonly db: Database) {}
 
   /**
@@ -251,7 +273,16 @@ export class DrizzleAnswerRunRepository {
         askedBy: input.askedBy,
         startedAt: new Date(),
       })
-      .onConflictDoNothing({ target: [answers.askedBy, answers.idempotencyKey] })
+      .onConflictDoNothing({
+        target: [answers.askedBy, answers.idempotencyKey],
+        /*
+         * The index is partial — answers from before 4C carry no key, and a unique index over a
+         * nullable column would otherwise make every one of them collide. Postgres will only pick
+         * a partial index as the conflict arbiter when the statement repeats its predicate, and
+         * without this it raises 42P10 rather than silently choosing another index.
+         */
+        where: sql`${answers.idempotencyKey} is not null`,
+      })
       .returning();
 
     if (inserted) return { run: toRun(inserted), created: true };
@@ -505,6 +536,73 @@ export class DrizzleAnswerRunRepository {
       staleSince: null,
       trust: row.trust === null ? 'imported_material' : String(row.trust),
     };
+  }
+
+  /* ------------------------------------------------------------ scrubbing */
+
+  async scrubSubjects(subjectIds: readonly string[]): Promise<number> {
+    if (subjectIds.length === 0) return 0;
+    return this.scrub(inArray(answerEvidence.subjectId, [...subjectIds]));
+  }
+
+  async scrubRevisions(revisionIds: readonly string[]): Promise<number> {
+    if (revisionIds.length === 0) return 0;
+    return this.scrub(inArray(answerEvidence.revisionId, [...revisionIds]));
+  }
+
+  /**
+   * Replace destroyed content wherever this answer kept a copy of it.
+   *
+   * Two places, and both matter. The evidence row is the obvious one. The less obvious one is the
+   * answer's own claims: in evidence-only mode a claim's text *is* the excerpt, so scrubbing the
+   * evidence and leaving the claims would delete the citation and keep the sentence.
+   *
+   * The row is tombstoned rather than deleted so an answer that cited it still resolves and says
+   * plainly what happened, instead of failing in a way that reads as a bug.
+   */
+  private async scrub(predicate: SQL | undefined): Promise<number> {
+    const affected = await this.db
+      .select({
+        id: answerEvidence.id,
+        answerId: answerEvidence.answerId,
+        subjectId: answerEvidence.subjectId,
+      })
+      .from(answerEvidence)
+      .where(predicate);
+    if (affected.length === 0) return 0;
+
+    await this.db
+      .update(answerEvidence)
+      .set({
+        excerpt: REMOVED_EVIDENCE_TEXT,
+        label: REMOVED_EVIDENCE_LABEL,
+        contentHash: null,
+      })
+      .where(
+        inArray(
+          answerEvidence.id,
+          affected.map((row) => row.id),
+        ),
+      );
+
+    const subjects = new Set(affected.map((row) => row.subjectId));
+    const answerIds = [...new Set(affected.map((row) => row.answerId))];
+    const rows = await this.db.select().from(answers).where(inArray(answers.id, answerIds));
+
+    for (const row of rows) {
+      const claims = (row.claims ?? []) as AnswerClaim[];
+      let changed = false;
+      const rewritten = claims.map((claim) => {
+        if (!claim.citations.some((citation) => subjects.has(citation.id))) return claim;
+        changed = true;
+        return { ...claim, text: REMOVED_EVIDENCE_TEXT };
+      });
+      if (changed) {
+        await this.db.update(answers).set({ claims: rewritten }).where(eq(answers.id, row.id));
+      }
+    }
+
+    return affected.length;
   }
 }
 

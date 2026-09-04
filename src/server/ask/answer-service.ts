@@ -401,6 +401,7 @@ export class AnswerService {
         conversation,
         gathered,
         routing,
+        proposeAction: input.proposeAction,
         mode: 'evidence_only',
         method: 'no_model_configured',
         limitations: [
@@ -537,6 +538,7 @@ export class AnswerService {
         conversation,
         gathered,
         routing,
+        proposeAction: input.proposeAction,
         mode: 'generation_failed',
         method: failure ? 'no_model_configured' : 'model_rejected_fallback',
         limitations,
@@ -630,6 +632,8 @@ export class AnswerService {
     readonly conversation: Conversation;
     readonly gathered: Awaited<ReturnType<EvidenceGatherer['gather']>>;
     readonly routing: RoutingDecision;
+    /** The caller's opt-in. A question answers a question unless it asked for a proposal. */
+    readonly proposeAction: boolean;
     readonly mode: AnswerMode;
     readonly method: AnswerMethod;
     readonly limitations: readonly string[];
@@ -649,12 +653,40 @@ export class AnswerService {
     const { claims, headline } = buildEvidenceOnlyAnswer(input.gathered.snapshot, input.routing);
 
     /*
+     * A proposal without a model.
+     *
+     * "Build the onboarding screen" has to end in something the owner can act on, and with no
+     * provider configured there is no draft-writer — so the proposal is built from the owner's own
+     * sentence rather than invented. That is honest in a way a generated paraphrase would not be:
+     * the text is theirs, the rationale says where it came from, and `started` is false on a path
+     * that has no way to start anything.
+     */
+    const proposal = deterministicProposal({
+      question: input.run.question,
+      routing: input.routing,
+      projectIds: input.run.projectIds,
+      proposeAction: input.proposeAction,
+    });
+
+    /*
      * Straight to validating and then to a terminal state. The evidence-only path still passes
      * through `validating` because `complete` is only reachable from there — the state machine
      * has one door, and giving this path its own would be the first step to it having its own
      * rules as well.
      */
     await this.step(input.run.id, 'validating');
+
+    /*
+     * Said on every path, not only the model one. A question that needs current outside
+     * information needs it just as much when there is no model to write the caveat, and an answer
+     * assembled from stored records is exactly the kind that looks current when it is not.
+     */
+    const limitations = input.routing.requiresCurrentExternal
+      ? [
+          ...input.limitations,
+          'This needs current information from outside Jarvis, which it cannot verify. Nothing here is live research.',
+        ]
+      : input.limitations;
 
     const finished = await this.options.runs.finish(input.run.id, {
       state: 'complete_with_limitations',
@@ -663,10 +695,10 @@ export class AnswerService {
       headline,
       claims,
       considered: input.gathered.coverage,
-      limitations: input.limitations,
+      limitations,
       rejectionRule: input.rejection?.rule ?? null,
       rejectionReason: input.rejection?.reason ?? null,
-      missionSuggestion: null,
+      missionSuggestion: proposal,
       retrievalMode: input.gathered.retrievalMode,
       provider: input.provider ?? null,
       model: input.model ?? null,
@@ -702,7 +734,7 @@ export class AnswerService {
       claims,
       headline,
       coverage: input.gathered.coverage,
-      missionSuggestion: null,
+      missionSuggestion: proposal,
       reused: false,
     };
   }
@@ -852,6 +884,39 @@ function toClaims(answer: ModelAnswer, snapshot: AnswerEvidenceSnapshot): Answer
       projectId: claim.projectId ?? null,
     };
   });
+}
+
+/**
+ * A proposal assembled without a model.
+ *
+ * Deliberately not a paraphrase. The request is the owner's own sentence, so nothing here can
+ * misrepresent what they asked for, and the rationale says plainly that this is their words rather
+ * than an interpretation of them. A research question is proposed as research and labelled
+ * read-only, because the honest response to "what are the competitors doing" is an offer to go and
+ * find out, not a summary of stale records dressed as current.
+ */
+function deterministicProposal(input: {
+  readonly question: string;
+  readonly routing: RoutingDecision;
+  readonly projectIds: readonly string[];
+  readonly proposeAction: boolean;
+}): MissionSuggestion | null {
+  if (!input.proposeAction || !input.routing.proposesAction) return null;
+
+  const research = input.routing.requiresCurrentExternal;
+  const rawRequest = research ? `Research: ${input.question}` : input.question;
+  /* The draft route requires a request with something in it; a three-word question has not. */
+  if (rawRequest.trim().length < 10) return null;
+
+  return {
+    rawRequest: rawRequest.slice(0, 2000),
+    projectId: input.projectIds.length === 1 ? (input.projectIds[0] ?? null) : null,
+    rationale: research
+      ? 'Answering this needs current information from outside Jarvis. This is a read-only research draft in your own words — it starts nothing, and nothing here is live research yet.'
+      : 'You asked for work to be done. This is a draft of your own request for you to approve or discard; nothing has started.',
+    /* Structurally false, on a path with nothing that could set it true. */
+    started: false,
+  };
 }
 
 function toSuggestion(answer: ModelAnswer, input: AskTurnInput): MissionSuggestion | null {

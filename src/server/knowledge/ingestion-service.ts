@@ -24,6 +24,7 @@ import type { SourceRepository as ProjectSourceRepository } from '@/server/repos
 
 import type { ParserRegistry } from './parsers/registry';
 import type { UrlFetcher } from './url-fetcher';
+import type { FrozenEvidenceScrubber } from '@/server/repositories/ask-drizzle';
 
 /**
  * Ingestion: origin → revision → blocks → chunks → index → active.
@@ -53,6 +54,8 @@ export interface IngestionServiceOptions {
   readonly provider: SourceProvider;
   readonly projectSources: ProjectSourceRepository;
   readonly embeddings: EmbeddingProvider | null;
+  /** Answers froze copies of this source's text; deleting it has to reach those too. */
+  readonly frozenEvidence: FrozenEvidenceScrubber;
   readonly config: AppConfig;
   readonly clock?: () => Date;
 }
@@ -563,14 +566,24 @@ export class IngestionService {
    * and the source row survives holding no content — so the fact that it existed stays auditable
    * while nothing it contained can be retrieved, exported or placed in a model context.
    */
-  async deleteSource(sourceId: string): Promise<{ readonly chunksRemoved: number }> {
+  async deleteSource(
+    sourceId: string,
+  ): Promise<{ readonly chunksRemoved: number; readonly frozenAnswerCopiesRemoved: number }> {
     const revisions = await this.options.revisions.list(sourceId, 500);
+    /*
+     * Scrubbed before the revisions go, because the revision id is how a frozen answer excerpt is
+     * traced back to this source. Afterwards there would be nothing left to match on, and the
+     * copies an answer kept would outlive the document the owner deleted.
+     */
+    const frozenAnswerCopiesRemoved = await this.options.frozenEvidence.scrubRevisions(
+      revisions.map((revision) => revision.id),
+    );
     let removed = 0;
     for (const revision of revisions) {
       removed += await this.options.revisions.purge(revision.id);
     }
     removed += await this.options.sources.purge(sourceId);
-    return { chunksRemoved: removed };
+    return { chunksRemoved: removed, frozenAnswerCopiesRemoved };
   }
 
   /** Keep the citation window, destroy the rest. */
