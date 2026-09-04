@@ -49,6 +49,8 @@ const appEnv = {
   JARVIS_AI_ENABLED: 'false',
   ...(scriptedProvider ? { JARVIS_ASK_SCRIPTED_PROVIDER: 'true' } : {}),
   JARVIS_MISSION_CONCURRENCY: '1',
+  /* Read only by next.config.ts, to drop source maps this run never reads. See that file. */
+  JARVIS_E2E: '1',
   LOG_LEVEL: 'warn',
   NEXT_TELEMETRY_DISABLED: '1',
   /*
@@ -144,7 +146,15 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 240_000,
       env: appEnv,
-      stdout: 'ignore',
+      /*
+       * Piped, not ignored.
+       *
+       * Next announces a restart — "Found a change in package.json", "approaching the used memory
+       * threshold" — on stdout. Discarding it meant a restart was invisible and surfaced only as
+       * an `ECONNRESET` in whichever test held a request at that moment, which is a diagnosis
+       * that costs hours. It is worth the compile lines.
+       */
+      stdout: 'pipe',
       stderr: 'pipe',
     },
   ],

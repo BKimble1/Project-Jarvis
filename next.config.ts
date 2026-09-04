@@ -45,6 +45,47 @@ const nextConfig: NextConfig = {
      */
     webpackMemoryOptimizations: true,
   },
+  /*
+   * Source maps, for the end-to-end run only.
+   *
+   * They are the development server's largest single heap consumer, and the suite never reads
+   * one: it drives a browser and asserts on what it sees, not on a stack trace mapped back to
+   * source. Next restarts itself when used heap passes 80% of the limit, and after Phase 4C added
+   * `/ask` and its routes the run reached that again — measured below in this file's history:
+   * peak system memory 12.3 GB with one restart, and the in-flight request during that restart
+   * failed with ECONNRESET, which is the whole failure.
+   *
+   * The flag is set by `playwright.config.ts` and by nothing else, so ordinary `next dev` keeps
+   * its source maps. Turning them off everywhere would be trading a developer's debugging for a
+   * test runner's convenience.
+   */
+  webpack(config, { dev }) {
+    if (dev && process.env.JARVIS_E2E === '1') {
+      config.devtool = false;
+    }
+    if (dev) {
+      /*
+       * Never watch the data directory.
+       *
+       * `.jarvis-data` holds the embedded database's files and, during an end-to-end run, a
+       * sandbox git repository the mission worker clones and pushes to — including a
+       * `package.json` of its own. Every one of those writes is a file event inside the project,
+       * and a development server that reacts to them restarts while requests are in flight; the
+       * test that happens to be mid-request then fails with `ECONNRESET`, which looks like
+       * anything but a file watcher. Nothing under this path is application source.
+       */
+      const ignored = config.watchOptions?.ignored;
+      config.watchOptions = {
+        ...config.watchOptions,
+        ignored: [
+          ...(Array.isArray(ignored) ? ignored : typeof ignored === 'string' ? [ignored] : []),
+          '**/.jarvis-data/**',
+          '**/test-results/**',
+        ],
+      };
+    }
+    return config;
+  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },

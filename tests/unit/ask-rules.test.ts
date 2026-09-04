@@ -644,6 +644,7 @@ describe('the retrieval request an answer builds', () => {
       scope: {
         scope: 'selected',
         projectIds: [PROJECT_A, PROJECT_B],
+        includesPersonal: false,
         rule: 'R-AS2',
         reason: 'Two projects.',
       },
@@ -670,7 +671,13 @@ describe('the retrieval request an answer builds', () => {
 
     await gatherer.gather({
       question: 'What do I prefer about deploys?',
-      scope: { scope: 'personal', projectIds: [], rule: 'R-AS5', reason: 'Your notes only.' },
+      scope: {
+        scope: 'personal',
+        projectIds: [],
+        includesPersonal: true,
+        rule: 'R-AS5',
+        reason: 'Your notes only.',
+      },
       routing: routeQuestion('What do I prefer about deploys?'),
       ownerId: 'owner@example.com',
     });
@@ -686,7 +693,13 @@ describe('the retrieval request an answer builds', () => {
 
     const result = await gatherer.gather({
       question: 'What did we decide about auth?',
-      scope: { scope: 'project', projectIds: [PROJECT_A], rule: 'R-AS2', reason: 'One project.' },
+      scope: {
+        scope: 'project',
+        projectIds: [PROJECT_A],
+        includesPersonal: false,
+        rule: 'R-AS2',
+        reason: 'One project.',
+      },
       routing: routeQuestion('What did we decide about auth?'),
       ownerId: 'owner@example.com',
     });
