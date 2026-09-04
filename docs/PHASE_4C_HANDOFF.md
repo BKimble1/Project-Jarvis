@@ -430,14 +430,66 @@ it.
 | `tests/e2e/ask.spec.ts`                  | 17    | owner journeys, evidence-only                                                         |
 | `tests/e2e/ask-model.spec.ts`            | 4     | owner journeys with a stand-in model                                                  |
 
-Repository totals after 4C: **UNIT_INTEGRATION_TOTAL** unit and integration tests across
-**UNIT_INTEGRATION_FILES** files; **E2E_TOTAL** end-to-end tests across two viewports.
+Repository totals after 4C: **1157** unit and integration tests across **31** files, all passing;
+**91** end-to-end tests across two viewports, plus **4** in the separate generated-answer run.
 
 ---
 
 ## Part 11 — five consecutive clean runs, after 4C
 
-POST_4C_TABLE
+Full suite, both viewports, identical configuration, first attempts, `retries: 0`, zero
+concurrent edits:
+
+| run  | duration | peak memory | dev-server restarts | result                          |
+| ---- | -------- | ----------- | ------------------- | ------------------------------- |
+| g5-1 | 615 s    | 9.3 GB      | 0                   | 47 + 44 = 91 passed             |
+| g5-2 | 608 s    | 9.2 GB      | 0                   | 91 passed (one transport retry) |
+| g5-3 | 617 s    | 9.6 GB      | 0                   | 91 passed                       |
+| g5-4 | 605 s    | 8.8 GB      | 0                   | 91 passed                       |
+| g5-5 | 615 s    | 9.3 GB      | 0                   | 91 passed (one transport retry) |
+
+Duration variance across the five: 12 s. No stray processes after any run. `retries` is
+`process.env.CI ? 1 : 0` and these ran locally, so every result is a first-attempt result; no
+Playwright retry was configured or used.
+
+### Getting there took three more findings, and they are worth recording
+
+**Run 2 of the first attempt restarted the dev server.** 4C's added load pushed it back into the
+memory guard: `ECONNRESET`, one restart logged, one test failed. Raising the heap again would have
+been treating the same symptom twice.
+
+**A restart was invisible.** The application server's stdout was discarded, and that is where Next
+announces both a memory restart and "Found a change in package.json. Restarting…". It is piped
+now. That single change is what turned the next failure from a mystery into a diagnosis.
+
+**The fix was structural, not a bigger number.** `npm run test:e2e` now runs the two viewport
+projects as two invocations, each starting its own server, so each holds half the compiled work.
+Measured on the same suite and machine:
+
+| configuration             | peak memory | restarts | result    |
+| ------------------------- | ----------- | -------- | --------- |
+| one server, both projects | 12.4 GB     | 1        | 1 failed  |
+| one server per viewport   | 8.8–9.6 GB  | 0        | 91 passed |
+
+Alongside it: `.jarvis-data` is excluded from the file watcher (the embedded database and the
+mission worker's sandbox repository both write there, inside the project, all run long), and
+source maps are off **for the end-to-end run only** — they are the dev server's largest single
+heap consumer and this suite never reads one. Ordinary `next dev` keeps them.
+
+### The one retry that exists, and what it is
+
+Twice across ten full runs a fixture failed with `ECONNRESET` on a request **the server has no
+record of receiving**. Node closes an idle keep-alive connection after five seconds; Playwright's
+request context pools connections and does not retry; a fixture acting a few seconds after the
+last request can therefore pick a socket the server has already closed.
+
+`tests/e2e/fixtures.ts` retries once, and **only when the connection itself failed** — a response
+that arrives and says the wrong thing still fails on the first attempt. It prints a line when it
+fires, so a run that needed it says so. It fired in two of the five runs above (once each, in
+sign-in and in project cleanup), and both lines are in the logs.
+
+This is deliberately not a test retry. `retries` remains 0 locally, and no timeout was raised
+anywhere in this phase.
 
 ---
 
