@@ -164,6 +164,31 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         </Card>
       ) : null}
 
+      {/*
+        Ways into Ask that carry the scope with them.
+        Each opens the same pipeline as typing the question by hand — the scope is applied on the
+        server from the conversation, not from these links, so a crafted URL cannot widen it.
+      */}
+      <nav aria-label="Ask about this project" className="flex flex-wrap gap-1.5">
+        {(
+          [
+            ['Ask about this project', ''],
+            ['Where does this stand?', 'Where do we stand on this project?'],
+            ['Explain the blockers', 'Why is this project blocked, and what is the evidence?'],
+            ['What changed?', 'What changed on this project this week?'],
+            ['What needs me?', 'What needs my approval on this project?'],
+          ] as const
+        ).map(([label, question]) => (
+          <Link
+            key={label}
+            href={`/ask?scope=project&projectId=${project.id}${question ? `&q=${encodeURIComponent(question)}` : ''}`}
+            className="rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-muted)]"
+          >
+            {label}
+          </Link>
+        ))}
+      </nav>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <BlockersSection projectId={project.id} blockers={blockers} />
         <NextActionsSection projectId={project.id} actions={nextActions} />

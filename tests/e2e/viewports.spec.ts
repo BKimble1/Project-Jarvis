@@ -22,6 +22,7 @@ const PAGES = [
   '/dashboard',
   '/projects',
   '/missions',
+  '/ask',
   '/knowledge',
   '/operations',
   '/attention',

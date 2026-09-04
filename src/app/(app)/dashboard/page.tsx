@@ -220,6 +220,13 @@ async function DashboardContent({
               className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
             >
               What Jarvis knows
+            </Link>{' '}
+            ·{' '}
+            <Link
+              href="/ask"
+              className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
+            >
+              Ask Jarvis
             </Link>
           </p>
         </div>

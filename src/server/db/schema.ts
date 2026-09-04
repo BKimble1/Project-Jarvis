@@ -16,12 +16,13 @@ import {
   bigserial,
   boolean,
   customType,
-  real,
   doublePrecision,
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -127,8 +128,10 @@ import type {
   AnswerCoverage,
   AnswerMethod,
   AnswerScope,
+  CitationKind,
   MissionSuggestion,
 } from '@/domain/answer';
+import type { AnswerMode, AnswerState, EvidenceOrigin } from '@/domain/answer-run';
 import type { Cadence, CatchUpPolicy, ExecutionState, ScheduleKind } from '@/domain/schedule';
 import type { BriefingContent, BriefingKind, BriefingNarration } from '@/domain/briefing';
 import type {
@@ -2352,10 +2355,141 @@ export const answers = pgTable(
     durationMs: integer('duration_ms'),
     askedBy: text('asked_by').notNull(),
     generatedAt: timestamp('generated_at', { withTimezone: true }).notNull().defaultNow(),
+
+    /* ------------------------------------------------ Prompt 4C additions */
+
+    conversationId: uuid('conversation_id').references(() => answerConversations.id, {
+      onDelete: 'cascade',
+    }),
+    /**
+     * Where this answer is in its lifecycle.
+     *
+     * Load-bearing rather than cosmetic: `complete` is reachable only from `validating`, and
+     * nothing leaves a terminal state — which is what makes cancellation real instead of
+     * advisory when a provider result arrives late.
+     */
+    state: text('state').$type<AnswerState>().notNull().default('created'),
+    /** What produced what the owner reads. Distinguishes "no provider" from "provider failed". */
+    mode: text('mode').$type<AnswerMode>().notNull().default('evidence_only'),
+    /**
+     * Supplied by the caller so a retry is not a second paid generation.
+     *
+     * Unique per owner rather than globally: two people asking the same question are two
+     * answers, and a key is only meaningful within the session that minted it.
+     */
+    idempotencyKey: text('idempotency_key'),
+    limitations: jsonb('limitations')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    retrievalMode: text('retrieval_mode'),
+    provider: text('provider'),
+    model: text('model'),
+    /**
+     * Usage, as numbers.
+     *
+     * Nullable and numeric, never coerced to zero: "the provider did not report input tokens" and
+     * "the provider reported zero" are different facts, and flattening them makes a cost report
+     * quietly wrong. Redaction must not touch these — a usage receipt turned into a string is a
+     * receipt that no longer adds up.
+     */
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    cachedInputTokens: integer('cached_input_tokens'),
+    costUsd: numeric('cost_usd', { precision: 12, scale: 6 }),
+    latencyMs: integer('latency_ms'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   },
   (table) => [
     index('answers_generated_idx').on(table.generatedAt),
     index('answers_scope_idx').on(table.scope),
+    index('answers_conversation_idx').on(table.conversationId, table.generatedAt),
+    index('answers_state_idx').on(table.state),
+    /*
+     * Partial and per-owner. A retry carrying the same key finds the first answer instead of
+     * paying for a second generation; a null key (an internal call that never retries) is exempt
+     * rather than colliding with every other null.
+     */
+    uniqueIndex('answers_idempotency_idx')
+      .on(table.askedBy, table.idempotencyKey)
+      .where(sql`idempotency_key is not null`),
+  ],
+);
+
+/* ------------------------------------------- Prompt 4C: Ask conversations */
+
+/**
+ * A thread of questions, and the authorization boundary every turn in it is rebuilt from.
+ *
+ * The scope lives on the conversation rather than on each request on purpose: a follow-up that
+ * carried its own scope could widen what the thread was allowed to see just by sending different
+ * projects alongside the same id. Storing it here means narrowing a conversation takes effect on
+ * the very next question, and there is exactly one place a reviewer has to look to see what a
+ * thread may read.
+ */
+export const answerConversations = pgTable(
+  'answer_conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    title: text('title').notNull(),
+    scope: text('scope').$type<AnswerScope>().notNull().default('portfolio'),
+    projectIds: jsonb('project_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    ownerId: text('owner_id').notNull(),
+    answerCount: integer('answer_count').notNull().default(0),
+    lastAnsweredAt: timestamp('last_answered_at', { withTimezone: true }),
+    /** Soft first, so the deletion itself stays auditable for a moment. */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    retainUntil: timestamp('retain_until', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('answer_conversations_owner_idx').on(table.ownerId, table.updatedAt),
+    index('answer_conversations_deleted_idx').on(table.deletedAt),
+  ],
+);
+
+/**
+ * Exactly what one answer was allowed to use, frozen when it was gathered.
+ *
+ * A table rather than a column on the answer, for two reasons that both matter. A citation route
+ * can authorise a single row — "does this evidence belong to an answer this owner asked?" — which
+ * is what stops citation identifiers being enumerable across scopes. And `revision_id` plus
+ * `content_hash` pin the exact version that supported a claim, so re-reading a document next week
+ * produces a new revision without silently changing what an old answer stood on.
+ */
+export const answerEvidence = pgTable(
+  'answer_evidence',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    answerId: uuid('answer_id')
+      .notNull()
+      .references(() => answers.id, { onDelete: 'cascade' }),
+    /** `kind:id` — the exact token a claim must cite, and the only one it may. */
+    ref: text('ref').notNull(),
+    kind: text('kind').$type<CitationKind>().notNull(),
+    origin: text('origin').$type<EvidenceOrigin>().notNull(),
+    subjectId: text('subject_id').notNull(),
+    label: text('label').notNull(),
+    /** Bounded excerpt. Never a whole document. */
+    excerpt: text('excerpt').notNull(),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    locator: text('locator'),
+    revisionId: uuid('revision_id'),
+    contentHash: text('content_hash'),
+    href: text('href'),
+    trust: text('trust'),
+    ordinal: integer('ordinal').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('answer_evidence_ref_idx').on(table.answerId, table.ref),
+    index('answer_evidence_answer_idx').on(table.answerId, table.ordinal),
   ],
 );
 

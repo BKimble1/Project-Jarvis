@@ -111,6 +111,13 @@ import { ParserRegistry } from './knowledge/parsers/registry';
 import { SafeUrlFetcher, type UrlFetcher } from './knowledge/url-fetcher';
 import { IngestionService } from './knowledge/ingestion-service';
 import { MemoryService } from './knowledge/memory-service';
+import { AnswerService } from './ask/answer-service';
+import { EvidenceGatherer } from './ask/evidence-gatherer';
+import { UnconfiguredAnswerProvider, type AnswerProvider } from './ask/answer-provider';
+import {
+  DrizzleAnswerRunRepository,
+  DrizzleConversationRepository,
+} from './repositories/ask-drizzle';
 import { RetrievalService } from './knowledge/retrieval-service';
 import { DeterministicEmbeddingProvider, type EmbeddingProvider } from '@/domain/embedding';
 import { QualificationService } from './qualification/qualification-service';
@@ -245,6 +252,12 @@ export interface Services {
   readonly ingestion: IngestionService;
   readonly retrieval: RetrievalService;
   readonly memoryService: MemoryService;
+
+  /* Prompt 4C: Ask Jarvis. */
+  readonly conversations: DrizzleConversationRepository;
+  readonly answerRuns: DrizzleAnswerRunRepository;
+  readonly answerProvider: AnswerProvider;
+  readonly answerService: AnswerService;
 }
 
 export interface BuildServicesOverrides {
@@ -265,6 +278,13 @@ export interface BuildServicesOverrides {
    * reports as `lexical_only` rather than pretending to be hybrid.
    */
   readonly embeddings?: EmbeddingProvider | null;
+  /**
+   * A scripted answer provider.
+   *
+   * Overridable so a test can supply one that fails, hangs, returns garbage or invents a citation,
+   * without a network and without pretending a model is configured when none is.
+   */
+  readonly answerProvider?: AnswerProvider;
 }
 
 export function buildServices(
@@ -522,6 +542,25 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  /* ------------------------------------------------------ Prompt 4C */
+  const conversations = new DrizzleConversationRepository(db);
+  const answerRuns = new DrizzleAnswerRunRepository(db);
+
+  const gatherer = new EvidenceGatherer({
+    projects,
+    briefings,
+    attention,
+    missions: missionRepo,
+    retrieval,
+  });
+
+  /*
+   * Absent unless something supplies one. The activation lock stays authoritative: with no model
+   * configured, Ask gathers evidence and says plainly that nothing wrote a summary, rather than
+   * inventing a narrator to fill the space.
+   */
+  const answerProvider = overrides.answerProvider ?? new UnconfiguredAnswerProvider();
+
   const memoryService = new MemoryService({
     memories: knowledge,
     conflicts,
@@ -529,6 +568,17 @@ export function buildServices(
     audit,
     deletionReceipts,
     embeddings,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  const answerService = new AnswerService({
+    conversations,
+    runs: answerRuns,
+    projects,
+    gatherer,
+    provider: answerProvider,
+    audit,
+    usage,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -634,6 +684,10 @@ export function buildServices(
     ingestion,
     retrieval,
     memoryService,
+    conversations,
+    answerRuns,
+    answerProvider,
+    answerService,
   };
 }
 

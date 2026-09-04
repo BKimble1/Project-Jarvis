@@ -7,6 +7,7 @@ import {
   Activity,
   BellRing,
   BookOpen,
+  MessageCircleQuestion,
   FolderKanban,
   History,
   LayoutDashboard,
@@ -29,6 +30,7 @@ const NAV: readonly NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', shortLabel: 'Home', Icon: LayoutDashboard },
   { href: '/projects', label: 'Projects', shortLabel: 'Projects', Icon: FolderKanban },
   { href: '/missions', label: 'Missions', shortLabel: 'Missions', Icon: Rocket },
+  { href: '/ask', label: 'Ask Jarvis', shortLabel: 'Ask', Icon: MessageCircleQuestion },
   { href: '/knowledge', label: 'Knowledge', shortLabel: 'Knows', Icon: BookOpen },
   { href: '/operations', label: 'Operations', shortLabel: 'Ops', Icon: Activity },
   { href: '/attention', label: 'What needs me', shortLabel: 'Needs me', Icon: BellRing },
@@ -43,7 +45,7 @@ const NAV: readonly NavItem[] = [
  * has to be reachable from the dashboard, because the tab bar is the only navigation a phone
  * shows by default.
  */
-const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge']);
+const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge', '/ask']);
 
 /**
  * Application chrome.
