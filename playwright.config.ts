@@ -100,6 +100,19 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     actionTimeout: 20_000,
   },
+  /*
+   * One viewport per development server.
+   *
+   * `npm run test:e2e` runs the two projects as two invocations, each starting its own server,
+   * rather than one invocation serving both. The reason is measured: `next dev` retains every
+   * module it compiles and restarts itself when used heap passes 80% of the limit, and a single
+   * server serving all ninety-one tests reached that — the restart resets in-flight requests and
+   * discards every compiled route, so the test holding a request fails and the next one waits for
+   * a recompile. Splitting halves what one server has to hold and costs one extra warm-up.
+   *
+   * `npm run test:e2e:one` still runs both projects against a single server, which is the right
+   * thing while iterating on a single spec.
+   */
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
     {
