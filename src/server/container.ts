@@ -114,6 +114,7 @@ import { MemoryService } from './knowledge/memory-service';
 import { AnswerService } from './ask/answer-service';
 import { EvidenceGatherer } from './ask/evidence-gatherer';
 import { UnconfiguredAnswerProvider, type AnswerProvider } from './ask/answer-provider';
+import { AnthropicAnswerProvider } from './ask/anthropic-provider';
 import { ScriptedAnswerProvider } from './ask/scripted-provider';
 import {
   DrizzleAnswerRunRepository,
@@ -562,13 +563,22 @@ export function buildServices(
   });
 
   /*
-   * Absent unless something supplies one. The activation lock stays authoritative: with no model
-   * configured, Ask gathers evidence and says plainly that nothing wrote a summary, rather than
-   * inventing a narrator to fill the space.
+   * Three states, in the order they are checked.
+   *
+   * The scripted stand-in comes first because it exists only where `buildConfig` allows it —
+   * outside production, with a test-auth secret already configured — and a browser test that asked
+   * for it must not get a real model instead. Then the real one, when the owner has supplied a
+   * key. Then nothing, which is a fully supported state: Ask gathers the same evidence, cites the
+   * same records, and says plainly that no model wrote a summary rather than inventing a narrator
+   * to fill the space.
    */
   const answerProvider =
     overrides.answerProvider ??
-    (config.ask.scriptedProvider ? new ScriptedAnswerProvider() : new UnconfiguredAnswerProvider());
+    (config.ask.scriptedProvider
+      ? new ScriptedAnswerProvider()
+      : config.ai.enabled && config.ai.apiKey
+        ? new AnthropicAnswerProvider({ apiKey: config.ai.apiKey, model: config.ai.model })
+        : new UnconfiguredAnswerProvider());
 
   const memoryService = new MemoryService({
     memories: knowledge,

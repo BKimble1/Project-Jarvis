@@ -134,8 +134,24 @@ export class AnthropicNarrator implements BriefingNarrator {
   private async ask(prompt: string): Promise<unknown> {
     const response = await this.client.messages.create({
       model: this.model,
-      max_tokens: 1500,
-      temperature: 0,
+      /*
+       * Room for the JSON to close.
+       *
+       * The default model reasons before it answers, and those tokens count against this ceiling.
+       * At 1500 a portfolio narrative could be cut off mid-object, which arrives here as a JSON
+       * parse error and degrades to the deterministic narrative — indistinguishable, from the
+       * outside, from having no key at all.
+       */
+      max_tokens: 8_000,
+      /*
+       * No sampling parameters.
+       *
+       * `temperature` was sent here until Phase V1 activation, and the current Opus family — which
+       * `JARVIS_AI_MODEL` defaults to — rejects `temperature`, `top_p` and `top_k` with a 400. The
+       * catch below turned that into `ai_failed_fallback` on every single request, so a correctly
+       * configured narrator produced deterministic output forever and said nothing about why.
+       * Determinism is asked for in the system prompt instead, where it belongs.
+       */
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: prompt }],
       /* Deliberately no `tools`: the narrator can write, and nothing else. */

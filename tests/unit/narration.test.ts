@@ -652,7 +652,14 @@ describe('containsFabricatedProgress', () => {
 interface CapturedRequest {
   readonly model: string;
   readonly max_tokens: number;
+  /*
+   * All three sampling parameters are declared even though the narrator sends none of them.
+   * That is the point: a test can only assert their absence against a shape that admits them,
+   * and their absence is the property — the current Opus family rejects each one with a 400.
+   */
   readonly temperature?: number;
+  readonly top_p?: number;
+  readonly top_k?: number;
   readonly system?: string;
   readonly messages: readonly { readonly role: string; readonly content: string }[];
   readonly tools?: readonly unknown[];
@@ -794,7 +801,7 @@ describe('AnthropicNarrator', () => {
     expect(result.narrative).toEqual(DETERMINISTIC_PORTFOLIO);
   });
 
-  it('sends no tools, a temperature of zero and no credential', async () => {
+  it('sends no tools, no sampling parameters and no credential', async () => {
     const { narrator, calls } = narratorWith(() => textResponse(JSON.stringify(AI_NARRATIVE)));
 
     await narrator.narrateProject(basePayload);
@@ -804,7 +811,17 @@ describe('AnthropicNarrator', () => {
     if (!request) throw new Error('The fake client captured no request.');
 
     expect(request.model).toBe('claude-test-model');
-    expect(request.temperature).toBe(0);
+    /*
+     * No sampling parameters at all, and this is the assertion rather than `temperature: 0`.
+     *
+     * The current Opus family rejects `temperature`, `top_p` and `top_k` outright with a 400, and
+     * this narrator's own catch turned that rejection into `ai_failed_fallback` — so a briefing
+     * looked deterministic-by-choice on every single request while the model was never reached.
+     * Asserting their absence is what stops that being reintroduced as a tidy-looking default.
+     */
+    expect(request.temperature).toBeUndefined();
+    expect(request.top_p).toBeUndefined();
+    expect(request.top_k).toBeUndefined();
     /* The narrator may write and nothing else: granting it a tool would make it an actor. */
     expect(request.tools).toBeUndefined();
 
