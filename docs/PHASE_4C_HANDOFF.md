@@ -425,12 +425,12 @@ it.
 | suite                                    | tests | what it covers                                                                        |
 | ---------------------------------------- | ----- | ------------------------------------------------------------------------------------- |
 | `tests/unit/ask-rules.test.ts`           | 40    | scope, routing, state machine, snapshot, validation, retrieval request, render safety |
-| `tests/integration/ask-pipeline.test.ts` | 29    | isolation canaries, memories, snapshot pinning, cancellation, usage, audit, scrubbing |
+| `tests/integration/ask-pipeline.test.ts` | 32    | isolation canaries, memories, snapshot pinning, cancellation, usage, audit, scrubbing |
 | `tests/integration/ask-http.test.ts`     | 14    | the real shipping handlers                                                            |
 | `tests/e2e/ask.spec.ts`                  | 17    | owner journeys, evidence-only                                                         |
 | `tests/e2e/ask-model.spec.ts`            | 4     | owner journeys with a stand-in model                                                  |
 
-Repository totals after 4C: **1157** unit and integration tests across **31** files, all passing;
+Repository totals after 4C: **1160** unit and integration tests across **31** files, all passing;
 **91** end-to-end tests across two viewports, plus **4** in the separate generated-answer run.
 
 ---
@@ -573,28 +573,36 @@ after a short API list was added.
 
 The twenty failure modes the phase specification named, and what was found:
 
-| #   | failure mode                                      | verdict                                                                                    |
-| --- | ------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 1   | E2E instability returning under Ask's load        | Found once (fixture compile, defect 9); fixed and re-verified over five runs               |
-| 2   | Scope decided by the model                        | Not possible: scope is resolved before retrieval and the model has no channel to change it |
-| 3   | Raw knowledge-table access bypassing retrieval    | None. `EvidenceGatherer` imports no knowledge repository                                   |
-| 4   | Status inferred from prose                        | None. Integration test plants a lying document and asserts the engine answers              |
-| 5   | Private memory included automatically             | Only in an owner-audience scope, and never a `suggested` one                               |
-| 6   | Forgotten source content retained                 | **Found** (defects 2 and 3); fixed                                                         |
-| 7   | Citations invented by the provider                | Rejected by R-AN1; a browser journey drives the rejection through the UI                   |
-| 8   | Citation routes lacking authorization             | Owner-joined; cross-answer replay returns an identical 404                                 |
-| 9   | Prompt injection entering privileged instructions | Fenced as quoted material; journeys assert nothing happened                                |
-| 10  | Conversation summaries crossing scopes            | No summaries. Out-of-scope turns are dropped, not summarised                               |
-| 11  | Recommendations presented as facts                | R-AN6, widened during the audit (defect 7)                                                 |
-| 12  | Evidence-only mislabelled as AI analysis          | Mode label and meaning on every answer; no `model_interpretation` claims in that mode      |
-| 13  | Partial output marked complete before validation  | R-AR2: `complete` is reachable only from `validating`                                      |
-| 14  | Duplicate paid calls                              | **Found** (defect 1); fixed, with a test asserting one provider call for two submissions   |
-| 15  | Late completions resurrecting cancelled answers   | R-AR1 plus an expected-state guard in the UPDATE; tested at both levels                    |
-| 16  | Mission drafts that enqueue tasks                 | None. No plan, no run, no branch — asserted after creating one                             |
-| 17  | Raw provider output rendered as HTML              | No `dangerouslySetInnerHTML`; asserted by source scan and by an injection journey          |
-| 18  | Numeric usage damaged by redaction                | Nulls stay null, numbers stay numbers, through usage row, answer row and export            |
-| 19  | Tests asserting only headings or empty states     | Every negative is a canary paired with a positive control                                  |
-| 20  | New retries or raised timeouts hiding failures    | None added. `retries: 0` locally; no timeout was raised                                    |
+| #   | failure mode                                      | verdict                                                                                                                                           |
+| --- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | E2E instability returning under Ask's load        | Found once (fixture compile, defect 9); fixed and re-verified over five runs                                                                      |
+| 2   | Scope decided by the model                        | Not possible: scope is resolved before retrieval and the model has no channel to change it                                                        |
+| 3   | Raw knowledge-table access bypassing retrieval    | None. `EvidenceGatherer` imports no knowledge repository                                                                                          |
+| 4   | Status inferred from prose                        | None. Integration test plants a lying document and asserts the engine answers                                                                     |
+| 5   | Private memory included automatically             | Only in an owner-audience scope, and never a `suggested` one; a canary proves a display audience cannot reach one                                 |
+| 6   | Forgotten source content retained                 | **Found** (defects 2 and 3); fixed                                                                                                                |
+| 7   | Citations invented by the provider                | Rejected by R-AN1; a browser journey drives the rejection through the UI                                                                          |
+| 8   | Citation routes lacking authorization             | Owner-joined; cross-answer replay returns an identical 404                                                                                        |
+| 9   | Prompt injection entering privileged instructions | Fenced as quoted material; journeys assert nothing happened                                                                                       |
+| 10  | Conversation summaries crossing scopes            | No summaries. Out-of-scope turns are dropped, not summarised                                                                                      |
+| 11  | Recommendations presented as facts                | R-AN6, widened during the audit (defect 7)                                                                                                        |
+| 12  | Evidence-only mislabelled as AI analysis          | Mode label and meaning on every answer; no `model_interpretation` claims in that mode                                                             |
+| 13  | Partial output marked complete before validation  | R-AR2: `complete` is reachable only from `validating`                                                                                             |
+| 14  | Duplicate paid calls                              | **Found** (defect 1); fixed, with a test asserting one provider call for two submissions                                                          |
+| 15  | Late completions resurrecting cancelled answers   | R-AR1 plus an expected-state guard in the UPDATE; tested at both levels                                                                           |
+| 16  | Mission drafts that enqueue tasks                 | None. No plan, no run, no branch — asserted after creating one                                                                                    |
+| 17  | Raw provider output rendered as HTML              | No `dangerouslySetInnerHTML`; asserted by source scan and by an injection journey                                                                 |
+| 18  | Numeric usage damaged by redaction                | Nulls stay null, numbers stay numbers, through usage row, answer row and export                                                                   |
+| 19  | Tests asserting only headings or empty states     | Every negative is a canary paired with a positive control                                                                                         |
+| 20  | New retries or raised timeouts hiding failures    | No test retry and no raised timeout. One **transport** retry was added in the fixtures — connection-level only, announced in the log; see Part 11 |
+
+Two more canaries were added during the audit, beyond the twenty:
+
+- **A credential reaching the prompt.** A token-shaped value in the environment appears in neither
+  the prompt nor the snapshot. "There is no path from configuration into the packet" is a claim;
+  this is the test of it.
+- **A suggestion stored as a fact.** A `recommendation` claim survives the round trip as a
+  recommendation, citing nothing, rather than being promoted on the way through.
 
 ---
 

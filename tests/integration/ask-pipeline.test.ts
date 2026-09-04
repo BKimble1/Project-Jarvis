@@ -4,6 +4,7 @@ import { askTurnSchema } from '@/domain/answer-run';
 import { FORGET_CONFIRMATION } from '@/domain/knowledge';
 import { ForbiddenError } from '@/domain/errors';
 import { projectInputSchema } from '@/domain/project';
+import { buildScopeFilter } from '@/domain/retrieval';
 import type { MemoryActor } from '@/server/knowledge/memory-service';
 import { FakeAnswerProvider, scriptedAnswer } from '../helpers/fake-answer-provider';
 import { createHarness, type TestHarness } from '../helpers/services';
@@ -963,6 +964,125 @@ describe('the Ask Jarvis pipeline', () => {
       expect(mine.some((event) => event.rule === 'R-AE1')).toBe(true);
       /* An audit record is not a second copy of the sources. */
       expect(JSON.stringify(events)).not.toContain(CANARY_A);
+    });
+  });
+
+  /* --------------------------------------------------- adversarial canaries */
+
+  describe('what can never reach an answer', () => {
+    it('puts no credential from the environment into the prompt', async () => {
+      /*
+       * The packet is built from evidence rows and the question, and there is no path from the
+       * configuration into it — but "there is no path" is a claim, and this is the test of it. The
+       * canary is shaped like a real GitHub token so a future change that logged configuration
+       * into the prompt would be caught by the same string the export scanner looks for.
+       */
+      const credential = 'ghp_zarquonaskcanary00000000000000000000';
+      process.env.JARVIS_CI_GITHUB_TOKEN = credential;
+      try {
+        const project = await makeProject('Alpha');
+        provider.setAnswer(scriptedAnswer({ citations: [] }));
+        const result = await ask({
+          question: 'Where are we on Alpha?',
+          scope: 'project',
+          projectIds: [project],
+          idempotencyKey: 'credential-canary-1',
+        });
+
+        expect(provider.prompts.join('\n')).not.toContain(credential);
+        expect(await everythingSeenBy(result.run.id)).not.toContain(credential);
+      } finally {
+        delete process.env.JARVIS_CI_GITHUB_TOKEN;
+      }
+    });
+
+    it('keeps a private note out of anything a display could ask for', async () => {
+      const project = await makeProject('Alpha');
+      const secret = 'zarquon-ask-private-canary-9034';
+      await harness.services.memoryService.remember(
+        {
+          scope: 'project',
+          projectId: project,
+          category: 'preference',
+          statement: `I prefer to deploy with ${secret}.`,
+          tags: [],
+        },
+        OWNER_ACTOR,
+      );
+
+      /* The owner sees it. */
+      const asOwner = await harness.services.retrieval.retrieve({
+        query: 'prefer deploy',
+        scope: buildScopeFilter({
+          audience: 'owner',
+          scopes: ['global', 'project'],
+          projectIds: [project],
+        }),
+        purpose: 'answer',
+        limit: 10,
+        charBudget: 8000,
+        sourceKinds: null,
+        includeSources: true,
+        includeMemories: true,
+        asOf: null,
+      });
+      expect(JSON.stringify(asOwner.evidence)).toContain(secret);
+
+      /* A wallboard cannot, because its ceiling is public and a preference is private. */
+      const asDisplay = await harness.services.retrieval.retrieve({
+        query: 'prefer deploy',
+        scope: buildScopeFilter({
+          audience: 'display',
+          scopes: ['global', 'project'],
+          projectIds: [project],
+        }),
+        purpose: 'answer',
+        limit: 10,
+        charBudget: 8000,
+        sourceKinds: null,
+        includeSources: true,
+        includeMemories: true,
+        asOf: null,
+      });
+      expect(JSON.stringify(asDisplay.evidence)).not.toContain(secret);
+    });
+
+    it('stores a recommendation as a recommendation, not as a fact', async () => {
+      const project = await makeProject('Alpha');
+      provider.setAnswer({
+        headline: 'Here is what the records say.',
+        claims: [
+          {
+            kind: 'recorded_fact',
+            text: 'The project is active.',
+            citations: [`project:${project}`],
+            projectId: project,
+          },
+          {
+            kind: 'recommendation',
+            text: 'Consider asking the reviewer to look again.',
+            citations: [],
+            projectId: project,
+          },
+        ],
+      } as never);
+
+      const result = await ask({
+        question: 'Where are we on Alpha?',
+        scope: 'project',
+        projectIds: [project],
+        idempotencyKey: 'recommendation-kind-1',
+      });
+
+      const stored = await harness.services.answers.findById(result.run.id);
+      const kinds = (stored?.claims ?? []).map((claim) => claim.kind);
+      expect(kinds).toContain('recommendation');
+      /* The suggestion did not get promoted to a fact on the way through. */
+      const suggestion = (stored?.claims ?? []).find(
+        (claim) => claim.text === 'Consider asking the reviewer to look again.',
+      );
+      expect(suggestion?.kind).toBe('recommendation');
+      expect(suggestion?.citations).toHaveLength(0);
     });
   });
 
