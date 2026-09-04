@@ -1,4 +1,5 @@
 import { boundText, redactSecrets } from '@/domain/redaction';
+import { withoutWorkerSecrets } from '../child-env';
 import type { RunUsage } from '@/domain/mission-run';
 import {
   EventQueue,
@@ -182,9 +183,17 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           preset: 'claude_code',
           append: request.systemPrompt,
         },
-        /* The worker's own credential. Never sent by the control plane, never in a prompt. */
+        /*
+         * The agent inherits an environment with every credential removed, and then exactly one
+         * put back: the model key it cannot work without.
+         *
+         * The delivery token in particular must not be here. The agent has Bash, and nothing in
+         * the tool policy blocks `env` or `printenv` — so before this filter existed, the
+         * credential that the four-method delivery client, the push guard and the CI separation
+         * are all built on was one shell command away from the model. See `child-env.ts`.
+         */
         env: {
-          ...process.env,
+          ...withoutWorkerSecrets(),
           ...(this.options.apiKey ? { ANTHROPIC_API_KEY: this.options.apiKey } : {}),
           CLAUDE_AGENT_SDK_CLIENT_APP: 'jarvis-worker',
         },

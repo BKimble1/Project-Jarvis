@@ -5,6 +5,7 @@ import { VERIFICATION_OUTPUT_MAX, type VerificationInput } from '@/domain/missio
 import type { PlannedVerification } from '@/domain/mission-plan';
 import { boundText, redactSecrets } from '@/domain/redaction';
 import { assertInsideWorkspace } from '@/domain/workspace-safety';
+import { withoutWorkerSecrets } from './child-env';
 
 /**
  * Verification.
@@ -278,15 +279,15 @@ function execute(
       /* No shell, ever: the metacharacter check above is only the first of two defences. */
       shell: false,
       env: {
-        ...process.env,
+        /*
+         * The worker's credentials are not the repository's business. Shared with the agent
+         * session through one function, so the two boundaries cannot drift apart — this one was
+         * right and the agent's was not, which is exactly how a list kept in two places fails.
+         */
+        ...withoutWorkerSecrets(),
         CI: '1',
         FORCE_COLOR: '0',
         NO_COLOR: '1',
-        /* The worker's credentials are not the repository's business. */
-        ANTHROPIC_API_KEY: undefined,
-        JARVIS_WORKER_TOKEN: undefined,
-        JARVIS_WORKER_GITHUB_TOKEN: undefined,
-        GITHUB_TOKEN: undefined,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
