@@ -382,6 +382,19 @@ export function buildServices(
   /* Declared before the worker service, which authorises a task run against its own task. */
   const graphs = new DrizzleTaskGraphRepository(db);
 
+  /*
+   * The qualification rung, read at claim time.
+   *
+   * A thunk rather than a value, and a thunk that closes over a service declared further down
+   * rather than one hoisted up here: the qualification service needs half of what follows, and the
+   * only thing the claim paths want from it is an answer at the moment they ask. Nothing calls
+   * this during construction, so the forward reference is resolved long before it is used.
+   *
+   * `currentLevel()` and not `status().verdict.level` — the demotion for requalification is the
+   * entire reason this call exists.
+   */
+  const currentLevel = () => qualificationService.currentLevel();
+
   const workerService = new WorkerService({
     missions: missionRepo,
     plans,
@@ -401,6 +414,7 @@ export function buildServices(
     missionService: missions,
     concurrencyLimit: config.missions.concurrencyLimit,
     allowWebResearch: config.missions.allowWebResearch,
+    currentLevel,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -451,6 +465,7 @@ export function buildServices(
     orchestrator,
     limits: config.missions.capacity,
     allowWebResearch: config.missions.allowWebResearch,
+    currentLevel,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -622,8 +637,15 @@ export function buildServices(
     approvals: releaseApprovals,
     appProfiles,
     activity,
-    /* Read at dispatch time, not at start-up: qualification changes while the process runs. */
-    currentLevel: async () => (await qualificationService.status()).verdict.level,
+    /*
+     * Read at dispatch time, not at start-up: qualification changes while the process runs.
+     *
+     * `currentLevel()` rather than `status().verdict.level`, and the difference is the whole point
+     * of the call: `currentLevel()` demotes to `built` when the deployment needs requalifying,
+     * whereas the verdict still reports the rung earned under assumptions that no longer hold.
+     * A dispatch gate reading the undemoted number is a gate that opens on a stale qualification.
+     */
+    currentLevel: () => qualificationService.currentLevel(),
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

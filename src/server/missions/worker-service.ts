@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/domain/errors';
-import type { Mission, MissionState } from '@/domain/mission';
+import type { Mission, MissionState, MissionType } from '@/domain/mission';
 import { isReadOnlyMissionType } from '@/domain/mission';
+import type { QualificationLevel } from '@/domain/qualification';
+import {
+  assertUnattended,
+  missionUnattendedCapabilities,
+  unattendedMissionTypes,
+} from '@/domain/unattended';
 import type { MissionRun } from '@/domain/mission-run';
 import type {
   MissionAssignment,
@@ -76,6 +82,16 @@ export interface WorkerServiceDeps {
   readonly missionService: MissionService;
   readonly concurrencyLimit: number;
   readonly allowWebResearch: boolean;
+  /**
+   * The qualification rung in force right now.
+   *
+   * Required rather than optional, and asked at claim time rather than at construction. Optional
+   * would mean a caller that forgot it got no gate and no error, which is how `assertActivationAllowed`
+   * spent Phase 4 with one call site. Asked late because qualification changes while the process
+   * runs — a deployment can be demoted mid-shift by an assumption change, and a level cached at
+   * start-up would keep handing out work it is no longer entitled to.
+   */
+  readonly currentLevel: () => Promise<QualificationLevel>;
   readonly clock?: () => Date;
 }
 
@@ -240,13 +256,27 @@ export class WorkerService {
     }
     if (!input.accepts.includes('execution') && !input.accepts.includes('research')) return null;
 
+    /*
+     * The unattended gate, first as a filter and then as an assertion.
+     *
+     * The filter is what makes an unqualified deployment behave sanely: an autonomous mission it
+     * may not run is never handed out, so no run is started and nothing has to be unwound. The
+     * assertion afterwards is what makes the gate *true* rather than merely likely — the filter
+     * lives in SQL and could drift from the mapping, and this is the line past which a real model
+     * session begins.
+     */
+    const level = await this.deps.currentLevel();
     const claimed = await this.deps.missions.claimNext({
       workerId,
       kinds: input.accepts,
       concurrencyLimit: this.deps.concurrencyLimit,
       now,
+      unattendedMissionTypes: unattendedMissionTypes(level),
     });
     if (!claimed) return null;
+    if (claimed.mission.autonomous) {
+      assertUnattended(missionUnattendedCapabilities(claimed.mission.type), level);
+    }
 
     /* Re-validate the approval after claiming: the guard inside the SQL is necessary, not sufficient. */
     const approval = await this.deps.approvals.activeFor(claimed.mission.id);
@@ -287,9 +317,20 @@ export class WorkerService {
   /** Planning runs bypass the execution queue: they change nothing, so they need no approval. */
   private async claimInspection(workerId: string, now: Date): Promise<MissionAssignment | null> {
     const open = await this.deps.missions.listOpen();
+    /*
+     * An inspection changes nothing, but it still runs a real model against a real repository, so
+     * an autonomous mission's inspection is gated on `model_task_readonly` like any other model
+     * session. The mission types are pre-computed once rather than per candidate: the list is
+     * short, and doing it inside the predicate would ask the ladder the same question ten times.
+     */
+    const level = await this.deps.currentLevel();
+    const claimable = new Set<MissionType>(unattendedMissionTypes(level));
     const candidate = open.find(
       (mission) =>
-        mission.state === 'inspecting' && mission.activeRunId === null && mission.projectId,
+        mission.state === 'inspecting' &&
+        mission.activeRunId === null &&
+        mission.projectId &&
+        (!mission.autonomous || claimable.has(mission.type)),
     );
     if (!candidate) return null;
 

@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, isNull, lt, or, sql, type SQL } from 'driz
 import { ConflictError, NotFoundError } from '@/domain/errors';
 import {
   ACTIVE_MISSION_STATES,
+  MISSION_TYPES,
   OWNER_BLOCKED_MISSION_STATES,
   TERMINAL_MISSION_STATES,
   type ClarificationQuestion,
@@ -262,6 +263,28 @@ export class DrizzleMissionRepository implements MissionRepository {
   async claimNext(request: ClaimRequest): Promise<ClaimResult | null> {
     const activeStates = sql.raw(ACTIVE_MISSION_STATES.map((state) => `'${state}'`).join(', '));
 
+    /*
+     * The unattended gate, inside the claim rather than beside it.
+     *
+     * An autonomous mission is claimable only when its type is one this deployment has qualified
+     * to run with nobody watching. Attended missions — everything a person approved — ignore the
+     * clause entirely, which is why an unqualified deployment still works exactly as it did.
+     *
+     * `MISSION_TYPES` is a closed vocabulary and the list is intersected with it before it reaches
+     * the statement, so nothing a caller passes can widen the SQL. When the intersection is empty
+     * the clause degrades to `not m.autonomous`, which is the safe reading of "qualified for
+     * nothing" rather than the dangerous one.
+     */
+    const unattended = MISSION_TYPES.filter((type) =>
+      request.unattendedMissionTypes.includes(type),
+    );
+    const unattendedClause =
+      unattended.length === 0
+        ? sql`and not c.autonomous`
+        : sql`and (not c.autonomous or c.type in (${sql.raw(
+            unattended.map((type) => `'${type}'`).join(', '),
+          )}))`;
+
     const claimed = await this.db.execute(sql`
       update ${missions} as m
       set state = 'claimed',
@@ -280,6 +303,7 @@ export class DrizzleMissionRepository implements MissionRepository {
           and (
             select count(*) from ${missions} as a where a.state in (${activeStates})
           ) < ${request.concurrencyLimit}
+          ${unattendedClause}
         order by
           case c.priority when 'critical' then 0 when 'high' then 1 when 'medium' then 2 else 3 end,
           c.created_at asc,

@@ -775,6 +775,23 @@ export const missions = pgTable(
     executionOverrideAt: timestamp('execution_override_at', { withTimezone: true }),
     executionOverrideReason: text('execution_override_reason'),
 
+    /*
+     * V2: was this mission queued by a person, or by standing authority?
+     *
+     * The single input to the unattended gate, and a column rather than something derived from the
+     * active approval on purpose: the question "is anybody watching this?" is asked inside the one
+     * SQL statement that claims a mission, and a gate that needs a second query is a gate that
+     * eventually gets a fast path around it.
+     *
+     * Defaults to false, so every mission that already exists — and every mission a person queues
+     * from now on — is attended, and nothing about supervised operation changes.
+     */
+    autonomous: boolean('autonomous').notNull().default(false),
+    /** Which charter version authorised it. Null whenever `autonomous` is false. */
+    charterVersionId: uuid('charter_version_id'),
+    /** The recorded decision that authorised it, for the audit trail to point at. */
+    authorizationDecisionId: uuid('authorization_decision_id'),
+
     constraints: jsonb('constraints')
       .$type<string[]>()
       .notNull()
@@ -862,6 +879,19 @@ export const missionApprovals = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`),
     note: text('note'),
+
+    /*
+     * V2: which authority approved this, when it was not a person.
+     *
+     * `approvedBy` already carries the name, and for a standing-authority approval it carries the
+     * literal `charter`. These three columns carry what a name cannot: *which* charter, what it
+     * said, and the decision that read it. The digest is stored beside the id rather than only
+     * referenced through it, so an audit can prove the charter it is reading now is the charter
+     * that was read then, even if the row were ever restored from a different backup.
+     */
+    charterVersionId: uuid('charter_version_id'),
+    charterDigest: text('charter_digest'),
+    authorizationDecisionId: uuid('authorization_decision_id'),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     revokedReason: text('revoked_reason'),
   },

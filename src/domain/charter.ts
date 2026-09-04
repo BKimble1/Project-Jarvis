@@ -808,3 +808,48 @@ export function branchScopeContains(
     return pattern === target;
   });
 }
+
+/* ------------------------------------------------------------ stored shapes */
+
+/**
+ * A charter version as it comes out of the database.
+ *
+ * The three timestamps are the whole lifecycle and they are worth reading together:
+ *
+ * - `activatedAt` null → a draft. It authorises nothing, no matter what it says.
+ * - `activatedAt` set, `supersededAt` null → the one in force.
+ * - both set → history, and still the correct answer to "what authorised that decision in March?"
+ *
+ * Nothing is ever deleted from this table, and nothing is edited in place. That is what makes the
+ * digest recorded on a decision checkable years later.
+ */
+export interface OperatingCharterVersion {
+  readonly id: string;
+  readonly version: number;
+  readonly content: CharterContent;
+  readonly digest: string;
+  /** Always a person. There is no code path by which a model authors a charter. */
+  readonly authoredBy: string;
+  readonly note: string | null;
+  readonly activatedAt: string | null;
+  readonly activatedBy: string | null;
+  readonly supersededAt: string | null;
+  readonly createdAt: string;
+}
+
+/** Whether this version is the one currently authorising anything. */
+export function isCharterInForce(charter: OperatingCharterVersion): boolean {
+  return charter.activatedAt !== null && charter.supersededAt === null;
+}
+
+/**
+ * Whether a charter has passed its own expiry.
+ *
+ * Separate from `isCharterInForce` because they fail differently: a superseded charter was
+ * replaced deliberately, an expired one simply ran out while nobody was looking. The second is the
+ * one worth telling the owner about.
+ */
+export function isCharterExpired(charter: OperatingCharterVersion, now: Date): boolean {
+  const expiresAt = charter.content.expiresAt;
+  return expiresAt !== null && new Date(expiresAt).getTime() <= now.getTime();
+}

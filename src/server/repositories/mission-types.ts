@@ -111,6 +111,14 @@ export interface ClaimRequest {
   readonly kinds: readonly RunKind[];
   readonly concurrencyLimit: number;
   readonly now: Date;
+  /**
+   * Mission types that may be handed out when nobody approved them.
+   *
+   * Computed by `unattendedMissionTypes(level)` from the qualification rung in force at the moment
+   * of the claim. Missions a person approved ignore it entirely; an empty list means no autonomous
+   * mission is claimable at all, which is the correct behaviour on an unqualified deployment.
+   */
+  readonly unattendedMissionTypes: readonly MissionType[];
 }
 
 export interface ClaimResult {

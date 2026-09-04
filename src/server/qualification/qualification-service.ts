@@ -80,6 +80,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   '0005_memory_sensitivity.sql',
   '0006_ask_conversations.sql',
   '0007_operating_charter.sql',
+  '0008_standing_authority.sql',
 ];
 
 /** Settings keys this service owns. Named once so a typo cannot silently create a second key. */

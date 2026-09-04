@@ -16,7 +16,13 @@ import type {
   ReviewVerdict,
   FindingState,
 } from '@/domain/mission-review';
-import type { MissionTask, TaskFailureCode, TaskState, TaskUsage } from '@/domain/mission-task';
+import type {
+  MissionTask,
+  TaskFailureCode,
+  TaskState,
+  TaskType,
+  TaskUsage,
+} from '@/domain/mission-task';
 import type { Playbook, PlaybookDefinition, PlaybookVersion } from '@/domain/playbook';
 import type { MissionTaskGraph, TaskGraphState } from '@/domain/task-graph';
 import type { VerificationOutcome } from '@/domain/mission-run';
@@ -111,6 +117,16 @@ export interface TaskClaimRequest {
   };
   /** False while the instance is draining or stopped: nothing new may be claimed. */
   readonly accepting: boolean;
+  /**
+   * Roles and task types claimable on a mission nobody approved.
+   *
+   * Two lists rather than one because the gate has two axes — what the role may do, and where the
+   * task's result goes — and the claim query can only filter on columns. Both are the *loose*
+   * form of the gate: a task passing both filters is still asserted exactly, by role and type
+   * together, once it has been claimed.
+   */
+  readonly unattendedRoles: readonly AgentRole[];
+  readonly unattendedTaskTypes: readonly TaskType[];
 }
 
 export interface TaskClaimResult {

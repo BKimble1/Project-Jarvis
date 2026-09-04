@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import { ConflictError, NotFoundError } from '@/domain/errors';
-import { CAPACITY_TASK_STATES } from '@/domain/mission-task';
-import { WRITE_ROLES } from '@/domain/agent-role';
+import { CAPACITY_TASK_STATES, TASK_TYPES } from '@/domain/mission-task';
+import { AGENT_ROLES, WRITE_ROLES } from '@/domain/agent-role';
 import { normaliseWriteSet, writeSetsOverlap } from '@/domain/write-set';
 import { boundText, redactSecrets, redactDeep } from '@/domain/redaction';
 import type { AppProfileInput } from '@/domain/app-profile';
@@ -385,6 +385,35 @@ export class DrizzleTaskRepository implements TaskRepository {
     );
     if (request.roles.filter((role) => /^[a-z_]{3,40}$/.test(role)).length === 0) return null;
 
+    /*
+     * The unattended gate, as two filters inside the claim.
+     *
+     * A task belonging to a mission standing authority queued is claimable only when both its role
+     * and its type are ones this deployment has qualified to run with nobody watching. Tasks on a
+     * mission a person approved ignore the clause entirely.
+     *
+     * Both lists are intersected with their closed vocabularies before reaching the statement, so
+     * nothing a caller passes can widen the SQL, and an empty intersection degrades to
+     * `not m.autonomous` rather than to "everything".
+     */
+    const unattendedRoles = sql.raw(
+      AGENT_ROLES.filter((role) => request.unattendedRoles.includes(role))
+        .map((role) => `'${role}'`)
+        .join(', '),
+    );
+    const unattendedTypes = sql.raw(
+      TASK_TYPES.filter((type) => request.unattendedTaskTypes.includes(type))
+        .map((type) => `'${type}'`)
+        .join(', '),
+    );
+    const unattendedClause =
+      request.unattendedRoles.length === 0 || request.unattendedTaskTypes.length === 0
+        ? sql`and not m.autonomous`
+        : sql`and (
+            not m.autonomous
+            or (c.role in (${unattendedRoles}) and c.task_type in (${unattendedTypes}))
+          )`;
+
     const claimed = await this.db.execute(sql`
       update ${missionTasks} as t
       set state = 'claimed',
@@ -402,6 +431,7 @@ export class DrizzleTaskRepository implements TaskRepository {
           and g.state = 'approved'
           and m.approved_graph_version = c.graph_version
           and m.approved_plan_version = c.plan_version
+          ${unattendedClause}
           /* Nothing it depends on is still outstanding. */
           and not exists (
             select 1

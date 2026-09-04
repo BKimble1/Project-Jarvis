@@ -16,7 +16,19 @@ import type { ProjectStatus } from './enums';
  * property of the code that happens to be calling it today.
  */
 
-export type MissionActor = 'owner' | 'worker' | 'system';
+/**
+ * Who moved a mission.
+ *
+ * `charter` is not a person and is not a synonym for `owner`. It means "standing authority the
+ * owner granted in advance decided this", and it exists as its own actor precisely so that the
+ * few moves it may make are enumerable, testable and visible in the history. A mission that
+ * reached `queued` because of a charter reads differently in an audit from one a person queued,
+ * and it must: nobody was watching.
+ *
+ * It is deliberately *not* the case that `charter` can do whatever `owner` can do. See
+ * `CHARTER_TRANSITIONS` below for the exact list, which is four moves long.
+ */
+export type MissionActor = 'owner' | 'worker' | 'system' | 'charter';
 
 export interface MissionTransition {
   readonly from: MissionState;
@@ -63,8 +75,8 @@ export const MISSION_TRANSITIONS: readonly MissionTransition[] = [
   T('planning', 'cancelled', ['owner'], 'Cancelled during planning'),
 
   /* Approval */
-  T('awaiting_plan_approval', 'queued', ['owner'], 'Plan approved and queued'),
-  T('awaiting_plan_approval', 'planning', ['owner'], 'Revision requested'),
+  T('awaiting_plan_approval', 'queued', ['owner', 'charter'], 'Plan approved and queued'),
+  T('awaiting_plan_approval', 'planning', ['owner', 'charter'], 'Revision requested'),
   T('awaiting_plan_approval', 'needs_clarification', ['owner'], 'More information needed'),
   T('awaiting_plan_approval', 'draft', ['owner'], 'Returned to draft'),
   T('awaiting_plan_approval', 'cancelled', ['owner'], 'Cancelled'),
@@ -147,14 +159,49 @@ export const MISSION_TRANSITIONS: readonly MissionTransition[] = [
   T('stopped', 'queued', ['owner'], 'Retried as a new attempt'),
   T('stopped', 'awaiting_plan_approval', ['owner'], 'Re-planned before retrying'),
   T('stopped', 'cancelled', ['owner'], 'Cancelled'),
-  T('failed', 'queued', ['owner'], 'Retried as a new attempt'),
-  T('failed', 'awaiting_plan_approval', ['owner'], 'Re-planned before retrying'),
+  T('failed', 'queued', ['owner', 'charter'], 'Retried as a new attempt'),
+  T('failed', 'awaiting_plan_approval', ['owner', 'charter'], 'Re-planned before retrying'),
   T('failed', 'cancelled', ['owner'], 'Cancelled'),
 ];
 
 const TRANSITION_INDEX = new Map<string, MissionTransition>(
   MISSION_TRANSITIONS.map((transition) => [`${transition.from}→${transition.to}`, transition]),
 );
+
+/**
+ * Every move standing authority may make, written out rather than derived.
+ *
+ * Four moves, and the shape of the list is the argument: standing authority replaces the owner
+ * only where the owner was a gate on *forward progress inside work Jarvis is already doing*. It
+ * replaces the owner nowhere else.
+ *
+ * What is deliberately absent, and why:
+ *
+ * - **Anything to `cancelled`.** Cancelling destroys queued work. An operator that can cancel can
+ *   quietly delete the owner's own missions, and there is no benefit to autonomy in it: a mission
+ *   the operator no longer wants can be failed with a reason, which keeps the record.
+ * - **Anything to `stopping` or `pausing`.** Same reasoning from the other side. When the
+ *   supervisor decides a mission has become a rabbit hole it ends it through `running → failed`,
+ *   which `system` may already do, and the partial work stays on its branch.
+ * - **`stopped → queued`.** A stopped mission was stopped by a person. Re-queueing it is the one
+ *   move that would let standing authority overrule a live owner decision, so it is the one move
+ *   most worth refusing.
+ *
+ * `failed → queued` *is* here, because a failure is the system's own verdict rather than the
+ * owner's, and retrying inside the charter's attempt limit is ordinary operating behaviour. The
+ * limit is enforced by the authorisation service, not by this table.
+ */
+export const CHARTER_TRANSITIONS: readonly (readonly [MissionState, MissionState])[] = [
+  ['awaiting_plan_approval', 'queued'],
+  ['awaiting_plan_approval', 'planning'],
+  ['failed', 'queued'],
+  ['failed', 'awaiting_plan_approval'],
+];
+
+/** Whether standing authority may make this move at all, before any charter content is consulted. */
+export function charterMayMove(from: MissionState, to: MissionState): boolean {
+  return findTransition(from, to)?.actors.includes('charter') ?? false;
+}
 
 export function findTransition(from: MissionState, to: MissionState): MissionTransition | null {
   return TRANSITION_INDEX.get(`${from}→${to}`) ?? null;
@@ -218,11 +265,12 @@ export function assertTransition(
     });
   }
   if (!transition.actors.includes(actor)) {
-    throw new ConflictError(`A ${actor} cannot move a mission from ${from} to ${to}.`, {
-      from,
-      to,
-      actor,
-    });
+    throw new ConflictError(
+      actor === 'charter'
+        ? `Standing authority cannot move a mission from ${from} to ${to}. That move needs you.`
+        : `A ${actor} cannot move a mission from ${from} to ${to}.`,
+      { from, to, actor },
+    );
   }
   return transition;
 }

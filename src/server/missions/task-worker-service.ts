@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import { ConflictError, ForbiddenError, NotFoundError } from '@/domain/errors';
 import { AGENT_ROLES, isReviewRole, isWriteRole, type AgentRole } from '@/domain/agent-role';
+import type { QualificationLevel } from '@/domain/qualification';
+import {
+  assertUnattended,
+  taskUnattendedCapabilities,
+  unattendedTaskRoles,
+  unattendedTaskTypes,
+} from '@/domain/unattended';
 import {
   assertTaskTransition,
   isTerminalTaskState,
@@ -63,6 +70,14 @@ export interface TaskWorkerServiceDeps {
   readonly orchestrator: MissionOrchestrator;
   readonly limits: CapacityLimits;
   readonly allowWebResearch: boolean;
+  /**
+   * The qualification rung in force right now.
+   *
+   * Required and asked late, for the same two reasons as on `WorkerService`: an optional gate is
+   * a gate somebody forgets to pass, and a rung read at start-up is a rung that keeps handing out
+   * work after a demotion.
+   */
+  readonly currentLevel: () => Promise<QualificationLevel>;
   readonly clock?: () => Date;
 }
 
@@ -94,6 +109,16 @@ export class TaskWorkerService {
     const posture = await this.deps.orchestrator.posture();
     const limits = await this.deps.orchestrator.limits();
 
+    /*
+     * The unattended gate: a loose filter in the claim, an exact assertion after it.
+     *
+     * The filter cannot express "this role *with* this type", because the two columns are checked
+     * independently in SQL; the assertion below can, and does. So a deployment qualified for
+     * read-only agent work but not for delivery will filter in a `coordinator` and a `delivery`
+     * type separately, claim neither together, and — if the two ever did meet on one row — refuse
+     * it here before a pull request is opened.
+     */
+    const level = await this.deps.currentLevel();
     const claimed = await this.deps.tasks.claimNext({
       workerId,
       now: this.clock(),
@@ -106,8 +131,15 @@ export class TaskWorkerService {
         maxActiveMissions: limits.maxActiveMissions,
       },
       accepting: posture === 'open',
+      unattendedRoles: unattendedTaskRoles(level),
+      unattendedTaskTypes: unattendedTaskTypes(level),
     });
     if (!claimed) return null;
+
+    const mission = await this.deps.missions.findById(claimed.task.missionId);
+    if (mission?.autonomous) {
+      assertUnattended(taskUnattendedCapabilities(claimed.task.role, claimed.task.taskType), level);
+    }
 
     await this.deps.events.record(claimed.task.missionId, {
       type: 'run_started',

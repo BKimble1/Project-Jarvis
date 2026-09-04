@@ -204,6 +204,19 @@ export interface Mission {
   readonly executionOverrideAt: string | null;
   readonly executionOverrideReason: string | null;
 
+  /**
+   * Whether standing authority queued this, rather than a person.
+   *
+   * The one input to the unattended gate. False on every mission a person approved, including
+   * every mission that existed before standing authority did, which is why supervised operation is
+   * untouched by any of it.
+   */
+  readonly autonomous: boolean;
+  /** The charter version that authorised it. Null unless `autonomous`. */
+  readonly charterVersionId: string | null;
+  /** The recorded authorisation decision. Null unless `autonomous`. */
+  readonly authorizationDecisionId: string | null;
+
   readonly constraints: readonly string[];
   readonly doNotTouch: readonly string[];
   readonly deliverable: string | null;

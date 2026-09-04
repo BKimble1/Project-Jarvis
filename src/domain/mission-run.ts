@@ -127,7 +127,15 @@ export const MISSION_EVENT_TYPES = [
 ] as const;
 export type MissionEventType = (typeof MISSION_EVENT_TYPES)[number];
 
-export const EVENT_ACTORS = ['owner', 'worker', 'agent', 'system'] as const;
+/**
+ * Who caused an event.
+ *
+ * `charter` mirrors the mission actor of the same name and is here for one reason: an owner
+ * scrolling the timeline must be able to see, without decoding anything, which moves a person
+ * made and which ones standing authority made while nobody was watching. Folding the two into
+ * `owner` would make the history read as though they had been there.
+ */
+export const EVENT_ACTORS = ['owner', 'worker', 'agent', 'system', 'charter'] as const;
 export type EventActor = (typeof EVENT_ACTORS)[number];
 
 export const EVENT_LEVELS = ['debug', 'info', 'notice', 'warning', 'error'] as const;
