@@ -11,6 +11,7 @@ import {
   type CheckOutcome,
   type QualificationAssumptions,
   type QualificationCheckId,
+  type QualificationCheckResult,
   type QualificationLevel,
   type QualificationRun,
   type QualificationVerdict,
@@ -277,6 +278,34 @@ export class QualificationService {
     await this.options.qualification.finishRun(run.id, verdict.level, this.clock());
     await this.options.qualification.supersedeOlderThan(run.id, this.clock());
     return this.status();
+  }
+
+  /**
+   * Run every check now, and record nothing.
+   *
+   * `status()` reports the last stored run, which is the right answer for "what is this
+   * deployment qualified for" — a qualification is a dated claim, and re-measuring it on every
+   * page load would make it a live gauge instead. But a diagnostic needs the opposite: what is
+   * true *right now*, before anything has been recorded. Recording every invocation would also
+   * mean a `doctor` run could quietly demote a deployment.
+   *
+   * So this shares `performCheck` with `run()` — the same code, the same rules, no writes.
+   */
+  async dryRun(): Promise<readonly QualificationCheckResult[]> {
+    const results: QualificationCheckResult[] = [];
+    for (const check of QUALIFICATION_CHECKS) {
+      const started = Date.now();
+      const outcome = await this.performCheck(check.id);
+      results.push({
+        id: check.id,
+        outcome: outcome.outcome,
+        detail: outcome.detail,
+        evidence: outcome.evidence,
+        checkedAt: this.clock().toISOString(),
+        durationMs: Date.now() - started,
+      });
+    }
+    return results;
   }
 
   /* ------------------------------------------------------------- recording */

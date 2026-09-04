@@ -6,12 +6,18 @@
  * production build and the end-to-end smoke suite, in that order, and fails on the first
  * problem. Nothing is skipped to make the output look better.
  *
+ * The end-to-end suite runs as two separate Playwright invocations, one per browser project,
+ * because that is the arrangement Phase 4C stabilised. Running them together is what the five
+ * clean runs were needed to diagnose.
+ *
  * The end-to-end step includes the Mission Control smoke test, which runs a real worker process
  * against a local sandbox repository created by `scripts/e2e-sandbox.mts`. No test in this gate
  * touches a repository that exists anywhere else.
  *
  * Pass `--skip-e2e` when browsers are unavailable (the step is otherwise always run).
  */
+/* So a local run sees the same `.env` the application and the migration script do. */
+import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -76,11 +82,26 @@ const steps: Step[] = [
 ];
 
 if (!skipE2e) {
-  steps.push({
-    name: 'End-to-end smoke tests',
-    command: 'npx',
-    args: ['playwright', 'test'],
-  });
+  /*
+   * Two runs, one per browser project, rather than one run of both.
+   *
+   * This is the topology Phase 4C stabilised over five consecutive clean runs, and it is not a
+   * stylistic choice: a single run holds both projects' pages against one dev server long enough
+   * to trip Next's memory guard, which then reads as a flaky test rather than as what it is.
+   * `npm run test:e2e` runs exactly this, and the two must not drift apart.
+   */
+  steps.push(
+    {
+      name: 'End-to-end smoke tests (desktop)',
+      command: 'npx',
+      args: ['playwright', 'test', '--project=desktop'],
+    },
+    {
+      name: 'End-to-end smoke tests (iPhone)',
+      command: 'npx',
+      args: ['playwright', 'test', '--project=iphone'],
+    },
+  );
 }
 
 function run(step: Step): Promise<number> {

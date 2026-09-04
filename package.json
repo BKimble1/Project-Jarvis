@@ -2,7 +2,7 @@
   "name": "project-jarvis",
   "version": "0.1.0",
   "private": true,
-  "description": "Jarvis — a private, single-user project registry and evidence-based portfolio status brain.",
+  "description": "Jarvis \u2014 a private, single-user project registry and evidence-based portfolio status brain.",
   "type": "module",
   "engines": {
     "node": ">=20.11.0"
@@ -18,6 +18,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed:demo": "tsx scripts/seed-demo.ts",
+    "doctor": "tsx scripts/doctor.ts",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
@@ -30,6 +31,7 @@
     "verify:ci": "tsx scripts/verify.ts --skip-e2e",
     "worker": "tsx scripts/worker.ts",
     "worker:health": "tsx scripts/worker-health.ts",
+    "worker:workspaces": "tsx scripts/workspaces.ts",
     "qualify": "tsx scripts/qualify.ts"
   },
   "dependencies": {

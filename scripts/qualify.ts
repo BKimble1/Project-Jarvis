@@ -18,6 +18,8 @@
  *   npm run qualify -- attest security "Reviewed the diff against docs/THREAT_MODEL.md."
  *   npm run qualify -- record-live <missionId> read|write
  */
+/* A plain Node process, so nothing loads `.env` for it. Real environment variables still win. */
+import 'dotenv/config';
 import { getConfig } from '@/server/config/env';
 import { getDb } from '@/server/db/client';
 import { buildServices } from '@/server/container';

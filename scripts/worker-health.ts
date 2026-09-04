@@ -6,6 +6,8 @@
  * work. It reports configuration, runtime availability and workspace writability — and prints no
  * credential, only whether each one is present.
  */
+/* A plain Node process, so nothing loads `.env` for it. Real environment variables still win. */
+import 'dotenv/config';
 import { buildWorkerConfig, describeWorkerConfig } from '@/worker/config';
 import { ClaudeAgentRuntime } from '@/worker/runtime/claude-agent-sdk';
 import { checkWorkspaceRoot, listWorkspaces } from '@/worker/workspace';
