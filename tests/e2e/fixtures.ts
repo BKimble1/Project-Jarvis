@@ -20,10 +20,40 @@ export const AURORA = 'test-owner/aurora';
 /** A project detail URL: `/projects/<uuid>`. */
 export const PROJECT_URL = /\/projects\/[0-9a-f-]{36}$/;
 
+/**
+ * Retry a request once, and only when the connection itself failed.
+ *
+ * ## What this is not
+ *
+ * It is not a test retry, and it never re-runs an assertion. A response that arrives and says the
+ * wrong thing still fails on the first attempt; what is retried is a request the server never
+ * answered because the socket was gone before it arrived.
+ *
+ * ## Why it is needed
+ *
+ * Node closes an idle keep-alive connection after five seconds. Playwright's request context
+ * pools connections and does not retry, so a fixture that acts a few seconds after the last
+ * request can pick a connection the server has just closed and see `ECONNRESET` — with no record
+ * of the request on the server side at all, because it never got there. Observed twice across ten
+ * full runs, both times in a fixture doing cleanup after a browser step.
+ *
+ * The retry announces itself, so a run that needed it says so rather than looking clean.
+ */
+async function overTransport<T>(what: string, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/ECONNRESET|socket hang up|EPIPE|ECONNABORTED/i.test(message)) throw error;
+    console.warn(`[e2e] ${what}: connection reset before the request was answered; retrying once.`);
+    return call();
+  }
+}
+
 export async function signIn(request: APIRequestContext): Promise<void> {
-  const response = await request.post('/api/auth/test', {
-    headers: { 'x-jarvis-test-secret': TEST_AUTH_SECRET },
-  });
+  const response = await overTransport('signing in', () =>
+    request.post('/api/auth/test', { headers: { 'x-jarvis-test-secret': TEST_AUTH_SECRET } }),
+  );
   expect(response.status(), 'the test-auth endpoint must issue a session').toBe(200);
 }
 
@@ -89,9 +119,9 @@ export async function createProject(
   request: APIRequestContext,
   input: { name: string; type?: ProjectType; goal?: string },
 ): Promise<Project> {
-  const response = await request.post('/api/projects', {
-    data: { type: 'software', ...input },
-  });
+  const response = await overTransport(`creating ${input.name}`, () =>
+    request.post('/api/projects', { data: { type: 'software', ...input } }),
+  );
   expect(response.status(), `creating ${input.name}`).toBe(201);
   const body = (await response.json()) as { project: Project };
   return body.project;
@@ -99,7 +129,9 @@ export async function createProject(
 
 /** Removes a project outright; archiving would leave it visible to later assertions. */
 export async function deleteProject(request: APIRequestContext, id: string): Promise<void> {
-  const response = await request.delete(`/api/projects/${id}?mode=delete`);
+  const response = await overTransport(`deleting project ${id}`, () =>
+    request.delete(`/api/projects/${id}?mode=delete`),
+  );
   expect(response.status(), `deleting project ${id}`).toBe(200);
 }
 
@@ -107,7 +139,9 @@ async function repositoryEntry(
   request: APIRequestContext,
   fullName: string,
 ): Promise<ImportableRepository> {
-  const response = await request.get('/api/github/repositories');
+  const response = await overTransport('listing importable repositories', () =>
+    request.get('/api/github/repositories'),
+  );
   expect(response.status(), 'the importable repository list must load').toBe(200);
   const body = (await response.json()) as {
     configured: boolean;
