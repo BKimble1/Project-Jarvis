@@ -102,11 +102,21 @@ async function DashboardContent({
    * portfolio the forty newest missions can all still be open, and finished work would then
    * disappear from the landing page exactly when there is most of it to report.
    */
-  const [missionPage, workers, finishedPage] = await Promise.all([
-    services.missions.list({ limit: 40 }),
+  const [pages, workers] = await Promise.all([
+    /*
+     * One call, two listings. Each summary needs a project name and a worker name, and both come
+     * from reads that do not depend on the filter — so asking twice fetched every project and
+     * every worker twice, on the one screen that always renders.
+     */
+    services.missions.listMany([{ limit: 40 }, { states: TERMINAL_MISSION_STATES, limit: 8 }]),
     services.missions.workerHealth(),
-    services.missions.list({ states: TERMINAL_MISSION_STATES, limit: 8 }),
   ]);
+  /*
+   * Indexed rather than destructured: `noUncheckedIndexedAccess` is on, and the alternative is
+   * three non-null assertions on a value the call above guarantees.
+   */
+  const missionPage = pages[0] ?? { items: [], total: 0 };
+  const finishedPage = pages[1] ?? { items: [], total: 0 };
 
   /*
    * Ordered by when the work ended, which the query cannot do — mission listing sorts by creation.

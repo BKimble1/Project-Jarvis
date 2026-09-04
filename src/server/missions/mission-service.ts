@@ -1033,8 +1033,30 @@ export class MissionService {
     items: readonly MissionSummary[];
     total: number;
   }> {
-    const page = await this.deps.missions.list(filter);
-    const ids = page.items.map((mission) => mission.id);
+    const [page] = await this.listMany([filter]);
+    return page!;
+  }
+
+  /**
+   * Several listings, denormalised once.
+   *
+   * Each summary needs a project name, a worker name and two open counts, and the first two come
+   * from listings that do not depend on the filter at all — every project and every worker. Two
+   * calls to `list` therefore fetched five hundred projects and the whole worker fleet twice, for
+   * the sake of three finished rows on the dashboard. The landing page is the one screen that
+   * always renders, so paying that twice there is paying it on every visit.
+   *
+   * The pages are read concurrently and the shared index is built once. Order is preserved, so a
+   * caller destructures its results in the order it asked for them.
+   */
+  async listMany(
+    filters: readonly MissionListFilter[],
+  ): Promise<readonly { items: readonly MissionSummary[]; total: number }[]> {
+    if (filters.length === 0) return [];
+
+    const pages = await Promise.all(filters.map((filter) => this.deps.missions.list(filter)));
+    const ids = pages.flatMap((page) => page.items.map((mission) => mission.id));
+
     const [permissionCounts, clarificationCounts, workers, projectsPage] = await Promise.all([
       this.deps.permissions.openCount(ids),
       this.deps.clarifications.openCount(ids),
@@ -1044,7 +1066,7 @@ export class MissionService {
     const projectNames = new Map(projectsPage.items.map((p) => [p.id, p.shortName ?? p.name]));
     const workerNames = new Map(workers.map((worker) => [worker.id, worker.name]));
 
-    return {
+    return pages.map((page) => ({
       total: page.total,
       items: page.items.map((mission) => ({
         mission,
@@ -1059,7 +1081,7 @@ export class MissionService {
           mission.approvedPlanVersion !== null &&
           mission.approvedPlanVersion === mission.currentPlanVersion,
       })),
-    };
+    }));
   }
 
   async workerHealth(): Promise<readonly WorkerHealth[]> {

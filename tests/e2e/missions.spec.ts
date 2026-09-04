@@ -255,9 +255,16 @@ test.describe('the sandbox mission smoke test', () => {
       name: workerName,
     });
 
-    /* The workers page shows the sandbox redirection, so a rehearsal is never mistaken for real. */
+    /*
+     * The workers page shows the sandbox redirection, so a rehearsal is never mistaken for real —
+     * and shows what the redirection does *not* cover. It changes where the code is cloned from;
+     * a pull request would still be opened against the repository the control plane named, and a
+     * worker with no delivery allow-list says so rather than leaving the reassurance to be read
+     * more broadly than it deserves.
+     */
     await page.goto('/workers');
-    await expect(page.getByText(/Sandbox mode: test-owner\/aurora is redirected/)).toBeVisible();
+    await expect(page.getByText(/Sandbox mode: test-owner\/aurora is cloned from/)).toBeVisible();
+    await expect(page.getByText(/delivery is not restricted/)).toBeVisible();
 
     const mission = await createMission(page.request, {
       rawRequest: 'Add a note to the readme',

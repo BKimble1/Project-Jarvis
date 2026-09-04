@@ -41,7 +41,19 @@ test.describe('every screen at every size', () => {
 
       for (const path of PAGES) {
         await page.goto(path);
-        await page.waitForLoadState('networkidle');
+        /*
+         * `load`, and then the fonts — not `networkidle`.
+         *
+         * The property under test is layout, and the two things that move layout after a
+         * navigation are the document finishing and a webfont swapping in. The network is not one
+         * of them, and waiting for it to go quiet made this the flakiest test in the suite: Next
+         * prefetches every link in the viewport, so a page with more navigation on it — which is
+         * exactly what the V1 landing page gained — keeps issuing RSC requests long after it has
+         * finished laying out, and under whole-suite load the quiet moment never arrives. The
+         * failure that produced was a timeout with nothing wrong on the page.
+         */
+        await page.waitForLoadState('load');
+        await page.evaluate(() => document.fonts.ready);
         const overflow = await page.evaluate(
           () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
         );
