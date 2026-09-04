@@ -195,6 +195,25 @@ describe('question routing', () => {
     }
   });
 
+  it('routes every starter the interface offers to a named authority', () => {
+    /*
+     * The four questions on the Ask screen, asserted here because a starter is routed by the same
+     * keyword table as anything typed — and one of them used to match nothing at all. "What do we
+     * have on our plate?" fell through to the general branch, which gathers whatever is in scope
+     * rather than asking the status engine, and produced a plausible answer either way. That is
+     * exactly the kind of gap nobody notices without a test naming the button.
+     */
+    const starters: [string, string][] = [
+      ['Good morning, Jarvis. Where are we?', 'project_status'],
+      ['What do we have on our plate?', 'project_status'],
+      ['What needs my attention?', 'needs_owner'],
+      ['Which project is closest to shipping?', 'project_status'],
+    ];
+    for (const [question, intent] of starters) {
+      expect(routeQuestion(question).intent, question).toBe(intent);
+    }
+  });
+
   it('routes blockers to structured records and documents together', () => {
     const decision = routeQuestion('Why is this blocked?');
     expect(decision.intent).toBe('blockers');

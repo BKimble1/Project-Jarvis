@@ -178,6 +178,8 @@ describe('MissionRunner', () => {
       accepts: ['inspection', 'execution', 'research'],
       allowWebResearch: false,
       runtime: 'scripted',
+      /* Unset in the real default: delivery is limited by the token alone. */
+      allowedRepositories: null,
       sandboxRepositories: new Map(),
       /* The real constant: the claim boundary refuses a worker on a different major. */
       version: WORKER_VERSION,
@@ -684,6 +686,72 @@ describe('MissionRunner', () => {
     expect(recorder.states).toContain('failed');
     expect(String(recorder.last.failureMessage)).toContain('already exists');
     expect(String(recorder.last.failureMessage)).toContain('remove it deliberately');
+  });
+
+  /* ------------------------------------------------------ delivery limits */
+
+  it('refuses to deliver to a repository this worker was not allowed', async () => {
+    /*
+     * The second lock. The token is the first, and it is set on the same machine by the same
+     * person — so a token scoped more widely than intended is a mistake with no other control
+     * behind it. This one is held by the worker, so the control plane cannot widen it by sending
+     * a different assignment, and it is checked before a request is made rather than relying on
+     * GitHub to say no.
+     */
+    const delivery = new FakeDelivery();
+    const { recorder } = await run(
+      [
+        {
+          kind: 'tool',
+          toolName: 'Edit',
+          input: { file_path: 'README.md' },
+          effect: editReadme('# Sandbox\n\nEdited.\n'),
+        },
+        { kind: 'done', result: 'Edited.' },
+      ],
+      {
+        delivery,
+        config: {
+          githubToken: 'ghp_fake_worker_token_for_tests_only_00',
+          allowedRepositories: new Set(['someone-else/a-different-repository']),
+        },
+      },
+    );
+
+    /* Nothing was attempted: not a failed request, no request. */
+    expect(delivery.created).toHaveLength(0);
+
+    /* And the work is not lost — it is committed, and the mission says exactly why it stopped. */
+    expect(recorder.states).toContain('completed');
+    expect(recorder.states).not.toContain('pull_request_ready');
+    expect(recorder.summary()).toContain('not permitted to deliver');
+    expect(recorder.summary()).toContain('JARVIS_WORKER_ALLOWED_REPOS');
+  });
+
+  it('delivers normally to a repository that is on the list', async () => {
+    const delivery = new FakeDelivery();
+    const { recorder } = await run(
+      [
+        {
+          kind: 'tool',
+          toolName: 'Edit',
+          input: { file_path: 'README.md' },
+          effect: editReadme('# Sandbox\n\nEdited.\n'),
+        },
+        { kind: 'done', result: 'Edited.' },
+      ],
+      {
+        delivery,
+        config: {
+          githubToken: 'ghp_fake_worker_token_for_tests_only_00',
+          /* Upper-cased on purpose: a repository is not a different repository for its casing. */
+          allowedRepositories: new Set(['test-owner/sandbox']),
+        },
+      },
+    );
+
+    expect(delivery.created).toHaveLength(1);
+    expect(recorder.states).toContain('pull_request_ready');
   });
 
   /* ---------------------------------------------------- restart and resume */

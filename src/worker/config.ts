@@ -67,6 +67,19 @@ const schema = z.object({
    * the workers page, so nobody mistakes a rehearsal for the real delivery.
    */
   JARVIS_WORKER_SANDBOX_REPOS: z.string().trim().optional(),
+  /**
+   * Repositories this worker may deliver to, as `owner/repo` names separated by commas.
+   *
+   * Defence in depth behind the credential rather than a replacement for it: the fine-grained
+   * token should already be scoped, and this is the second lock, held by the machine that does
+   * the pushing rather than by GitHub's settings page. It is worker-side for the same reason the
+   * sandbox map is — the control plane cannot widen it by sending a different assignment.
+   *
+   * Unset means "whatever the token allows", which is the honest description of the state a
+   * deployment starts in and is reported as such in the heartbeat. Set it, and a delivery to
+   * anything else is refused before a request is made.
+   */
+  JARVIS_WORKER_ALLOWED_REPOS: z.string().trim().optional(),
 });
 
 export interface WorkerConfig {
@@ -87,6 +100,14 @@ export interface WorkerConfig {
   readonly runtime: 'claude' | 'scripted';
   /** `owner/repo` → clone URL. Empty in an ordinary deployment. */
   readonly sandboxRepositories: ReadonlyMap<string, string>;
+  /**
+   * Lower-cased `owner/repo` names this worker may deliver to.
+   *
+   * Null — not an empty set — when unset, because the two mean opposite things: null is "the
+   * token decides", an empty set would be "nothing at all". Conflating them is how an allow-list
+   * accidentally becomes a deny-everything.
+   */
+  readonly allowedRepositories: ReadonlySet<string> | null;
   readonly version: string;
   /** Non-fatal problems, reported in the heartbeat and shown on the workers page. */
   readonly diagnostics: readonly string[];
@@ -146,11 +167,35 @@ export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): Work
     );
   }
 
+  const allowedRepositories = parseRepositoryList(env.JARVIS_WORKER_ALLOWED_REPOS);
+  if (allowedRepositories) {
+    diagnostics.push(
+      `Delivery is restricted to ${[...allowedRepositories].join(', ')}. Anything else is refused here, whatever the token allows.`,
+    );
+  } else if (env.JARVIS_WORKER_GITHUB_TOKEN) {
+    diagnostics.push(
+      'JARVIS_WORKER_ALLOWED_REPOS is not set, so delivery is limited only by what the GitHub token itself can reach.',
+    );
+  }
+
   const sandboxRepositories = parseSandboxRepositories(env.JARVIS_WORKER_SANDBOX_REPOS);
   for (const [fullName, cloneUrl] of sandboxRepositories) {
     diagnostics.push(
-      `Sandbox mode: ${fullName} is redirected to ${cloneUrl}. Missions for it do not touch the real repository.`,
+      `Sandbox mode: ${fullName} is cloned from ${cloneUrl} instead. No code is read from the real repository and nothing is pushed to it.`,
     );
+    /*
+     * The half a redirect does not cover, said where an owner will see it.
+     *
+     * Redirection changes the clone and nothing else: the pull request would still be opened
+     * against the repository the control plane named. Someone rehearsing a mission for a
+     * repository they care about needs to know that, and the honest place to say it is beside
+     * the reassurance, not in a document.
+     */
+    if (!allowedRepositories && env.JARVIS_WORKER_GITHUB_TOKEN) {
+      diagnostics.push(
+        `${fullName} is redirected for cloning but delivery is not restricted: a pull request would still be opened against it. Set JARVIS_WORKER_ALLOWED_REPOS, or use a token that cannot reach it.`,
+      );
+    }
   }
 
   const accepts: ('inspection' | 'execution' | 'research')[] = [];
@@ -179,9 +224,28 @@ export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): Work
     allowWebResearch: env.JARVIS_WORKER_ALLOW_WEB_RESEARCH,
     runtime: env.JARVIS_WORKER_RUNTIME,
     sandboxRepositories,
+    allowedRepositories,
     version: WORKER_VERSION,
     diagnostics,
   };
+}
+
+/**
+ * `owner/repo,owner/other` — or null when the variable is absent.
+ *
+ * Null and empty are different answers and are kept different: an unset variable means the token
+ * decides, while a variable set to nothing usable is a configuration mistake that must not read
+ * as "allow everything". A value that parses to no valid name yields an empty set, and delivery
+ * to anything is then refused — loudly, and in the direction that is safe to be wrong in.
+ */
+export function parseRepositoryList(value: string | undefined): ReadonlySet<string> | null {
+  if (value === undefined) return null;
+  const names = new Set<string>();
+  for (const entry of value.split(',')) {
+    const name = entry.trim().toLowerCase();
+    if (/^[^/\s]+\/[^/\s]+$/.test(name)) names.add(name);
+  }
+  return names;
 }
 
 /** `owner/repo=<clone url>,owner/other=<clone url>`. Malformed entries are ignored, not guessed. */

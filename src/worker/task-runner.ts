@@ -603,6 +603,26 @@ export class TaskRunner {
       return;
     }
 
+    /*
+     * Refuse before pushing, not after.
+     *
+     * A worker with an allow-list refuses a repository nobody put on it, whatever the token
+     * would have permitted. The task still ends as succeeded with the work committed, because
+     * the work *is* finished — what did not happen is the delivery, and saying so is the point.
+     */
+    const refusal = this.deliveryRefusal(repository.fullName);
+    if (refusal) {
+      await this.emit('warning', refusal, { repository: repository.fullName }, 'warning');
+      await this.report('succeeded', {
+        currentAction: null,
+        branchName: branch,
+        headSha: head,
+        filesChanged: [...files],
+        completionSummary: refusal,
+      });
+      return;
+    }
+
     await this.report('running', { currentAction: 'Pushing the mission branch' });
     await pushMissionBranch({
       cwd: workspace.repoPath,
@@ -808,6 +828,18 @@ export class TaskRunner {
     });
   }
 
+  /**
+   * Why this task may not open a pull request, or null when it may. Mirrors `MissionRunner`,
+   * including its reason for not treating a sandbox redirect as a delivery refusal.
+   */
+  private deliveryRefusal(fullName: string): string | null {
+    const allowed = this.deps.config.allowedRepositories;
+    if (allowed && !allowed.has(fullName.toLowerCase())) {
+      return `This worker is not permitted to deliver to ${fullName}. Add it to JARVIS_WORKER_ALLOWED_REPOS on the worker if that is what you intend. The work is committed on the integration branch.`;
+    }
+    return null;
+  }
+
   /** Sandbox redirection, identical to the mission runner's, so a rehearsal cannot reach real code. */
   private repositoryForRun(): NonNullable<TaskAssignment['repository']> {
     const repository = this.assignment.repository!;
@@ -820,7 +852,7 @@ export class TaskRunner {
     if (!redirect) return repository;
     void this.emit(
       'info',
-      `Sandbox mode: cloning ${repository.fullName} from ${redirect} instead of the real repository. Nothing here reaches ${repository.fullName}.`,
+      `Sandbox mode: cloning ${repository.fullName} from ${redirect} instead of the real repository. No code is read from it and nothing is pushed to it — a pull request would still be opened against it, so restrict that with JARVIS_WORKER_ALLOWED_REPOS or a scoped token if this is a rehearsal.`,
       {},
       'warning',
     );

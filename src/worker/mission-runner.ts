@@ -189,11 +189,32 @@ export class MissionRunner {
 
     await this.emit(
       'warning',
-      `Sandbox mode: cloning ${repository.fullName} from ${redirect} instead of the real repository. Nothing here reaches ${repository.fullName}.`,
+      `Sandbox mode: cloning ${repository.fullName} from ${redirect} instead of the real repository. No code is read from ${repository.fullName} and nothing is pushed to it — a pull request would still be opened against it, so restrict that with JARVIS_WORKER_ALLOWED_REPOS or a scoped token if this is a rehearsal.`,
       { sandbox: true },
       'warning',
     );
     return { ...repository, cloneUrl: redirect };
+  }
+
+  /**
+   * Why this run may not open a pull request, or null when it may.
+   *
+   * Returns a sentence rather than a boolean because the sentence is what reaches the owner, and
+   * "delivery was refused" without the reason is the kind of message that gets read as a bug.
+   *
+   * Sandbox redirection deliberately does *not* appear here. It changes where the code is cloned
+   * from and nothing else — the control plane still names the repository a pull request would be
+   * opened against, and the controls that stop one reaching a repository you care about are this
+   * allow-list, the token's own scopes, and `JARVIS_WORKER_GITHUB_API_URL`. Treating a redirect
+   * as an implicit delivery refusal would read well and would leave a rehearsal against a real
+   * repository, with no allow-list set, exactly as exposed as before.
+   */
+  private deliveryRefusal(fullName: string): string | null {
+    const allowed = this.deps.config.allowedRepositories;
+    if (allowed && !allowed.has(fullName.toLowerCase())) {
+      return `This worker is not permitted to deliver to ${fullName}. Add it to JARVIS_WORKER_ALLOWED_REPOS on the worker if that is what you intend. The work is committed on the mission branch.`;
+    }
+    return null;
   }
 
   /* ----------------------------------------------------------- inspection */
@@ -680,6 +701,26 @@ export class MissionRunner {
     const { head, files, summary } = input;
     const delivery = this.deps.delivery;
     const repository = this.assignment.repository;
+
+    /*
+     * Refused before anything is pushed and before any request is made.
+     *
+     * An allow-listed worker refuses a repository nobody put on its list, whatever the
+     * credential would have permitted — the token is the first lock and this is the second, held
+     * by the machine that does the pushing rather than by GitHub's settings page.
+     */
+    const refusal = this.deliveryRefusal(repository.fullName);
+    if (refusal) {
+      await this.emit('warning', refusal, { repository: repository.fullName }, 'warning');
+      await this.report('completed', {
+        headSha: head,
+        filesChanged: files,
+        completionSummary: `${boundText(summary, 2000)}\n\n${refusal}`,
+        currentAction: null,
+      });
+      this.finished = true;
+      return;
+    }
 
     await this.report('creating_pull_request', {
       currentAction: 'Pushing the mission branch',

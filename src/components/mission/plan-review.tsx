@@ -43,6 +43,7 @@ export function PlanReview({
   canQueue,
   requiresOverride,
   overrideNotice,
+  destination,
 }: {
   mission: Mission;
   plan: MissionPlan | null;
@@ -50,6 +51,8 @@ export function PlanReview({
   canQueue: { ok: boolean; reason: string | null };
   requiresOverride: boolean;
   overrideNotice: string | null;
+  /** Where an approval would let this mission write. Null for a mission with no repository. */
+  destination: PlanDestination | null;
 }) {
   const router = useRouter();
   const [pending, setPending] = React.useState<string | null>(null);
@@ -233,6 +236,8 @@ export function PlanReview({
             </ul>
           </Section>
         ) : null}
+
+        {destination ? <Destination destination={destination} /> : null}
 
         <Section title="Rollback">
           <p className="text-sm text-[var(--color-text-muted)]">{content.rollback}</p>
@@ -452,6 +457,65 @@ function PlanEditor({
         </p>
       </CardContent>
     </Card>
+  );
+}
+
+export interface PlanDestination {
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+  /** Null for a read-only mission, which never gets a branch. */
+  readonly branchName: string | null;
+  readonly readOnly: boolean;
+}
+
+/**
+ * Exactly where an approval lets this mission write, before it is given.
+ *
+ * The rest of this screen describes *what* Jarvis intends to do. This says *where*, and the two
+ * are different questions: a plan can be entirely sensible and still be pointed at the wrong
+ * repository, and until now nothing on the approval screen named the repository at all. An owner
+ * approving a mission was approving a description.
+ *
+ * Every line is a fact the control plane holds, not something a model proposed. The branch name
+ * is derived by Jarvis from the mission id, the default branch comes from the project's source
+ * record, and the delivery operation is not a choice anyone makes — there is no code path in
+ * Jarvis that opens a pull request that is not a draft.
+ */
+function Destination({ destination }: { destination: PlanDestination }) {
+  return (
+    <section className="flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-border-strong)] bg-[var(--color-surface-muted)] px-3 py-2.5">
+      <h3 className="text-xs font-medium tracking-wide text-[var(--color-text-muted)] uppercase">
+        Where this will be written
+      </h3>
+      <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
+        <dt className="text-[var(--color-text-muted)]">Repository</dt>
+        <dd className="font-mono text-xs sm:text-sm">
+          {destination.owner}/{destination.name}
+        </dd>
+        <dt className="text-[var(--color-text-muted)]">Default branch</dt>
+        <dd className="font-mono text-xs sm:text-sm">
+          {destination.defaultBranch}{' '}
+          <span className="font-sans text-xs text-[var(--color-text-muted)]">
+            — never written to
+          </span>
+        </dd>
+        <dt className="text-[var(--color-text-muted)]">Branch</dt>
+        <dd className="font-mono text-xs sm:text-sm">
+          {destination.branchName ?? (
+            <span className="font-sans text-[var(--color-text-muted)]">
+              None. This mission changes nothing.
+            </span>
+          )}
+        </dd>
+        <dt className="text-[var(--color-text-muted)]">Delivery</dt>
+        <dd className="text-sm">
+          {destination.readOnly
+            ? 'A written report. No branch, no commit, no pull request.'
+            : 'A draft pull request against the default branch. Not merged, and not marked ready for review.'}
+        </dd>
+      </dl>
+    </section>
   );
 }
 

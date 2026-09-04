@@ -107,7 +107,17 @@ const PREFERENCE =
   /\b(?:how i (?:like|want|prefer)|my (?:preference|style|convention)|what do you know about (?:me|how i)|i (?:always|usually|never|prefer))\b/i;
 const UNKNOWNS =
   /\b(?:what (?:do|don'?t) we (?:still )?not know|unknowns?|gaps?|missing information|uncertain)\b/i;
-const NEXT = /\b(?:what should i (?:work on|do)|what next|priorit(?:y|ise|ize)|focus on)\b/i;
+/*
+ * "What should I work on" and its neighbours, including the plate.
+ *
+ * "What do we have on our plate?" is one of the four questions the interface offers as a starter,
+ * and it matched nothing at all — it fell through every pattern to the general branch, which
+ * gathers whatever is in scope rather than reaching the status engine the question is actually
+ * asking about. A starter the interface puts on screen and the router has never heard of is the
+ * kind of gap nobody notices, because the answer is plausible either way.
+ */
+const NEXT =
+  /\b(?:what should i (?:work on|do)|what next|priorit(?:y|ise|ize)|focus on|on (?:my|our|the) plate|have (?:we|i) got on|do we have on)\b/i;
 
 /**
  * Route a question.

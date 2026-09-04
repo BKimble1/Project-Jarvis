@@ -14,6 +14,9 @@ import {
   MissionTypePill,
 } from '@/components/mission/mission-pills';
 import { PlanReview } from '@/components/mission/plan-review';
+import { isReadOnlyMissionType } from '@/domain/mission';
+import { buildBranchName } from '@/domain/workspace-safety';
+import { resolveMissionRepository } from '@/server/missions/repository-resolution';
 import { ReceiptPanel } from '@/components/mission/receipt-panel';
 import { ReviewPanel } from '@/components/mission/review-panel';
 import { TaskGraphPanel } from '@/components/mission/task-graph-panel';
@@ -44,6 +47,28 @@ export default async function MissionPage({ params }: { params: Promise<{ id: st
 
   const { mission } = detail;
   const project = mission.projectId ? await services.projects.findById(mission.projectId) : null;
+
+  /*
+   * Where an approval would let this mission write, resolved the same way the worker's assignment
+   * resolves it — from the project's own sources, by `resolveMissionRepository`, rather than from
+   * the mission row. Reading it differently here would produce an approval screen that named one
+   * repository while the worker cloned another, which is the single worst thing this panel could
+   * do.
+   */
+  const sources = mission.projectId ? await services.sources.listByProject(mission.projectId) : [];
+  const repository = resolveMissionRepository(mission, sources);
+  const readOnly = isReadOnlyMissionType(mission.type);
+  const destination = repository
+    ? {
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+        branchName: readOnly
+          ? null
+          : (mission.workingBranch ?? buildBranchName(mission.id, mission.title)),
+        readOnly,
+      }
+    : null;
 
   /*
    * The factory's own view of this mission. Loaded on the server alongside everything else so a
@@ -156,6 +181,7 @@ export default async function MissionPage({ params }: { params: Promise<{ id: st
         plan={detail.currentPlan}
         approval={detail.approval}
         canQueue={detail.canQueue}
+        destination={destination}
         requiresOverride={gate.requiresOverride && mission.executionOverrideAt === null}
         overrideNotice={gate.notice}
       />

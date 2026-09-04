@@ -137,6 +137,17 @@ better guarantee than a rule saying it will not.
 The model never receives this token. Delivery is five methods on one client — three writes, two
 reads — and the agent's own environment has the variable removed.
 
+Then set the second lock, on the same machine:
+
+```bash
+JARVIS_WORKER_ALLOWED_REPOS=you/jarvis-sandbox
+```
+
+The token and this list are both set by you, on this machine, so they are not independent — but a
+token scoped more widely than you meant has nothing else standing behind it, and this is checked
+before a request is made rather than relying on GitHub to say no. Add your real repositories to it
+only when you add them at step 16.
+
 ## 11. Run the diagnostics
 
 ```bash

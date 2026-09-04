@@ -288,6 +288,8 @@ describe('the multi-agent factory, end to end', () => {
       allowWebResearch: false,
       runtime: 'scripted',
       /* Sandbox mode: every clone of the mission's repository comes from the local bare repo. */
+      /* Unset in the real default: delivery is limited by the token alone. */
+      allowedRepositories: null,
       sandboxRepositories: new Map([['test-owner/sandbox', repo.remotePath]]),
       /* The real constant: the claim boundary refuses a worker on a different major. */
       version: WORKER_VERSION,

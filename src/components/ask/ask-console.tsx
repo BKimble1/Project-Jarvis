@@ -97,9 +97,11 @@ export interface AskProject {
 /*
  * The four the owner presses. Phrasing carries more weight here than in a typed question: a
  * starter is routed by the same keyword table as anything else, so these are worded to reach the
- * authority that answers them — the status engine for the first and last, the attention queue for
- * "What needs my attention?". "What do we have on our plate?" matches no pattern and lands on the
- * general branch, which gathers everything in scope rather than guessing at something narrower.
+ * authority that answers them — the status engine for the first, second and last, the attention
+ * queue for "What needs my attention?". A unit test in `ask-rules.test.ts` names each of these
+ * four and asserts where it routes, so the buttons and the router cannot drift apart: one of them
+ * used to match no pattern at all and fall through to the general branch, which answers plausibly
+ * enough that nothing would ever have surfaced it.
  */
 const STARTERS = [
   'Good morning, Jarvis. Where are we?',
