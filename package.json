@@ -23,6 +23,7 @@
     "test:integration": "vitest run --project integration",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:model": "JARVIS_ASK_SCRIPTED_PROVIDER=true playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
     "verify": "tsx scripts/verify.ts",
     "verify:ci": "tsx scripts/verify.ts --skip-e2e",

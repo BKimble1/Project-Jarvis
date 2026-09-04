@@ -225,6 +225,19 @@ export class EvidenceGatherer {
         });
       }
 
+      /*
+       * Nothing matched, said out loud.
+       *
+       * A question about a document that produces only project status looks like an answer, and
+       * the absence is the part that matters — "Jarvis has no document about this" and "Jarvis
+       * has one and it says nothing useful" call for opposite responses from the owner.
+       */
+      if (request.routing.needsKnowledge && sourcesConsidered === 0) {
+        gaps.push('No document or note in scope matches this question.');
+      }
+      if (request.routing.needsMemories && knowledgeConsidered === 0) {
+        gaps.push('No note you have confirmed matches this question.');
+      }
       if (result.diagnostics.mode === 'lexical_only') {
         gaps.push('Search used the text index only; no semantic index is configured.');
       }

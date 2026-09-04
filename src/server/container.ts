@@ -114,6 +114,7 @@ import { MemoryService } from './knowledge/memory-service';
 import { AnswerService } from './ask/answer-service';
 import { EvidenceGatherer } from './ask/evidence-gatherer';
 import { UnconfiguredAnswerProvider, type AnswerProvider } from './ask/answer-provider';
+import { ScriptedAnswerProvider } from './ask/scripted-provider';
 import {
   DrizzleAnswerRunRepository,
   DrizzleConversationRepository,
@@ -564,7 +565,9 @@ export function buildServices(
    * configured, Ask gathers evidence and says plainly that nothing wrote a summary, rather than
    * inventing a narrator to fill the space.
    */
-  const answerProvider = overrides.answerProvider ?? new UnconfiguredAnswerProvider();
+  const answerProvider =
+    overrides.answerProvider ??
+    (config.ask.scriptedProvider ? new ScriptedAnswerProvider() : new UnconfiguredAnswerProvider());
 
   const memoryService = new MemoryService({
     memories: knowledge,

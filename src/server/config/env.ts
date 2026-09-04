@@ -209,6 +209,12 @@ const rawSchema = z.object({
   /** Enables a signed test-auth endpoint used by Playwright. Never honoured in production. */
   JARVIS_TEST_AUTH_SECRET: z.string().trim().optional(),
 
+  /**
+   * Substitutes a deterministic stand-in for the answer model, for browser tests of the generated
+   * path. Honoured only where the test-auth endpoint is, which is never in production.
+   */
+  JARVIS_ASK_SCRIPTED_PROVIDER: bool(false),
+
   JARVIS_SYNC_COMMIT_LIMIT: positiveInt(60, 300),
   JARVIS_SYNC_PR_LIMIT: positiveInt(40, 200),
   JARVIS_SYNC_ISSUE_LIMIT: positiveInt(40, 200),
@@ -298,6 +304,10 @@ export interface AppConfig {
     readonly backupConfigured: boolean;
     readonly backupTarget: string | null;
     readonly backupRestoreTestedAt: string | null;
+  };
+  readonly ask: {
+    /** True only outside production, and only with a test-auth secret already configured. */
+    readonly scriptedProvider: boolean;
   };
   readonly knowledge: {
     readonly urlAllowList: readonly string[];
@@ -449,6 +459,13 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
       ? env.JARVIS_TEST_AUTH_SECRET
       : null;
 
+  /*
+   * The scripted answer provider rides on the same gate rather than a second one. A test double
+   * that could be switched on independently would be a second thing to get wrong; this way, if
+   * the signed test login is inert then so is this.
+   */
+  const scriptedAnswerProvider = testAuthSecret !== null && env.JARVIS_ASK_SCRIPTED_PROVIDER;
+
   /* ------------------------------------------------------- qualification */
   const qualificationRepos = splitList(env.JARVIS_QUALIFICATION_REPOS).map((entry) =>
     entry.toLowerCase(),
@@ -587,6 +604,9 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
       backupConfigured: env.JARVIS_BACKUP_CONFIGURED,
       backupTarget: env.JARVIS_BACKUP_TARGET ?? null,
       backupRestoreTestedAt: restoreTestedAt,
+    },
+    ask: {
+      scriptedProvider: scriptedAnswerProvider,
     },
     knowledge: {
       urlAllowList: knowledgeHosts,

@@ -22,7 +22,16 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  serverExternalPackages: ['@electric-sql/pglite', 'pg'],
+  /*
+   * Loaded by Node, not bundled by webpack.
+   *
+   * `pdfjs-dist`'s legacy build is written for a runtime that supplies its own module machinery,
+   * and bundling it produces a module that throws at `getDocument` rather than at build time — so
+   * PDF ingestion failed only when a real PDF arrived, with "this PDF could not be read", which
+   * reads like a bad file rather than a broken parser. Found by an end-to-end test that uploaded
+   * a PDF the unit tests parse happily; the difference was the bundler, not the bytes.
+   */
+  serverExternalPackages: ['@electric-sql/pglite', 'pg', 'pdfjs-dist'],
   experimental: {
     /*
      * Trade a little compile speed for a lot less memory.

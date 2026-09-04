@@ -124,7 +124,21 @@ export function AskConsole({
 }) {
   const [scope, setScope] = React.useState<Scope>(initialScope ?? 'portfolio');
   const [projectId, setProjectId] = React.useState(initialProjectId ?? '');
+  /* For the several-projects scope. Kept separate so switching back and forth loses neither. */
+  const [selectedIds, setSelectedIds] = React.useState<readonly string[]>(
+    initialProjectId ? [initialProjectId] : [],
+  );
   const [question, setQuestion] = React.useState(initialQuestion ?? '');
+  /*
+   * The conversation this question continues.
+   *
+   * Held so a follow-up is a follow-up rather than a fresh conversation each time, and cleared by
+   * "Ask something new". Changing the scope while one is open rescopes it on the server before
+   * the next turn, which is what makes the rebuild happen under the new boundary instead of
+   * carrying earlier evidence forward.
+   */
+  const [conversationId, setConversationId] = React.useState<string | null>(null);
+  const [askedScope, setAskedScope] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [progress, setProgress] = React.useState<string | null>(null);
   const [pendingId, setPendingId] = React.useState<string | null>(null);
@@ -133,17 +147,30 @@ export function AskConsole({
   const [error, setError] = React.useState<string | null>(null);
   const [draftNotice, setDraftNotice] = React.useState<string | null>(null);
 
-  const needsProject = scope === 'project' || scope === 'selected';
-  const canAsk = question.trim().length >= 3 && (!needsProject || projectId !== '');
+  const needsProject = scope === 'project';
+  const needsSelection = scope === 'selected';
+  const chosenIds = React.useMemo(
+    () => (needsProject ? (projectId ? [projectId] : []) : needsSelection ? [...selectedIds] : []),
+    [needsProject, needsSelection, projectId, selectedIds],
+  );
+  const canAsk =
+    question.trim().length >= 3 && (!(needsProject || needsSelection) || chosenIds.length > 0);
+
+  const nameOf = (id: string) => projects.find((entry) => entry.id === id)?.name ?? 'that project';
 
   const scopeSummary =
     scope === 'portfolio'
       ? `all ${projects.length} project${projects.length === 1 ? '' : 's'}`
       : scope === 'personal'
         ? 'your notes only — no project material'
-        : projectId
-          ? (projects.find((entry) => entry.id === projectId)?.name ?? 'one project')
-          : 'no project chosen yet';
+        : chosenIds.length === 0
+          ? 'no project chosen yet'
+          : chosenIds.length === 1
+            ? nameOf(chosenIds[0] ?? '')
+            : chosenIds.map(nameOf).join(' and ');
+
+  /* What the next turn would run under, compared against what the last one did. */
+  const scopeSignature = `${scope}:${[...chosenIds].sort().join(',')}`;
 
   async function ask(text: string): Promise<void> {
     if (!text.trim()) return;
@@ -179,13 +206,32 @@ export function AskConsole({
     })();
 
     try {
+      /*
+       * A scope change takes effect by changing the conversation, not by asking for a different
+       * one on the turn. The server treats the stored scope as a ceiling a turn may narrow within,
+       * so widening — or moving to a different project — has to be recorded first, and doing it
+       * this way is also what drops the earlier turns that are no longer in scope.
+       */
+      if (conversationId && askedScope !== null && askedScope !== scopeSignature) {
+        const rescoped = await fetch(`/api/ask/conversations/${conversationId}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ scope, projectIds: chosenIds }),
+        });
+        if (!rescoped.ok) {
+          setError('That change of scope could not be saved, so nothing was asked.');
+          return;
+        }
+      }
+
       const response = await fetch('/api/ask', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          ...(conversationId ? { conversationId } : {}),
           question: text,
           scope,
-          projectIds: needsProject && projectId ? [projectId] : [],
+          projectIds: chosenIds,
           idempotencyKey: key,
           proposeAction: true,
         }),
@@ -193,12 +239,15 @@ export function AskConsole({
       const payload = (await response.json()) as {
         error?: { message?: string };
         answer?: AnswerPayload;
+        conversation?: { id: string };
       };
       if (!response.ok || !payload.answer) {
         setError(payload.error?.message ?? 'That question could not be answered.');
         return;
       }
       setAnswer(payload.answer);
+      if (payload.conversation) setConversationId(payload.conversation.id);
+      setAskedScope(scopeSignature);
     } catch {
       setError('Jarvis could not be reached.');
     } finally {
@@ -257,6 +306,7 @@ export function AskConsole({
             [
               ['portfolio', 'Everything'],
               ['project', 'One project'],
+              ['selected', 'Some projects'],
               ['personal', 'My notes'],
             ] as const
           ).map(([value, label]) => (
@@ -292,9 +342,44 @@ export function AskConsole({
           ) : null}
         </div>
 
+        {/* Checkboxes rather than a multi-select: what is included has to be readable at a glance,
+            and a multi-select hides everything not currently scrolled into view. */}
+        {needsSelection ? (
+          <fieldset className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+            <legend className="sr-only">Which projects</legend>
+            {projects.map((project) => {
+              const on = selectedIds.includes(project.id);
+              return (
+                <label
+                  key={project.id}
+                  className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs ${
+                    on
+                      ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent-text)]'
+                      : 'border-[var(--color-border-strong)] text-[var(--color-text-muted)]'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() =>
+                      setSelectedIds((current) =>
+                        current.includes(project.id)
+                          ? current.filter((id) => id !== project.id)
+                          : [...current, project.id],
+                      )
+                    }
+                  />
+                  {project.name}
+                </label>
+              );
+            })}
+          </fieldset>
+        ) : null}
+
         {/* Always visible, so an empty answer is never ambiguous about what was searched. */}
         <p className="text-xs text-[var(--color-text-subtle)]">
           Jarvis will look at <strong>{scopeSummary}</strong>.
+          {conversationId ? ' This continues the conversation above.' : ''}
         </p>
       </section>
 
@@ -317,6 +402,22 @@ export function AskConsole({
         <Button type="submit" disabled={busy || !canAsk}>
           {busy ? 'Asking…' : 'Ask'}
         </Button>
+        {conversationId ? (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setConversationId(null);
+              setAskedScope(null);
+              setAnswer(null);
+              setEvidence(null);
+              setDraftNotice(null);
+              setQuestion('');
+            }}
+          >
+            Ask something new
+          </Button>
+        ) : null}
       </form>
 
       {!answer && !busy ? (

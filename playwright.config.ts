@@ -20,6 +20,18 @@ const MOCK_PORT = Number(process.env.E2E_MOCK_GITHUB_PORT ?? 3124);
 const MOCK_WRITE_PORT = Number(process.env.E2E_MOCK_GITHUB_WRITE_PORT ?? 3125);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 
+/*
+ * The generated-answer run.
+ *
+ * The suite runs in the state a fresh install is in — no writing model — because that is what
+ * most owners meet and because the evidence-only path is the one that has to stay honest. The
+ * generated path still needs browser coverage, so `npm run test:e2e:model` sets this, which swaps
+ * in a deterministic stand-in and runs only the spec that exercises it. Keeping them separate
+ * keeps the five-run gate on one configuration rather than two, and keeps the memory profile of
+ * that gate unchanged.
+ */
+const scriptedProvider = process.env.JARVIS_ASK_SCRIPTED_PROVIDER === 'true';
+
 const appEnv = {
   NODE_ENV: 'development',
   JARVIS_BASE_URL: BASE_URL,
@@ -35,6 +47,7 @@ const appEnv = {
   JARVIS_TEST_AUTH_SECRET: 'e2e-test-auth-secret-value-0001',
   CRON_SECRET: 'e2e-cron-secret-value-0001',
   JARVIS_AI_ENABLED: 'false',
+  ...(scriptedProvider ? { JARVIS_ASK_SCRIPTED_PROVIDER: 'true' } : {}),
   JARVIS_MISSION_CONCURRENCY: '1',
   LOG_LEVEL: 'warn',
   NEXT_TELEMETRY_DISABLED: '1',
@@ -54,6 +67,14 @@ const appEnv = {
 
 export default defineConfig({
   testDir: './tests/e2e',
+  /*
+   * One configuration per run. With the stand-in on, only the spec written for it runs; with it
+   * off — the default, and the one the five-run gate uses — that spec is not collected at all, so
+   * a generated-answer assertion can never quietly pass against evidence-only output.
+   */
+  ...(scriptedProvider
+    ? { testMatch: ['**/ask-model.spec.ts'] }
+    : { testIgnore: ['**/ask-model.spec.ts'] }),
   /*
    * Compile the application before any test times itself against it.
    *

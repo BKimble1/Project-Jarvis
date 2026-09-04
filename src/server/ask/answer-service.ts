@@ -984,11 +984,21 @@ function buildEvidenceOnlyAnswer(
     projectId: item.projectId,
   }));
 
-  /* An unknown, always, when the view was partial. The gap is part of the answer. */
-  if (snapshot.truncated || snapshot.gaps.length > 0) {
+  /*
+   * Every gap becomes an unknown, not just the first.
+   *
+   * The gaps are different in kind — "no document matches this", "this project's evidence is
+   * stale", "more matched than fitted" — and collapsing them to one loses whichever the owner
+   * actually needed. Bounded at four so a badly configured install cannot bury the answer under
+   * its own caveats.
+   */
+  for (const gap of snapshot.gaps.slice(0, 4)) {
+    claims.push({ kind: 'unknown', text: gap, citations: [], projectId: null });
+  }
+  if (snapshot.truncated && snapshot.gaps.length === 0) {
     claims.push({
       kind: 'unknown',
-      text: snapshot.gaps[0] ?? 'More evidence matched than fitted here, so this view is partial.',
+      text: 'More evidence matched than fitted here, so this view is partial.',
       citations: [],
       projectId: null,
     });

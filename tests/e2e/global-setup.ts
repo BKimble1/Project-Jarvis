@@ -54,11 +54,36 @@ import type { FullConfig } from '@playwright/test';
  * ninety routes are never touched by any test, so warming them bought nothing and cost heap.
  *
  * Pages are still enumerated from the filesystem, so a page added later is covered automatically
- * — which is the property that matters, because a missing page is the expensive case.
+ * — which is the property that matters, because a missing page is the expensive case. A short,
+ * explicit list of API endpoints is warmed alongside them: not because they are slow, but because
+ * the ones the fixtures call compile inside *setup or teardown*, where a timeout is reported
+ * against an unrelated test.
  */
 
 /** A fixed id for dynamic segments. Next compiles per route *pattern*, so any value warms it. */
 const PLACEHOLDER_ID = '00000000-0000-4000-8000-000000000000';
+
+/**
+ * The handful of API routes worth warming too.
+ *
+ * Pages are where the seconds are, but a few endpoints are called by the fixtures rather than by
+ * a test body — creating and deleting the scenario's projects — and a compile charged to a
+ * fixture surfaces as a *teardown* timeout, which reads like an unrelated failure in whatever
+ * test happened to be last. That is exactly how the original instability disguised itself, so the
+ * endpoints the fixtures use are warmed here rather than left to be discovered again.
+ *
+ * Deliberately a short explicit list. Warming all forty-five API routes is what previously drove
+ * the dev server into its memory guard.
+ */
+const WARM_API = [
+  '/api/projects',
+  `/api/projects/${'00000000-0000-4000-8000-000000000000'}`,
+  '/api/knowledge/sources',
+  '/api/knowledge/memories',
+  '/api/missions',
+  '/api/ask',
+  '/api/ask/conversations',
+];
 
 /** Routes that must not be warmed: they change state or belong to another auth surface. */
 const SKIP = new Set([
@@ -159,7 +184,7 @@ async function globalSetup(config: FullConfig): Promise<void> {
    * measurement anything depends on. The number that matters — total time to readiness — stays
    * exact.
    */
-  const queue = [...pages];
+  const queue = [...pages, ...WARM_API];
   const workers = Array.from({ length: 4 }, async () => {
     for (;;) {
       const route = queue.shift();
@@ -184,7 +209,7 @@ async function globalSetup(config: FullConfig): Promise<void> {
    * compiled inside one. `E2E_TRACE_WARMUP=1` prints the full table.
    */
   console.log(
-    `[e2e] warmed ${timings.length} pages in ${(total / 1000).toFixed(1)}s ` +
+    `[e2e] warmed ${timings.length} routes in ${(total / 1000).toFixed(1)}s ` +
       `(${slow.length} took over 1s; slowest ${slow[0]?.route ?? 'none'} at ${slow[0]?.ms ?? 0}ms)`,
   );
 }
