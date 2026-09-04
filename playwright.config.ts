@@ -42,6 +42,16 @@ const appEnv = {
 
 export default defineConfig({
   testDir: './tests/e2e',
+  /*
+   * Compile the application before any test times itself against it.
+   *
+   * `webServer.port` below reports ready when the port accepts a connection, which for `next dev`
+   * happens long before a route can be served — routes compile on first request. Without this the
+   * first test to navigate somewhere pays for compiling it inside its own timeout, which is what
+   * made this suite fail once per run in a different test each time. See the file for the
+   * measurements.
+   */
+  globalSetup: './tests/e2e/global-setup.ts',
   fullyParallel: false,
   workers: 1,
   forbidOnly: Boolean(process.env.CI),
