@@ -31,13 +31,30 @@ import type { FullConfig } from '@playwright/test';
  * endpoint or a plain-`http` base URL in production. Those refusals are load-bearing security
  * behaviour, so the fix is not to weaken them for the convenience of the test runner.
  *
- * Instead this replaces the readiness condition. Every route the application exposes is requested
- * once here, under this file's own budget, so that when the first test starts, "ready" means the
- * application is compiled rather than merely listening.
+ * Instead this replaces the readiness condition. Every *page* is requested once here, under this
+ * file's own budget, so that when the first test starts, "ready" means the pages are compiled
+ * rather than merely listening.
  *
- * Routes are enumerated from the filesystem rather than listed by hand, because a hand-written
- * list is one that silently stops covering a page somebody adds later — which is precisely how
- * this defect arrived.
+ * ## Why pages and not every route
+ *
+ * Warming all ninety routes — pages and API handlers together — fixed the compile problem and
+ * created a second one. Next's dev server holds every compiled route in memory, and with all
+ * ninety loaded it approached its heap limit mid-run and did what it does then:
+ *
+ *     ⚠ Server is approaching the used memory threshold, restarting...
+ *
+ * An in-flight request during that restart fails with `ECONNRESET`, and the restart discards
+ * every compiled route so the run pays the whole bill again — one observed run took 573s instead
+ * of 353s and failed. So warming everything traded a compile problem for a memory one.
+ *
+ * Pages are the right subset, and not as a compromise. They are what a navigation blocks on and
+ * they are where the cost actually is: measured, `/knowledge` took 12.8s and `/missions` 6.9s,
+ * while API handlers were mostly one to two seconds — comfortably inside a test's budget, and
+ * only paid for the handful of endpoints a test actually calls. Roughly forty-five of those
+ * ninety routes are never touched by any test, so warming them bought nothing and cost heap.
+ *
+ * Pages are still enumerated from the filesystem, so a page added later is covered automatically
+ * — which is the property that matters, because a missing page is the expensive case.
  */
 
 /** A fixed id for dynamic segments. Next compiles per route *pattern*, so any value warms it. */
@@ -73,7 +90,9 @@ function routesUnder(root: string, filename: 'page.tsx' | 'route.ts'): string[] 
 
       /* `(app)` and friends are route groups: they organise files without adding a URL segment. */
       const segment = entry.startsWith('(') && entry.endsWith(')') ? '' : entry;
-      const next = segment.startsWith('[') ? `${urlPath}/${PLACEHOLDER_ID}` : `${urlPath}/${segment}`;
+      const next = segment.startsWith('[')
+        ? `${urlPath}/${PLACEHOLDER_ID}`
+        : `${urlPath}/${segment}`;
       walk(full, segment === '' ? urlPath : next);
     }
   };
@@ -90,7 +109,6 @@ async function globalSetup(config: FullConfig): Promise<void> {
 
   const appRoot = path.resolve(process.cwd(), 'src/app');
   const pages = routesUnder(appRoot, 'page.tsx');
-  const apis = routesUnder(appRoot, 'route.ts');
 
   /*
    * Warm as the owner. An unauthenticated request to a private page redirects, and although the
@@ -132,18 +150,16 @@ async function globalSetup(config: FullConfig): Promise<void> {
   };
 
   /*
-   * A small pool rather than one-at-a-time or all-at-once.
-   *
-   * Serially this takes about three minutes, because the tail is ninety routes at roughly two
-   * seconds each. All at once starves the compiler and makes everything slower. Four keeps its
-   * workers busy without queueing a hundred first-requests behind each other.
+   * A small pool rather than one-at-a-time or all-at-once. All at once starves the compiler and
+   * makes every request slower; four keeps its workers busy without queueing every page behind
+   * the others.
    *
    * The per-route timings below become approximate under concurrency, and that is an acceptable
-   * trade: they are diagnostics for spotting a route that has become pathological, not a
+   * trade: they are diagnostics for spotting a page that has become pathological, not a
    * measurement anything depends on. The number that matters — total time to readiness — stays
    * exact.
    */
-  const queue = [...pages, ...apis];
+  const queue = [...pages];
   const workers = Array.from({ length: 4 }, async () => {
     for (;;) {
       const route = queue.shift();
@@ -168,7 +184,7 @@ async function globalSetup(config: FullConfig): Promise<void> {
    * compiled inside one. `E2E_TRACE_WARMUP=1` prints the full table.
    */
   console.log(
-    `[e2e] warmed ${timings.length} routes in ${(total / 1000).toFixed(1)}s ` +
+    `[e2e] warmed ${timings.length} pages in ${(total / 1000).toFixed(1)}s ` +
       `(${slow.length} took over 1s; slowest ${slow[0]?.route ?? 'none'} at ${slow[0]?.ms ?? 0}ms)`,
   );
 }
