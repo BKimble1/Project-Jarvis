@@ -17,6 +17,10 @@ const SUGGESTIONS = [
   'Show active projects',
 ] as const;
 
+const OPTION_CLASS =
+  'flex w-full items-center justify-between rounded-lg border border-[var(--color-border-strong)] ' +
+  'px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]';
+
 /**
  * The Jarvis status command bar.
  *
@@ -27,6 +31,8 @@ const SUGGESTIONS = [
 export function CommandBar({ initialHistory = [] }: { initialHistory?: readonly string[] }) {
   const [query, setQuery] = React.useState('');
   const [answer, setAnswer] = React.useState<QueryAnswer | null>(null);
+  /* The words that produced the answer on screen, which a work request has to carry onwards. */
+  const [asked, setAsked] = React.useState('');
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [history, setHistory] = React.useState<readonly string[]>(initialHistory);
@@ -46,6 +52,7 @@ export function CommandBar({ initialHistory = [] }: { initialHistory?: readonly 
       if (!response.ok) throw new Error('Jarvis could not answer that.');
       const data = (await response.json()) as { answer: QueryAnswer };
       setAnswer(data.answer);
+      setAsked(trimmed);
       setHistory((previous) =>
         [trimmed, ...previous.filter((item) => item !== trimmed)].slice(0, 8),
       );
@@ -145,12 +152,41 @@ export function CommandBar({ initialHistory = [] }: { initialHistory?: readonly 
         </p>
       ) : null}
 
-      {answer ? <AnswerPanel answer={answer} onPick={(text) => void ask(text)} /> : null}
+      {answer ? (
+        <AnswerPanel answer={answer} asked={asked} onPick={(text) => void ask(text)} />
+      ) : null}
     </section>
   );
 }
 
-function AnswerPanel({ answer, onPick }: { answer: QueryAnswer; onPick: (text: string) => void }) {
+/**
+ * The missions screen, carrying the request that produced this answer.
+ *
+ * The command bar cannot create a mission and must not try — a mission the owner has not reviewed
+ * is the one thing this product refuses to produce. So it hands the raw words, and the project
+ * when one is settled, to MissionStartBar, which prepares the draft and asks for the second press.
+ */
+const missionHref = (request: string, projectId: string | null): string =>
+  `/missions?request=${encodeURIComponent(request)}` +
+  (projectId ? `&projectId=${encodeURIComponent(projectId)}` : '');
+
+function AnswerPanel({
+  answer,
+  asked,
+  onPick,
+}: {
+  answer: QueryAnswer;
+  asked: string;
+  onPick: (text: string) => void;
+}) {
+  /*
+   * An ambiguous project name is answered before any preview is built, so the request has to be
+   * recovered from what was typed in that case. Either way the owner's own words travel on: a
+   * work request narrowed to a project is still that request, not a status question about it.
+   */
+  const workRequest =
+    answer.intent === 'execution_request' ? (answer.missionPreview?.rawRequest ?? asked) : null;
+
   return (
     <div className="border-t border-[var(--color-border)] px-4 py-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -169,14 +205,21 @@ function AnswerPanel({ answer, onPick }: { answer: QueryAnswer; onPick: (text: s
         <ul className="mt-3 flex flex-col gap-1.5">
           {answer.disambiguation.map((option) => (
             <li key={option.id}>
-              <button
-                type="button"
-                onClick={() => onPick(`Where are we on ${option.name}?`)}
-                className="flex w-full items-center justify-between rounded-lg border border-[var(--color-border-strong)] px-3 py-2 text-left text-sm hover:bg-[var(--color-surface-muted)]"
-              >
-                {option.name}
-                <ArrowRight className="h-4 w-4 text-[var(--color-text-subtle)]" aria-hidden />
-              </button>
+              {workRequest ? (
+                <Link href={missionHref(workRequest, option.id)} className={OPTION_CLASS}>
+                  {option.name}
+                  <ArrowRight className="h-4 w-4 text-[var(--color-text-subtle)]" aria-hidden />
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onPick(`Where are we on ${option.name}?`)}
+                  className={OPTION_CLASS}
+                >
+                  {option.name}
+                  <ArrowRight className="h-4 w-4 text-[var(--color-text-subtle)]" aria-hidden />
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -212,6 +255,24 @@ function AnswerPanel({ answer, onPick }: { answer: QueryAnswer; onPick: (text: s
             </div>
           ))}
       </div>
+
+      {answer.missionPreview ? (
+        <div className="mt-3 border-t border-[var(--color-border)] pt-3">
+          <Button asChild size="sm">
+            <Link
+              href={missionHref(answer.missionPreview.rawRequest, answer.missionPreview.projectId)}
+            >
+              Prepare this mission
+              <ArrowRight className="h-4 w-4" aria-hidden />
+            </Link>
+          </Button>
+          <p className="mt-2 text-xs text-[var(--color-text-subtle)]">
+            Opens the missions screen with these words already in it.{' '}
+            {answer.missionPreview.projectId ? null : 'You choose the project there. '}Nothing is
+            created until you confirm it.
+          </p>
+        </div>
+      ) : null}
 
       {answer.href ? (
         <Link

@@ -13,8 +13,11 @@ import { PortfolioBriefingPanel } from '@/components/briefing-panel';
 import { ProjectCard } from '@/components/project-card';
 import { SyncButton } from '@/components/sync-controls';
 import { RelativeTime } from '@/components/relative-time';
+import { ReadinessStrip } from '@/components/readiness-strip';
 import { MissionStrip } from '@/components/mission/mission-strip';
+import { TERMINAL_MISSION_STATES, type MissionSummary } from '@/domain/mission';
 import { countMissions } from '@/server/status/missions';
+import { quickReadiness } from '@/server/ops/readiness';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Dashboard' };
@@ -27,7 +30,10 @@ const one = (value: string | string[] | undefined): string | undefined =>
 export default async function DashboardPage({ searchParams }: { searchParams: Promise<Search> }) {
   const params = await searchParams;
   const services = await getServices();
-  const history = await services.queryHistory.recent(6);
+  const [history, readiness] = await Promise.all([
+    services.queryHistory.recent(6),
+    quickReadiness({ services }),
+  ]);
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
@@ -49,7 +55,22 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         </div>
       </header>
 
+      {/*
+       * Above the command bar, and above the Suspense boundary, on purpose.
+       *
+       * Above the bar because it qualifies it: the bar is where the next mission is typed, and
+       * approving work on a deployment with no worker connected is the failure this row exists to
+       * prevent. The bar also grows to hold an answer, so anything placed under it can be pushed
+       * off a phone screen exactly when someone is using it. Above Suspense because a skeleton
+       * cannot say whether a worker is connected, and this is cheap enough to block the first
+       * paint — `quickReadiness` reads the database and nothing else, unlike the full readiness
+       * report, which walks the ladder and reaches GitHub.
+       */}
+      <ReadinessStrip readiness={readiness} />
+
       <CommandBar initialHistory={history.map((entry) => entry.queryText)} />
+
+      <Elsewhere />
 
       <Suspense fallback={<DashboardSkeleton />}>
         <DashboardContent
@@ -76,10 +97,26 @@ async function DashboardContent({
   const lastRuns = await services.runs.listRecent(1);
   const lastRun = lastRuns[0];
 
-  const [missionPage, workers] = await Promise.all([
+  /*
+   * Finished missions are read separately rather than sieved out of the page above: on a busy
+   * portfolio the forty newest missions can all still be open, and finished work would then
+   * disappear from the landing page exactly when there is most of it to report.
+   */
+  const [missionPage, workers, finishedPage] = await Promise.all([
     services.missions.list({ limit: 40 }),
     services.missions.workerHealth(),
+    services.missions.list({ states: TERMINAL_MISSION_STATES, limit: 8 }),
   ]);
+
+  /*
+   * Ordered by when the work ended, which the query cannot do — mission listing sorts by creation.
+   * Reading more than the strip shows and ordering them here is what stops the rows appearing with
+   * "2 days ago" above "an hour ago".
+   */
+  const endedAt = (entry: MissionSummary) =>
+    new Date(entry.mission.finishedAt ?? entry.mission.updatedAt).getTime();
+  const recentlyFinished = [...finishedPage.items].sort((a, b) => endedAt(b) - endedAt(a));
+
   const missionCounts = countMissions(
     missionPage.items.map((entry) => entry.mission),
     new Map(workers.map((health) => [health.worker.id, health] as const)),
@@ -185,7 +222,11 @@ async function DashboardContent({
   return (
     <>
       <CountTiles counts={briefing.assessment.counts} />
-      <MissionStrip counts={missionCounts} missions={missionPage.items} />
+      <MissionStrip
+        counts={missionCounts}
+        missions={missionPage.items}
+        finished={recentlyFinished}
+      />
       <PortfolioBriefingPanel briefing={briefing} />
 
       <section aria-label="Projects" className="flex flex-col gap-3">
@@ -204,30 +245,7 @@ async function DashboardContent({
               </>
             ) : (
               'No synchronisation has run yet.'
-            )}{' '}
-            {/* Neither of these is on the phone's bottom bar, so the dashboard carries the way
-                in — see OFF_THE_TAB_BAR in the app shell. */}
-            ·{' '}
-            <Link
-              href="/changes"
-              className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
-            >
-              What changed
-            </Link>{' '}
-            ·{' '}
-            <Link
-              href="/knowledge"
-              className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
-            >
-              What Jarvis knows
-            </Link>{' '}
-            ·{' '}
-            <Link
-              href="/ask"
-              className="underline-offset-2 hover:text-[var(--color-text)] hover:underline"
-            >
-              Ask Jarvis
-            </Link>
+            )}
           </p>
         </div>
 
@@ -253,6 +271,39 @@ async function DashboardContent({
         )}
       </section>
     </>
+  );
+}
+
+/**
+ * The rest of Jarvis, from the screen every phone lands on.
+ *
+ * The dashboard's half of the OFF_THE_TAB_BAR contract in the app shell: whatever the phone's tab
+ * bar leaves out has to be reachable here. It sits above the Suspense boundary rather than beside
+ * the project count, because that count is inside `DashboardContent`, after the "No projects yet"
+ * early return — which is how a first-run owner on a phone was left with no way to reach Ask at
+ * all. Ask keeps a link even though it now holds a tab: this row is where the dashboard names it.
+ */
+const ELSEWHERE = [
+  ['/ask', 'Ask Jarvis'],
+  ['/changes', 'What changed'],
+  ['/knowledge', 'What Jarvis knows'],
+  ['/operations', 'Operations'],
+  ['/workers', 'Workers'],
+] as const;
+
+function Elsewhere() {
+  return (
+    <nav aria-label="Elsewhere in Jarvis" className="flex flex-wrap gap-1.5">
+      {ELSEWHERE.map(([href, label]) => (
+        <Link
+          key={href}
+          href={href}
+          className="rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-muted)]"
+        >
+          {label}
+        </Link>
+      ))}
+    </nav>
   );
 }
 

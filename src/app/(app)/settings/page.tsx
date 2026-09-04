@@ -23,6 +23,8 @@ export const metadata: Metadata = { title: 'Settings' };
 export default async function SettingsPage() {
   const health = describeConfigHealth();
   const services = await getServices();
+  const askProvider = services.answerProvider;
+  const askConfigured = askProvider.isConfigured();
   const [session, providerHealth, runs, storedRetention, displays, playbooks, ci] =
     await Promise.all([
       readSession(),
@@ -169,6 +171,31 @@ export default async function SettingsPage() {
             and any output that cites unsupplied evidence or invents work is discarded in favour of
             the rule-written briefing. Only normalised project evidence is ever sent — never
             credentials, environment variables or repository contents.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Ask answers</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 pt-0 text-sm">
+          <Row
+            label="Answer provider"
+            value={
+              askConfigured
+                ? `Configured (${askProvider.name} · ${askProvider.model})`
+                : 'Not configured'
+            }
+            ok={askConfigured}
+          />
+          <p className="text-xs text-[var(--color-text-muted)]">
+            Ask writes its answers through a provider of its own rather than the narrator above;
+            both read the same key today, so this row reports what the Ask provider says about
+            itself rather than what the key implies about it. Configured means the key is present,
+            not that it has been proved to work — a key that is rejected leaves the answer as the
+            records themselves, labelled “Records only — writing failed”, so an answer no model
+            wrote never reads as one that did.
           </p>
         </CardContent>
       </Card>

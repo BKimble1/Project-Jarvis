@@ -148,4 +148,63 @@ test.describe('a project without a repository', () => {
     const missions = await page.request.get('/api/missions');
     expect(((await missions.json()) as { total: number }).total).toBe(missionsBefore);
   });
+
+  test('carries a work request from the bar to the control that can create it', async ({
+    page,
+  }) => {
+    const project = await createProject(page.request, { name: uniqueName('Kiln Notes') });
+    created.push(project.id);
+    const request = 'build the onboarding screen';
+
+    await page.goto('/dashboard');
+    const ask = page.getByRole('region', { name: 'Ask Jarvis' });
+    await ask.getByLabel('Ask Jarvis about your projects').fill(request);
+    await ask.getByRole('button', { name: 'Ask' }).click();
+
+    const missionsBefore = (
+      (await (await page.request.get('/api/missions')).json()) as { total: number }
+    ).total;
+
+    /* Being told to start a mission is worth nothing without something to press. */
+    const prepare = ask.getByRole('link', { name: 'Prepare this mission' });
+    await expect(prepare).toHaveAttribute(
+      'href',
+      `/missions?request=${encodeURIComponent(request)}`,
+    );
+    await prepare.click();
+
+    /* The owner's words survive the trip, and both presses still stand between them and a mission. */
+    await expect(page.getByLabel('What do you want done?')).toHaveValue(request);
+    await page.getByRole('button', { name: 'See what Jarvis understood' }).click();
+    await expect(page.getByText('Jarvis understood')).toBeVisible();
+
+    const missions = await page.request.get('/api/missions');
+    expect(((await missions.json()) as { total: number }).total).toBe(missionsBefore);
+  });
+
+  test('narrows a work request to the chosen project instead of rewriting it', async ({ page }) => {
+    const tides = await createProject(page.request, { name: uniqueName('Harbour Tides') });
+    const kilns = await createProject(page.request, { name: uniqueName('Harbour Kilns') });
+    created.push(tides.id, kilns.id);
+    const request = 'build a login screen for Harbour';
+
+    await page.goto('/dashboard');
+    const ask = page.getByRole('region', { name: 'Ask Jarvis' });
+    await ask.getByLabel('Ask Jarvis about your projects').fill(request);
+    await ask.getByRole('button', { name: 'Ask' }).click();
+
+    await expect(ask.getByRole('heading', { name: 'Which project did you mean?' })).toBeVisible();
+
+    /*
+     * Choosing a project must keep the request. Asking "where are we on Harbour Tides?" instead
+     * would answer a question the owner never asked and lose the work they did ask for.
+     */
+    await expect(ask.getByRole('link', { name: tides.name })).toHaveAttribute(
+      'href',
+      `/missions?request=${encodeURIComponent(request)}&projectId=${tides.id}`,
+    );
+
+    await ask.getByRole('link', { name: kilns.name }).click();
+    await expect(page.getByLabel('What do you want done?')).toHaveValue(request);
+  });
 });

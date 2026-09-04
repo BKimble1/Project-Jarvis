@@ -12,6 +12,7 @@ import {
   History,
   LayoutDashboard,
   LogOut,
+  PlugZap,
   Rocket,
   Settings,
 } from 'lucide-react';
@@ -33,6 +34,7 @@ const NAV: readonly NavItem[] = [
   { href: '/ask', label: 'Ask Jarvis', shortLabel: 'Ask', Icon: MessageCircleQuestion },
   { href: '/knowledge', label: 'Knowledge', shortLabel: 'Knows', Icon: BookOpen },
   { href: '/operations', label: 'Operations', shortLabel: 'Ops', Icon: Activity },
+  { href: '/workers', label: 'Workers', shortLabel: 'Workers', Icon: PlugZap },
   { href: '/attention', label: 'What needs me', shortLabel: 'Needs me', Icon: BellRing },
   { href: '/changes', label: 'What changed', shortLabel: 'Changed', Icon: History },
   { href: '/settings', label: 'Settings', shortLabel: 'Settings', Icon: Settings },
@@ -42,10 +44,10 @@ const NAV: readonly NavItem[] = [
  * Destinations the phone's bottom bar leaves out.
  *
  * Named once so the filter and the dashboard's own links cannot drift apart: anything listed here
- * has to be reachable from the dashboard, because the tab bar is the only navigation a phone
- * shows by default.
+ * has to be reachable from the dashboard — in every state the dashboard can be in, empty
+ * portfolio included — because the tab bar is the only navigation a phone shows by default.
  */
-const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge', '/ask']);
+const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge', '/operations', '/workers']);
 
 /**
  * Application chrome.
@@ -131,9 +133,13 @@ export function AppShell({
       {/*
         The bottom bar carries the destinations that are *acted on*; reading and management
         surfaces live in the sidebar and are reached from the dashboard on a phone. At 320px each
-        tab has about 53px, which is already the point where a label starts to truncate — so
-        "What changed" and "Knowledge" stay off it rather than shrinking the tabs that carry a
-        decision. Both remain one tap away from the dashboard.
+        tab has about 53px, which is already the point where a label starts to truncate, so six
+        tabs is the ceiling and a seventh can only arrive by displacing one.
+
+        Ask holds one of the six because it is the thing an owner opens Jarvis to do. Operations
+        gave up its place for it: a dense capacity table read at a desk, not driven with a thumb.
+        Workers, "What changed" and "Knowledge" stay off for the same reason. Everything left off
+        is one tap away on the dashboard — the contract OFF_THE_TAB_BAR above exists to keep.
       */}
       <nav
         aria-label="Main"

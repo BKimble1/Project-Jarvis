@@ -20,19 +20,29 @@ test.describe('the phone layout', () => {
       .filter({ has: page.getByRole('link', { name: 'Home' }) });
     await expect(tabs).toBeVisible();
 
-    for (const label of ['Home', 'Projects', 'Missions', 'Needs me', 'Settings']) {
+    for (const label of ['Home', 'Projects', 'Missions', 'Ask', 'Needs me', 'Settings']) {
       await expect(tabs.getByRole('link', { name: label }), `the ${label} tab`).toBeVisible();
     }
 
     /*
-     * Reading and management surfaces stay off the bottom bar so the tabs that carry a decision
-     * do not shrink. Both must still be reachable from a phone, and the dashboard carries the way
-     * in — this asserts the second half, which is the half that silently rots.
+     * Six tabs is the ceiling at 320px, so reading and management surfaces stay off the bottom
+     * bar rather than shrink the tabs that carry a decision — Ask holds one because asking is a
+     * decision surface, and Operations reads its capacity tables at a desk. Each of the four left
+     * off must still be reachable from a phone, and the dashboard carries the way in; this
+     * asserts that second half, which is the half that silently rots.
      */
-    await expect(tabs.getByRole('link', { name: 'Changed' })).toHaveCount(0);
-    await expect(tabs.getByRole('link', { name: 'Knows' })).toHaveCount(0);
-    await expect(page.getByRole('link', { name: 'What changed' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'What Jarvis knows' })).toBeVisible();
+    for (const label of ['Changed', 'Knows', 'Ops', 'Workers']) {
+      await expect(
+        tabs.getByRole('link', { name: label }),
+        `${label} must stay off the bar`,
+      ).toHaveCount(0);
+    }
+    for (const label of ['What changed', 'What Jarvis knows', 'Operations', 'Workers']) {
+      await expect(
+        page.getByRole('link', { name: label, exact: true }),
+        `the dashboard's link to ${label}`,
+      ).toBeVisible();
+    }
 
     /* Comfortably tappable, and still there after the page is scrolled to its end. */
     const home = await tabs.getByRole('link', { name: 'Home' }).boundingBox();
@@ -44,6 +54,29 @@ test.describe('the phone layout', () => {
 
     await expect(page).toHaveURL(/\/attention$/);
     await expect(page.getByRole('heading', { name: 'What needs me', level: 1 })).toBeVisible();
+  });
+
+  test('answers whether a worker is connected before the thumb has to scroll', async ({ page }) => {
+    await page.goto('/dashboard');
+
+    /*
+     * The failure this guards: approving a mission on a dashboard that looks perfectly healthy
+     * while nothing is connected to run it. An answer that requires scrolling past the command
+     * bar — which grows once it is holding an answer — is an answer nobody reads in time.
+     */
+    const readiness = page.getByRole('region', { name: 'Readiness' });
+    await expect(readiness).toBeVisible();
+    await expect(readiness).toBeInViewport();
+
+    /* Whichever way each question is answered, the screen that settles it is one tap away. */
+    await expect(readiness.getByRole('link', { name: /worker/i })).toHaveAttribute(
+      'href',
+      '/workers',
+    );
+    await expect(readiness.getByRole('link', { name: /qualified/i })).toHaveAttribute(
+      'href',
+      '/operations/qualification',
+    );
   });
 
   test('never scrolls sideways, on the dashboard or on a repository project', async ({

@@ -94,11 +94,18 @@ export interface AskProject {
   readonly name: string;
 }
 
+/*
+ * The four the owner presses. Phrasing carries more weight here than in a typed question: a
+ * starter is routed by the same keyword table as anything else, so these are worded to reach the
+ * authority that answers them — the status engine for the first and last, the attention queue for
+ * "What needs my attention?". "What do we have on our plate?" matches no pattern and lands on the
+ * general branch, which gathers everything in scope rather than guessing at something narrower.
+ */
 const STARTERS = [
-  'Where are we across all projects?',
-  'What needs my approval?',
-  'Which projects are blocked?',
-  'What do we still not know?',
+  'Good morning, Jarvis. Where are we?',
+  'What do we have on our plate?',
+  'What needs my attention?',
+  'Which project is closest to shipping?',
 ] as const;
 
 const CLAIM_TONE: Record<string, 'positive' | 'accent' | 'caution' | 'neutral'> = {

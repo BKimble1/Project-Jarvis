@@ -18,16 +18,22 @@ import { Select, Textarea } from '@/components/ui/field';
  *
  * The preview is why "Jarvis must not simply pretend the mission is running" holds from the very
  * first interaction: until the owner confirms, there is no mission row.
+ *
+ * The request can arrive already written, handed over by the command bar in the URL. That saves
+ * the owner retyping words they have already typed once; it skips neither step, because reading
+ * the request and creating the mission are both still presses on this screen.
  */
 export function MissionStartBar({
   projects,
   defaultProjectId,
+  initialRequest,
 }: {
   projects: readonly { id: string; name: string }[];
   defaultProjectId?: string;
+  initialRequest?: string;
 }) {
   const router = useRouter();
-  const [request, setRequest] = React.useState('');
+  const [request, setRequest] = React.useState(initialRequest ?? '');
   const [preview, setPreview] = React.useState<MissionPreview | null>(null);
   const [refusal, setRefusal] = React.useState<string | null>(null);
   const [projectId, setProjectId] = React.useState(defaultProjectId ?? '');
@@ -46,7 +52,12 @@ export function MissionStartBar({
         body: JSON.stringify({ query: text }),
       });
       const body = (await response.json()) as {
-        answer?: { intent: string; summary: string; missionPreview?: MissionPreview | null };
+        answer?: {
+          intent: string;
+          summary: string;
+          disambiguation?: readonly { id: string; name: string }[] | null;
+          missionPreview?: MissionPreview | null;
+        };
         error?: { message: string };
       };
       if (!response.ok) {
@@ -61,7 +72,17 @@ export function MissionStartBar({
       }
       if (!answer?.missionPreview) {
         setPreview(null);
-        toast.info('That reads as a question rather than work. Ask it in the Jarvis bar instead.');
+        /*
+         * A request whose project name matches several projects is answered with the choice
+         * instead of a preview, and this call cannot say which one is selected below — it sends
+         * the text and nothing else. Naming that is the honest failure; "reads as a question"
+         * would send the owner to the command bar to be told the same thing again.
+         */
+        toast.info(
+          answer?.disambiguation && answer.disambiguation.length > 0
+            ? 'Several projects match the name in this request. Name the one you mean in full, then read it again.'
+            : 'That reads as a question rather than work. Ask it in the Jarvis bar instead.',
+        );
         return;
       }
       setPreview(answer.missionPreview);

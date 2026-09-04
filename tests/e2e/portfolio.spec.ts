@@ -50,6 +50,16 @@ test.describe('a repository-backed portfolio', () => {
     await page.goto('/dashboard');
 
     await expect(page.getByRole('heading', { name: 'Where we are' })).toBeVisible();
+
+    /*
+     * Whether Jarvis can do anything at all, stated on the landing page rather than two clicks
+     * away on Operations. Nothing in this suite records a live qualification run, so the honest
+     * wording here is the rung actually reached — never "live-qualified".
+     */
+    const readiness = page.getByRole('region', { name: 'Readiness' });
+    await expect(readiness.getByRole('link', { name: /worker/i })).toBeVisible();
+    await expect(readiness.getByRole('link', { name: /^Qualified to: / })).toBeVisible();
+    await expect(readiness).not.toContainText('Live-qualified');
     await expect(page.getByText(/^[1-9]\d* active projects?[,.]/)).toBeVisible();
     await expect(page.getByText('Recommended focus order')).toBeVisible();
 

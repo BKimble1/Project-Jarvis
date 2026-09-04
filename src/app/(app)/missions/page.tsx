@@ -13,11 +13,20 @@ export const dynamic = 'force-dynamic';
  *
  * The default view is everything unfinished. Filters live in the URL, so a view is shareable and
  * survives a refresh.
+ *
+ * `request` and `projectId` are how the command bar hands work over: the owner typed the request
+ * on the dashboard, and it arrives here written into the start bar rather than asking them to
+ * type it again. Nothing is created by arriving — the two presses on the start bar still apply.
  */
 export default async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string; search?: string }>;
+  searchParams: Promise<{
+    filter?: string;
+    search?: string;
+    request?: string;
+    projectId?: string;
+  }>;
 }) {
   await requireOwnerPage('/missions');
   const params = await searchParams;
@@ -42,6 +51,17 @@ export default async function MissionsPage({
       : page.items;
 
   const projects = await services.projects.list({ limit: 200 });
+  const projectOptions = projects.items.map((project) => ({
+    id: project.id,
+    name: project.shortName ?? project.name,
+  }));
+
+  /*
+   * A project handed over in the URL is only honoured when it is one the select can show. An
+   * unknown id would leave the field displaying the first project while holding a different one,
+   * and the mission would be created against a project the owner never saw named.
+   */
+  const handedProject = projectOptions.find((option) => option.id === params.projectId);
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
@@ -54,10 +74,9 @@ export default async function MissionsPage({
       </header>
 
       <MissionStartBar
-        projects={projects.items.map((project) => ({
-          id: project.id,
-          name: project.shortName ?? project.name,
-        }))}
+        projects={projectOptions}
+        {...(params.request ? { initialRequest: params.request } : {})}
+        {...(handedProject ? { defaultProjectId: handedProject.id } : {})}
       />
 
       <MissionList missions={items} activeFilter={filterId} search={search} />

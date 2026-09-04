@@ -113,7 +113,7 @@ export function MissionList({
           title="No missions here"
           description={
             activeFilter === 'open'
-              ? 'Type what you want done into the Jarvis bar and it will plan it before anything runs.'
+              ? 'Type what you want done into the bar above and Jarvis will plan it before anything runs.'
               : 'Nothing matches this filter right now.'
           }
         />

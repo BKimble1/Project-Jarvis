@@ -56,7 +56,7 @@ test.describe('asking Jarvis', () => {
     await expect(scope.getByText(/Jarvis will look at/)).toBeVisible();
 
     /* And there are questions to press rather than a blank box. */
-    await expect(page.getByRole('button', { name: 'What needs my approval?' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'What needs my attention?' })).toBeVisible();
   });
 
   test('answers a portfolio question from the records and labels what wrote it', async ({
@@ -206,10 +206,10 @@ test.describe('asking Jarvis', () => {
     await expect(proposal.getByText(/read-only research draft/i)).toBeVisible();
   });
 
-  test('answers what needs approval from the attention queue', async ({ page, scenario }) => {
+  test('answers what needs attention from the attention queue', async ({ page, scenario }) => {
     await page.goto('/ask');
     /* The starter question, pressed rather than typed: it is part of the interface. */
-    await page.getByRole('button', { name: 'What needs my approval?' }).click();
+    await page.getByRole('button', { name: 'What needs my attention?' }).click();
 
     await expect(page.getByText(/record(s)? considered/)).toBeVisible({ timeout: 30_000 });
     const answer = page.locator('article').first();

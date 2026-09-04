@@ -1,7 +1,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { ArrowRight, Rocket } from 'lucide-react';
-import type { MissionCounts, MissionSummary } from '@/domain/mission';
+import { isTerminalMissionState, type MissionCounts, type MissionSummary } from '@/domain/mission';
 import { Card, CardContent } from '@/components/ui/card';
 import { RelativeTime } from '@/components/relative-time';
 import { MissionStatePill } from './mission-pills';
@@ -15,19 +15,27 @@ import { MissionStatePill } from './mission-pills';
  * The counts are careful about one thing in particular: a mission whose worker has gone quiet is
  * reported separately from one that is genuinely running, because Jarvis cannot honestly claim
  * progress it is not being told about.
+ *
+ * `missions` is filtered to open work, and finished work arrives separately in `finished` rather
+ * than being folded into the same list: a list that mixes them reads as "here is what Jarvis is
+ * doing" and quietly includes things it stopped doing days ago. Two lists, each labelled once the
+ * other is present, keep the distinction the filter was always making.
  */
 export function MissionStrip({
   counts,
   missions,
+  finished,
 }: {
   counts: MissionCounts;
   missions: readonly MissionSummary[];
+  /** Missions that have reached a terminal state, most recently finished first. */
+  finished: readonly MissionSummary[];
 }) {
-  const notable = missions
-    .filter((entry) => entry.mission.state !== 'completed' && entry.mission.state !== 'cancelled')
-    .slice(0, 4);
+  const open = missions.filter((entry) => !isTerminalMissionState(entry.mission.state)).slice(0, 4);
+  const recent = finished.slice(0, 3);
 
-  if (counts.total === 0) return null;
+  /* The two lists come from different reads, so silence needs both to be empty, not just one. */
+  if (counts.total === 0 && recent.length === 0) return null;
 
   const tiles = [
     { label: 'Running', value: counts.running, href: '/missions?filter=running' },
@@ -80,29 +88,60 @@ export function MissionStrip({
           </div>
         ) : null}
 
-        {notable.length > 0 ? (
-          <ul className="flex flex-col divide-y divide-[var(--color-border)]">
-            {notable.map((entry) => (
-              <li key={entry.mission.id}>
-                <Link
-                  href={`/missions/${entry.mission.id}`}
-                  className="flex items-center gap-2 py-2 hover:text-[var(--color-accent-text)]"
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm">{entry.mission.title}</p>
-                    <p className="text-xs text-[var(--color-text-muted)]">
-                      {entry.projectName ?? 'No project'} ·{' '}
-                      <RelativeTime iso={entry.mission.updatedAt} />
-                    </p>
-                  </div>
-                  <MissionStatePill state={entry.mission.state} />
-                </Link>
-              </li>
-            ))}
-          </ul>
+        {open.length > 0 ? (
+          <MissionLines title={recent.length > 0 ? 'Open' : null} entries={open} />
         ) : null}
+
+        {recent.length > 0 ? <MissionLines title="Recently finished" entries={recent} /> : null}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * One list of missions.
+ *
+ * The heading appears only when a second list is on screen beneath it. A lone "Open" label above
+ * the only list in a card already headed "Missions" is a word that tells the reader nothing.
+ */
+function MissionLines({
+  title,
+  entries,
+}: {
+  title: string | null;
+  entries: readonly MissionSummary[];
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      {title ? (
+        <p className="text-xs font-semibold tracking-wide text-[var(--color-text-subtle)] uppercase">
+          {title}
+        </p>
+      ) : null}
+      <ul className="flex flex-col divide-y divide-[var(--color-border)]">
+        {entries.map((entry) => (
+          <li key={entry.mission.id}>
+            <Link
+              href={`/missions/${entry.mission.id}`}
+              className="flex items-center gap-2 py-2 hover:text-[var(--color-accent-text)]"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm">{entry.mission.title}</p>
+                <p className="text-xs text-[var(--color-text-muted)]">
+                  {entry.projectName ?? 'No project'} ·{' '}
+                  {/*
+                   * When the work ended, not when the row was last written: an edit to a finished
+                   * mission would otherwise make month-old work read as having just happened.
+                   */}
+                  <RelativeTime iso={entry.mission.finishedAt ?? entry.mission.updatedAt} />
+                </p>
+              </div>
+              <MissionStatePill state={entry.mission.state} />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -122,8 +161,14 @@ export function ProjectMissions({
             <Rocket className="h-4 w-4" aria-hidden />
             Missions
           </p>
+          {/*
+            The project travels as `projectId`, the way the command bar hands one over, so it
+            reaches MissionStartBar's project field. `?search=` matched only mission titles, raw
+            requests and ids, never a project id: it landed on an empty list with the project
+            still to pick by hand.
+          */}
           <Link
-            href={`/missions?search=${encodeURIComponent(projectId)}`}
+            href={`/missions?projectId=${encodeURIComponent(projectId)}`}
             className="text-xs text-[var(--color-accent-text)] hover:underline"
           >
             Start one
@@ -132,8 +177,8 @@ export function ProjectMissions({
 
         {missions.length === 0 ? (
           <p className="text-sm text-[var(--color-text-muted)]">
-            No missions for this project yet. Type what you want done into the Jarvis bar and it
-            will plan it before anything runs.
+            No missions for this project yet. Start one opens the mission bar with this project
+            already chosen. Jarvis plans it before anything runs.
           </p>
         ) : (
           <ul className="flex flex-col divide-y divide-[var(--color-border)]">
