@@ -50,6 +50,13 @@
       "when": 1788483327992,
       "tag": "0006_ask_conversations",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788558887532,
+      "tag": "0007_operating_charter",
+      "breakpoints": true
     }
   ]
 }

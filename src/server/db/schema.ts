@@ -72,6 +72,13 @@ import type {
   RunState,
   VerificationOutcome,
 } from '@/domain/mission-run';
+import type { CharterContent } from '@/domain/charter';
+import type {
+  AuthorizationOutcome,
+  CapabilityRequest,
+  CapabilityVerdict,
+} from '@/domain/authorization';
+import type { OperatingMode } from '@/domain/operating-mode';
 import type { WorkerStatus } from '@/domain/worker';
 import type { AgentRole } from '@/domain/agent-role';
 import type {
@@ -3053,6 +3060,123 @@ export const deletionReceipts = pgTable(
   ],
 );
 
+/* ------------------------------------------ V2: the autonomous operator */
+
+/**
+ * Versions of the operating charter.
+ *
+ * Append-only, exactly like `mission_plans`. A charter is never edited in place: an edit produces
+ * a new version, which is what makes "what was Jarvis allowed to do in March?" a question the
+ * table can answer rather than one the audit log has to reconstruct.
+ *
+ * `digest` is a fingerprint of `content` computed by `charterDigest`. An authorisation decision
+ * records both the version id and the digest, so a later reader can prove the charter was not
+ * edited underneath a decision that cited it. It is not a signature — anyone who can write this
+ * table can rewrite both — but it makes silent editing something that shows.
+ */
+export const operatingCharters = pgTable(
+  'operating_charters',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    version: integer('version').notNull(),
+    content: jsonb('content').$type<CharterContent>().notNull(),
+    digest: text('digest').notNull(),
+    /** Who wrote it. Always a person: there is no code path by which a model authors a charter. */
+    authoredBy: text('authored_by').notNull(),
+    note: text('note'),
+    /**
+     * When this version became the one in force, and when it stopped being.
+     *
+     * A version that was written but never activated has both null, and authorises nothing — the
+     * draft an owner abandoned halfway must not be capable of permitting anything.
+     */
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+    activatedBy: text('activated_by'),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('operating_charters_version_idx').on(table.version),
+    /*
+     * At most one charter in force at a time, enforced by the database rather than by whichever
+     * service happened to remember. A partial index over the active rows is the same trick
+     * `mission_runs` uses for attempts: NULLs are distinct in PostgreSQL, so this constrains
+     * exactly the rows where `superseded_at` is null and `activated_at` is not.
+     */
+    uniqueIndex('operating_charters_active_idx')
+      .on(table.supersededAt)
+      .where(sql`${table.supersededAt} is null and ${table.activatedAt} is not null`),
+    index('operating_charters_digest_idx').on(table.digest),
+  ],
+);
+
+/**
+ * How much autonomy Jarvis currently has, as one row.
+ *
+ * A single row rather than a history table, because the history lives in `audit_events` where it
+ * is hash-chained and every other consequential act is already recorded. Two records of the same
+ * thing eventually disagree, and the one with tamper-evidence should win.
+ *
+ * `id` is a constant so the row is addressable without a lookup and a second one cannot be
+ * created by a race.
+ */
+export const operatorState = pgTable('operator_state', {
+  id: text('id').primaryKey().default('singleton'),
+  mode: text('mode').$type<OperatingMode>().notNull().default('off'),
+  /** The charter in force. Null in every mode that does not use one. */
+  charterId: uuid('charter_id').references(() => operatingCharters.id, { onDelete: 'set null' }),
+  changedBy: text('changed_by').notNull(),
+  changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  reason: text('reason'),
+  /**
+   * When a temporary mode should lapse back.
+   *
+   * "Pause it until this evening" is a thing people say, and a pause nobody remembers to lift is
+   * a Jarvis that quietly stopped working.
+   */
+  until: timestamp('until', { withTimezone: true }),
+});
+
+/**
+ * Every authorisation decision, kept whether it allowed anything or not.
+ *
+ * The refusals are the more valuable half. An owner asking "why has it not done anything?" is
+ * asking to read this table, and a decision that was thrown away because the answer was no is a
+ * decision nobody can explain later.
+ *
+ * `charter_version_id` and `charter_digest` are stored rather than joined, deliberately: the point
+ * is to record what the charter said *at the time*, and a join would report what it says now.
+ */
+export const authorizationDecisions = pgTable(
+  'authorization_decisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
+    outcome: text('outcome').$type<AuthorizationOutcome>().notNull(),
+    mode: text('mode').$type<OperatingMode>().notNull(),
+    qualificationLevel: text('qualification_level').notNull(),
+    charterVersionId: uuid('charter_version_id'),
+    charterDigest: text('charter_digest'),
+    /** The full per-capability verdict list, as the pure function produced it. */
+    verdicts: jsonb('verdicts')
+      .$type<CapabilityVerdict[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    requested: jsonb('requested')
+      .$type<CapabilityRequest[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    estimatedSpendUsd: numeric('estimated_spend_usd', { precision: 12, scale: 4 }),
+    summary: text('summary').notNull(),
+    decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('authorization_decisions_mission_idx').on(table.missionId),
+    index('authorization_decisions_outcome_idx').on(table.outcome, table.decidedAt),
+    index('authorization_decisions_charter_idx').on(table.charterVersionId),
+  ],
+);
+
 /* --------------------------------------------------------------- relations */
 
 export const missionRelations = relations(missions, ({ one, many }) => ({
@@ -3157,4 +3281,7 @@ export const schema = {
   rateLimitBuckets,
   auditEvents,
   deletionReceipts,
+  operatingCharters,
+  operatorState,
+  authorizationDecisions,
 };
