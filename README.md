@@ -83,6 +83,23 @@ Demo mode never activates by itself in production.
 Full instructions: [Local setup](docs/SETUP_LOCAL.md) · [Windows setup](docs/SETUP_WINDOWS.md) ·
 [Netlify deployment](docs/DEPLOY_NETLIFY.md).
 
+### Running it for real
+
+The command above gives you Jarvis with nothing connected — no worker, no model, no repository.
+To reach a Jarvis that answers questions about your actual projects and runs actual missions,
+follow **[Setting up V1](docs/SETUP_V1.md)**: nineteen ordered steps, from installing Node to
+knowing what to back up. [The V1 topology](docs/V1_TOPOLOGY.md) says what you are building and
+which machine each part runs on.
+
+At any point:
+
+```bash
+npm run doctor            # every check, in one pass, with the next action for each failure
+```
+
+It distinguishes _configured_ — a value is present and nothing has confirmed it — from _working_,
+and exits non-zero when Jarvis cannot operate.
+
 ---
 
 ## Verification
@@ -111,6 +128,10 @@ Playwright step. Nothing is weakened to make the gate pass; see [docs/TESTING.md
 | [GitHub token](docs/GITHUB_TOKEN.md)                                  | Exactly which fine-grained read permissions to grant.                  |
 | [Authentication](docs/AUTHENTICATION.md)                              | OAuth app setup and session behaviour.                                 |
 | [Database](docs/DATABASE.md)                                          | Schema, migrations, drivers, indexes, retention.                       |
+| [Setting up V1](docs/SETUP_V1.md)                                     | The ordered path from nothing to a Jarvis that runs real missions.     |
+| [The V1 topology](docs/V1_TOPOLOGY.md)                                | The one supported arrangement, and where every credential lives.       |
+| [Backup and recovery](docs/RECOVERY.md)                               | What survives a restart, how to back up, and the restore drill.        |
+| [The wallboard](docs/WALLBOARD.md)                                    | Pairing a screen, an Android tablet, a Raspberry Pi kiosk, revocation. |
 | [Local setup](docs/SETUP_LOCAL.md) · [Windows](docs/SETUP_WINDOWS.md) | Development environments.                                              |
 | [Netlify deployment](docs/DEPLOY_NETLIFY.md)                          | Build, environment, scheduled synchronisation.                         |
 | [Testing](docs/TESTING.md)                                            | What is tested, and how to add to it.                                  |
