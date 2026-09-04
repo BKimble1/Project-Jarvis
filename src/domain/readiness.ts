@@ -107,9 +107,17 @@ export function summariseReadiness(
   const failing = checks.filter((check) => check.state === 'failed' && !check.blocking);
   const unproved = checks.filter((check) => check.state === 'configured');
 
+  /*
+   * The blocking case names a count, not the titles.
+   *
+   * Check titles are written as the affirmative thing that ought to be true — "A worker is
+   * enrolled and reachable" — so splicing them into "Jarvis cannot run yet: …" produced a
+   * sentence that read as the opposite of what it meant. The titles are still listed, by the
+   * caller, under a heading that supplies the negation once.
+   */
   const summary =
     blocked.length > 0
-      ? `Jarvis cannot run yet: ${blocked.map((check) => check.title.toLowerCase()).join('; ')}.`
+      ? `Jarvis cannot run yet: ${blocked.length} required check${blocked.length === 1 ? '' : 's'} ${blocked.length === 1 ? 'is' : 'are'} unresolved.`
       : failing.length > 0
         ? `Jarvis can run, but ${failing.length} check${failing.length === 1 ? ' is' : 's are'} failing.`
         : unproved.length > 0
