@@ -28,7 +28,10 @@ import type {
   PushRepository,
 } from '@/server/repositories/automation-types';
 import type { ReceiptRepository } from '@/server/repositories/factory-types';
-import type { MissionRepository } from '@/server/repositories/mission-types';
+import type {
+  MissionRepository,
+  VerificationRepository,
+} from '@/server/repositories/mission-types';
 import type { SourceRepository } from '@/server/repositories/types';
 import { resolveMissionRepository } from '@/server/missions/repository-resolution';
 import type { SettingsRepository } from '@/server/repositories/types';
@@ -113,6 +116,15 @@ export interface QualificationServiceOptions {
   readonly provider: SourceProvider;
   readonly missions: MissionRepository;
   readonly receipts: ReceiptRepository;
+  /**
+   * Needed by `verification_discoverable`, which used to answer a different question.
+   *
+   * That check's title is "the repository's own checks can be found and run", and it was
+   * implemented as "a live write was recorded" — the same call as `live_write_draft_pr`, so the
+   * two were indistinguishable and neither looked at a verification. Answering it honestly means
+   * reading what actually ran.
+   */
+  readonly verifications: VerificationRepository;
   readonly sources: SourceRepository;
   readonly config: AppConfig;
   readonly db: Database;
@@ -513,7 +525,7 @@ export class QualificationService {
       case 'notification_destination':
         return this.checkNotificationDestination();
       case 'verification_discoverable':
-        return this.checkRecordedEvidence('live_write', 'verification');
+        return this.checkVerificationRan();
       case 'live_read_audit':
         return this.checkRecordedEvidence('live_read', 'audit');
       case 'live_write_draft_pr':
@@ -586,9 +598,33 @@ export class QualificationService {
         { workers: String(workers.length) },
       );
     }
+
+    /*
+     * A stand-in runtime is not a model provider.
+     *
+     * `JARVIS_WORKER_RUNTIME=scripted` exists so the whole mission path can be exercised without
+     * a model, and it reports itself available because it genuinely is — for what it is. Counting
+     * it here would let a deployment with no Anthropic key anywhere qualify as having a model
+     * provider, which is the exact shape of dishonesty this ladder exists to prevent, and the
+     * mistake would only surface when a real mission produced scripted output.
+     */
+    const real = ready.filter((worker) => !isStandInRuntime(worker.runtimeName));
+    if (real.length === 0) {
+      return fail(
+        `Every available worker is running a stand-in runtime (${[
+          ...new Set(ready.map((worker) => worker.runtimeName ?? 'unnamed')),
+        ].join(
+          ', ',
+        )}), which runs no model. Unset JARVIS_WORKER_RUNTIME and give the worker a real model credential.`,
+        {
+          runtimes: [...new Set(ready.map((worker) => worker.runtimeName ?? 'unnamed'))].join(', '),
+        },
+      );
+    }
+
     return pass(
-      `${ready.length} worker(s) report a usable runtime. Jarvis knows only that; the key never leaves the worker.`,
-      { runtimes: [...new Set(ready.map((worker) => worker.runtimeName ?? 'unnamed'))].join(', ') },
+      `${real.length} worker(s) report a real model runtime. Jarvis knows only that; the key never leaves the worker.`,
+      { runtimes: [...new Set(real.map((worker) => worker.runtimeName ?? 'unnamed'))].join(', ') },
     );
   }
 
@@ -627,12 +663,20 @@ export class QualificationService {
       );
     }
     return pass(
-      `A write credential exists at the delivery boundary: ${[
+      /*
+       * Says what was established and no more. This reads a boolean the worker reports about its
+       * own environment — the credential itself never comes here — so "a credential is present"
+       * is the whole finding. Whether it authenticates is proved by `live_write_draft_pr`, which
+       * needs a real draft pull request, and the rung requires both.
+       */
+      `A write credential is present at the delivery boundary: ${[
         workerDelivery.length > 0 ? `${workerDelivery.length} worker(s)` : null,
         ciCredential ? 'the CI controller' : null,
       ]
         .filter(Boolean)
-        .join(' and ')}. It is separate from the read token, which cannot write.`,
+        .join(
+          ' and ',
+        )}. It lives outside the control plane, so nothing here can read it; that it works is proved by a real draft pull request, not by this check.`,
       {
         workerDelivery: String(workerDelivery.length),
         ciController: String(ciCredential),
@@ -685,7 +729,13 @@ export class QualificationService {
       );
     }
     return pass(
-      `Backups go to ${backupTarget ?? 'the configured target'} and a restore was rehearsed on ${backupRestoreTestedAt.slice(0, 10)}.`,
+      /*
+       * Attributed, not asserted. Both halves of this are declarations an owner made in the
+       * environment; Jarvis cannot see a backup and did not watch the restore. The stronger claim
+       * is `recovery_drill`, which needs an attestation recorded through the CLI describing what
+       * was actually seen — and it is a separate check for exactly that reason.
+       */
+      `You have declared backups to ${backupTarget ?? 'the configured target'}, with a restore rehearsed on ${backupRestoreTestedAt.slice(0, 10)}. Jarvis takes that on your word; the recovery drill check is the one with evidence behind it.`,
       { target: backupTarget ?? 'unnamed', restoreTested: backupRestoreTestedAt },
     );
   }
@@ -773,6 +823,71 @@ export class QualificationService {
         commit: match.commitSha ?? 'unrecorded',
         pullRequest: match.pullRequestUrl ?? 'none',
         model: match.modelName ?? 'unrecorded',
+      },
+    );
+  }
+
+  /**
+   * Did the repository's own checks actually get found and run?
+   *
+   * This is the question the check's title asks, and until now it was implemented as
+   * `checkRecordedEvidence('live_write', …)` — the identical call `live_write_draft_pr` makes.
+   * Two checks answering one question is one check pretending to be two, and the one pretending
+   * was the one gating "Jarvis can verify work in your repository".
+   *
+   * So it reads the verification records of the mission that produced the live evidence. A
+   * mission that opened a draft pull request without a single command being discovered and run
+   * proves the delivery path and says nothing about verification, and that is now visible.
+   */
+  private async checkVerificationRan() {
+    const evidence = await this.options.qualification.listLiveEvidence(20);
+    const match = evidence.find(
+      (entry) =>
+        entry.kind === 'live_write' && entry.qualificationVersion === QUALIFICATION_VERSION,
+    );
+    if (!match) {
+      return unavailable('No live write has been recorded, so nothing has been verified yet.', {});
+    }
+    if (!match.missionId) {
+      return unavailable(
+        'The recorded live write is not tied to a mission whose checks Jarvis can read.',
+        {
+          repository: match.repositoryFullName,
+        },
+      );
+    }
+
+    const verifications = await this.options.verifications.list(match.missionId);
+    if (verifications.length === 0) {
+      return fail(
+        `The live write against ${match.repositoryFullName} ran no verification at all. Jarvis discovers a repository's own test, lint or build script; if it found none, it delivered work nothing checked.`,
+        { repository: match.repositoryFullName, mission: match.missionId },
+      );
+    }
+
+    /*
+     * A command that could not run is not the same as a command that failed, and neither is the
+     * same as one that passed. What this check needs is that commands were *found and executed* —
+     * a failing test is a real verification and an honest result.
+     */
+    const ran = verifications.filter((entry) => entry.outcome !== 'unavailable');
+    if (ran.length === 0) {
+      return fail(
+        `${verifications.length} verification command(s) were found for ${match.repositoryFullName}, but none could run here. The worker needs the toolchain the repository's own scripts expect.`,
+        {
+          repository: match.repositoryFullName,
+          commands: verifications.map((entry) => entry.command).join(', '),
+        },
+      );
+    }
+
+    const passed = ran.filter((entry) => entry.outcome === 'passed').length;
+    return pass(
+      `${ran.length} of the repository's own command(s) were discovered and run against ${match.repositoryFullName} (${passed} passed).`,
+      {
+        repository: match.repositoryFullName,
+        commands: ran.map((entry) => entry.command).join(', '),
+        passed: String(passed),
       },
     );
   }
@@ -886,6 +1001,19 @@ function fromSurface(
     verdicts.map((verdict) => verdict.detail).join(' '),
     Object.assign({}, ...verdicts.map((verdict) => verdict.evidence)) as Record<string, string>,
   );
+}
+
+/**
+ * Runtimes that run no model.
+ *
+ * Matched by name rather than by a flag on the heartbeat, because the worker reports what it is
+ * and the control plane decides what that means — a worker asserting "I am a real model provider"
+ * would be a worker deciding its own qualification.
+ */
+const STAND_IN_RUNTIMES = new Set(['scripted', 'none', 'unavailable']);
+
+function isStandInRuntime(name: string | null): boolean {
+  return STAND_IN_RUNTIMES.has((name ?? '').trim().toLowerCase());
 }
 
 function rowsOf(result: unknown): unknown[] {

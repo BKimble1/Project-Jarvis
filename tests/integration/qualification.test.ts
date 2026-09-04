@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CompletionReceiptContent } from '@/domain/completion-receipt';
 import { QUALIFICATION_VERSION } from '@/domain/qualification';
+import { WORKER_VERSION } from '@/domain/worker-protocol';
 import { ForbiddenError, ValidationError } from '@/domain/errors';
 import { projectInputSchema } from '@/domain/project';
 import { testConfig } from '../helpers/test-config';
@@ -470,6 +471,130 @@ describe('qualification', () => {
       } finally {
         await drilled.close();
       }
+    });
+  });
+
+  describe('what a check is actually allowed to claim', () => {
+    /**
+     * Enrol a worker and have it report a heartbeat, so the fleet checks have something real to
+     * read rather than a row that never connected.
+     */
+    async function connectWorker(
+      overrides: { runtimeName?: string; runtimeAvailable?: boolean } = {},
+    ) {
+      const { worker } = await harness.services.workerService.enrol('qualification-worker', 1);
+      await harness.services.workerService.heartbeat(worker.id, {
+        status: 'idle',
+        version: WORKER_VERSION,
+        runtimeAvailable: overrides.runtimeAvailable ?? true,
+        runtimeName: overrides.runtimeName ?? 'claude-agent-sdk',
+        workspaceHealthy: true,
+        githubDeliveryConfigured: true,
+        diagnostics: [],
+      });
+      return worker;
+    }
+
+    it('refuses to call a scripted stand-in a model provider', async () => {
+      /*
+       * The runtime that exists so the whole mission path can be exercised *without* a model. It
+       * reports itself available, truthfully, and counting that as a model provider would let a
+       * deployment with no Anthropic key anywhere climb the ladder — which is the exact shape of
+       * dishonesty this ladder was built to prevent.
+       */
+      await connectWorker({ runtimeName: 'scripted' });
+
+      const status = await harness.services.qualificationService.run({ startedBy: 'test' });
+      const result = status.run?.results.find((entry) => entry.id === 'model_provider');
+
+      expect(result?.outcome).toBe('fail');
+      expect(result?.detail).toContain('stand-in');
+      expect(result?.detail).toContain('scripted');
+    });
+
+    it('accepts a real runtime', async () => {
+      await connectWorker({ runtimeName: 'claude-agent-sdk' });
+
+      const status = await harness.services.qualificationService.run({ startedBy: 'test' });
+      expect(status.run?.results.find((entry) => entry.id === 'model_provider')?.outcome).toBe(
+        'pass',
+      );
+    });
+
+    it('will not call a delivered pull request evidence that verification ran', async () => {
+      /*
+       * The check that used to be a duplicate.
+       *
+       * `verification_discoverable` says "the repository's own checks can be found and run", and
+       * it was implemented as the identical call `live_write_draft_pr` makes — so a mission that
+       * opened a draft pull request having run nothing at all satisfied both. That mission proves
+       * the delivery path and says nothing whatever about verification.
+       */
+      await harness.services.qualificationService.selectSandbox(SANDBOX);
+      const mission = await completedMission(harness, {
+        repository: SANDBOX,
+        pullRequestUrl: 'https://github.test/owner/jarvis-sandbox/pull/7',
+      });
+      await harness.services.qualificationService.recordLiveQualification({
+        missionId: mission.id,
+        kind: 'live_write',
+      });
+
+      const status = await harness.services.qualificationService.run({ startedBy: 'test' });
+      const delivered = status.run?.results.find((entry) => entry.id === 'live_write_draft_pr');
+      const verified = status.run?.results.find(
+        (entry) => entry.id === 'verification_discoverable',
+      );
+
+      /* The delivery is real and passes. */
+      expect(delivered?.outcome).toBe('pass');
+      /* And the verification claim is refused, where it used to be the same answer. */
+      expect(verified?.outcome).toBe('fail');
+      expect(verified?.detail).toContain('no verification');
+    });
+
+    it('passes verification once the repository’s own commands have actually run', async () => {
+      await harness.services.qualificationService.selectSandbox(SANDBOX);
+      const mission = await completedMission(harness, {
+        repository: SANDBOX,
+        pullRequestUrl: 'https://github.test/owner/jarvis-sandbox/pull/7',
+      });
+
+      /* A run needs a worker, and a verification needs a run — so the worker is real too. */
+      const worker = await connectWorker();
+      const run = await harness.services.missionRuns.start({
+        missionId: mission.id,
+        workerId: worker.id,
+        attempt: 1,
+        kind: 'execution',
+        planVersion: 1,
+        startedAt: new Date(),
+      });
+      await harness.services.verifications.record(mission.id, run.id, {
+        command: 'npm test',
+        source: 'package_script',
+        outcome: 'passed',
+        exitCode: 0,
+        durationMs: 4200,
+        outputExcerpt: 'ok',
+        missionRelated: true,
+        reason: null,
+      });
+
+      await harness.services.qualificationService.recordLiveQualification({
+        missionId: mission.id,
+        kind: 'live_write',
+      });
+
+      const status = await harness.services.qualificationService.run({ startedBy: 'test' });
+      const verified = status.run?.results.find(
+        (entry) => entry.id === 'verification_discoverable',
+      );
+      expect(verified?.outcome).toBe('pass');
+      expect(verified?.detail).toContain('discovered and run');
+      /* Which commands ran is evidence, not prose: it is what makes the pass checkable. */
+      expect(verified?.evidence.commands).toBe('npm test');
+      expect(verified?.evidence.passed).toBe('1');
     });
   });
 

@@ -14,6 +14,7 @@ import {
   type ReleaseApprovalInput,
 } from '@/domain/ci-dispatch';
 import { assessTestFlightReadiness } from '@/domain/app-profile';
+import { assertActivationAllowed, type QualificationLevel } from '@/domain/qualification';
 import { redactSecrets } from '@/domain/redaction';
 import type {
   AppProfileRepository,
@@ -74,6 +75,15 @@ export interface CiControllerDeps {
   readonly approvals: ReleaseApprovalRepository;
   readonly appProfiles: AppProfileRepository;
   readonly activity: ActivityLogService;
+  /**
+   * The rung this deployment has actually earned.
+   *
+   * A function rather than a value because the level changes as qualification runs, and a
+   * controller constructed once at start-up must not hold a stale one. Optional so a test can
+   * construct the controller without the whole qualification stack; absent means unlocked, which
+   * is the pre-existing behaviour and only ever reachable from a test.
+   */
+  readonly currentLevel?: () => Promise<QualificationLevel>;
   readonly clock?: () => Date;
 }
 
@@ -172,6 +182,25 @@ export class CiController {
     if (dispatch.state === 'dispatched' || dispatch.state === 'running') return dispatch;
     if (dispatch.state !== 'awaiting_approval' && dispatch.state !== 'approved') {
       throw new ConflictError(`That request is ${dispatch.state}; it cannot be dispatched.`);
+    }
+
+    /*
+     * The activation lock, at the boundary it was written for.
+     *
+     * `assertActivationAllowed` has existed since Phase 4A with the comment "server-side, at the
+     * dispatch boundary" and no caller anywhere — the lock was a described control rather than an
+     * enforced one. This is the dispatch boundary: past this line a workflow runs on GitHub, and
+     * a TestFlight purpose sends a build to real people. Both need `production`.
+     *
+     * It throws rather than returning a refusal, and the caller's own catch records that as a
+     * refused dispatch — the state a refusal already has. A boolean here would be a boolean
+     * somebody eventually forgets to read.
+     */
+    if (this.deps.currentLevel) {
+      assertActivationAllowed(
+        dispatch.purpose === 'testflight' ? 'testflight_dispatch' : 'ci_dispatch',
+        await this.deps.currentLevel(),
+      );
     }
 
     const verdict = evaluateCiDispatch(

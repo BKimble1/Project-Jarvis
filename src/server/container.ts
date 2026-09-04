@@ -464,23 +464,6 @@ export function buildServices(
   const dispatcher: WorkflowDispatcher | null = config.ci.token
     ? new GithubWorkflowDispatcher({ token: config.ci.token, apiUrl: config.ci.apiUrl })
     : null;
-  const ci = new CiController({
-    config: {
-      enabled: config.ci.enabled,
-      credentialConfigured: config.ci.credentialConfigured,
-      repositories: config.ci.repositories,
-      workflows: config.ci.workflows,
-      refs: config.ci.refs,
-      maxDispatchesPerHour: config.ci.maxDispatchesPerHour,
-    },
-    dispatcher,
-    dispatches: ciDispatches,
-    approvals: releaseApprovals,
-    appProfiles,
-    activity,
-    ...(overrides.clock ? { clock: overrides.clock } : {}),
-  });
-
   const displays = new DisplayAuth(displayDevices);
 
   /* ---------------------------------------------------------------- Prompt 4 */
@@ -611,9 +594,36 @@ export function buildServices(
     provider,
     missions: missionRepo,
     receipts,
+    verifications,
     sources,
     config,
     db,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  /*
+   * Built after the qualification service, and only because of `currentLevel`.
+   *
+   * The controller asks the ladder what rung this deployment has earned immediately before it
+   * dispatches, so the order here is a dependency rather than a preference: a CI dispatch that
+   * could not consult the activation lock would be an unlocked dispatch.
+   */
+  const ci = new CiController({
+    config: {
+      enabled: config.ci.enabled,
+      credentialConfigured: config.ci.credentialConfigured,
+      repositories: config.ci.repositories,
+      workflows: config.ci.workflows,
+      refs: config.ci.refs,
+      maxDispatchesPerHour: config.ci.maxDispatchesPerHour,
+    },
+    dispatcher,
+    dispatches: ciDispatches,
+    approvals: releaseApprovals,
+    appProfiles,
+    activity,
+    /* Read at dispatch time, not at start-up: qualification changes while the process runs. */
+    currentLevel: async () => (await qualificationService.status()).verdict.level,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

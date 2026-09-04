@@ -853,6 +853,55 @@ describe('Multi-agent factory HTTP handlers', () => {
     expect(response.status).toBe(409);
   });
 
+  it('refuses to dispatch an allow-listed workflow the ladder has not unlocked', async () => {
+    /*
+     * The activation lock, at the boundary it was written for.
+     *
+     * `assertActivationAllowed` carried the comment "server-side, at the dispatch boundary" since
+     * Phase 4A and had no caller anywhere — the lock was a described control, not an enforced
+     * one. Everything else about this dispatch is correct: the controller is configured, the
+     * repository, workflow and ref are all allow-listed, and the owner has approved it. The only
+     * thing wrong is that a deployment at "built" has not earned the right to start a workflow on
+     * GitHub, let alone send a build to real people.
+     */
+    process.env.JARVIS_CI_ENABLED = 'true';
+    process.env.JARVIS_CI_GITHUB_TOKEN = 'ghp_test_controller_credential_value';
+    process.env.JARVIS_CI_REPOSITORIES = 'test-owner/allowed';
+    process.env.JARVIS_CI_WORKFLOWS = 'testflight.yml';
+    process.env.JARVIS_CI_REFS = 'refs/heads/main';
+    const { resetConfigCache } = await import('@/server/config/env');
+    resetConfigCache();
+    const { resetServices, getServices } = await import('@/server/container');
+    resetServices();
+    services = await getServices();
+    await signIn();
+
+    const requested = await services.ci.request(
+      {
+        repositoryFullName: 'test-owner/allowed',
+        workflowFile: 'testflight.yml',
+        ref: 'refs/heads/main',
+        commitSha: 'a'.repeat(40),
+        inputs: {},
+        purpose: 'testflight',
+      },
+      'test-owner',
+    );
+    /* Requesting is fine — the policy allows it, and it is waiting for a person. */
+    expect(requested.allowed).toBe(true);
+    expect(requested.dispatch.state).toBe('awaiting_approval');
+
+    /* Dispatching is not. */
+    await expect(services.ci.dispatch(requested.dispatch.id, 'test-owner')).rejects.toThrow(
+      /TestFlight|qualified|Production/i,
+    );
+
+    /* And nothing moved: it is still waiting, not dispatched, with no dispatch timestamp. */
+    const after = await services.ciDispatches.findById(requested.dispatch.id);
+    expect(after?.state).toBe('awaiting_approval');
+    expect(after?.dispatchedAt).toBeNull();
+  });
+
   it('refuses a repository or workflow that is not on the allow-list', async () => {
     process.env.JARVIS_CI_ENABLED = 'true';
     process.env.JARVIS_CI_GITHUB_TOKEN = 'ghp_test_controller_credential_value';
