@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateAnswer } from '@/domain/answer';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+import { containsFabricatedMetric, validateAnswer, type ModelAnswer } from '@/domain/answer';
 import {
   ANSWER_STATES,
   applyTerminalTransition,
@@ -22,6 +25,7 @@ import {
 } from '@/domain/conversation';
 import { ValidationError } from '@/domain/errors';
 import { isActionRequest, routeQuestion } from '@/domain/question-routing';
+import { EvidenceGatherer } from '@/server/ask/evidence-gatherer';
 
 const PROJECT_A = '11111111-1111-4111-8111-111111111111';
 const PROJECT_B = '22222222-2222-4222-8222-222222222222';
@@ -450,5 +454,243 @@ describe('idempotency keys', () => {
     expect(idempotencyKeySchema.safeParse('short').success).toBe(false);
     expect(idempotencyKeySchema.safeParse('has spaces here').success).toBe(false);
     expect(idempotencyKeySchema.safeParse('../../etc/passwd').success).toBe(false);
+  });
+});
+
+/* ------------------------------------------------- claims and their kinds */
+
+describe('claim classification', () => {
+  const allowed = new Set(['project:a']);
+  const allowedProjects = new Set([PROJECT_A]);
+
+  const check = (claims: ModelAnswer['claims']) =>
+    validateAnswer({
+      answer: { headline: 'A headline.', claims },
+      allowedCitations: allowed,
+      allowedProjectIds: allowedProjects,
+    });
+
+  it('refuses a stated fact with nothing to point at', () => {
+    const verdict = check([
+      { kind: 'recorded_fact', text: 'The release shipped.', citations: [], projectId: PROJECT_A },
+    ]);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.rule).toBe('R-AN2');
+  });
+
+  it('allows an unknown and a recommendation to cite nothing', () => {
+    /* They are not claims about the record, so requiring a citation would push a model to
+     * manufacture one — which is the failure this whole layer exists to prevent. */
+    const verdict = check([
+      { kind: 'unknown', text: 'The records do not say.', citations: [], projectId: null },
+      {
+        kind: 'recommendation',
+        text: 'Consider asking the reviewer.',
+        citations: [],
+        projectId: null,
+      },
+    ]);
+    expect(verdict.ok).toBe(true);
+  });
+
+  it('refuses an answer that is nothing but interpretation', () => {
+    const verdict = check([
+      {
+        kind: 'model_interpretation',
+        text: 'It feels like this is going well.',
+        citations: ['project:a'],
+        projectId: PROJECT_A,
+      },
+    ]);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.rule).toBe('R-AN5');
+  });
+
+  it('refuses a suggestion written as though it had happened', () => {
+    const verdict = check([
+      { kind: 'unknown', text: 'Not recorded.', citations: [], projectId: null },
+      {
+        kind: 'recommendation',
+        text: 'I have opened a pull request for the fix.',
+        citations: [],
+        projectId: null,
+      },
+    ]);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.rule).toBe('R-AN6');
+  });
+
+  it('refuses an invented completion percentage or health score', () => {
+    for (const text of [
+      'The project is 80% complete.',
+      'Its health score is good.',
+      'Delivery is at 45% done.',
+    ]) {
+      expect(containsFabricatedMetric(text), text).toBe(true);
+    }
+    /* A percentage that is a real measurement is not a fabricated metric. */
+    expect(containsFabricatedMetric('Coverage rose from 71% to 78% in the last run.')).toBe(false);
+
+    const verdict = check([
+      {
+        kind: 'recorded_fact',
+        text: 'The project is 80% complete.',
+        citations: ['project:a'],
+        projectId: PROJECT_A,
+      },
+    ]);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.rule).toBe('R-AN4');
+  });
+
+  it('refuses a mission suggestion for a project outside the scope', () => {
+    const verdict = validateAnswer({
+      answer: {
+        headline: 'A headline.',
+        claims: [{ kind: 'unknown', text: 'Not recorded.', citations: [], projectId: null }],
+        missionSuggestion: {
+          rawRequest: 'Do something to the other project',
+          projectId: PROJECT_B,
+          rationale: 'Because.',
+        },
+      },
+      allowedCitations: allowed,
+      allowedProjectIds: allowedProjects,
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.rule).toBe('R-AN7');
+  });
+});
+
+/* ------------------------------------------------------- the rendered page */
+
+describe('what the answer surface may render', () => {
+  it('never sets HTML from anything a model or a document produced', () => {
+    /*
+     * A structural check on the shipping component rather than a behavioural one. An excerpt is
+     * attacker-influenced text by definition, and the single line that would make it executable
+     * is `dangerouslySetInnerHTML` — so the test is that the line is not there. A browser journey
+     * covers the rendered result; this covers the whole file, including branches a journey does
+     * not reach.
+     */
+    const source = readFileSync(
+      path.resolve(process.cwd(), 'src/components/ask/ask-console.tsx'),
+      'utf8',
+    );
+    /* Usage, not the word: this file's own comment explains why the prop is absent. */
+    expect(source).not.toMatch(/dangerouslySetInnerHTML\s*[=:]/);
+    expect(source).not.toMatch(/\.innerHTML\s*=/);
+    /* And nothing evaluates a string. */
+    expect(source).not.toMatch(/\bnew Function\(|\beval\(/);
+  });
+});
+
+/* ---------------------------------------------- what retrieval is asked for */
+
+describe('the retrieval request an answer builds', () => {
+  /*
+   * The gatherer is exercised against stubs rather than a database, because the claim being
+   * checked is about the *request* it constructs: the audience, the scopes and the project ids.
+   * A database test proves the result is filtered; this proves the filter asked for was the right
+   * one, which is the half that a future refactor could quietly change.
+   */
+  const assessment = () => ({
+    status: 'active',
+    statusProvenance: 'manual',
+    phase: null,
+    headline: { text: 'A headline.' },
+    freshness: { state: 'fresh', explanation: 'Observed just now.' },
+    needsAttention: false,
+    attention: [],
+    activeBlockers: [],
+    decisionsNeeded: [],
+    currentWork: [],
+    recentlyCompleted: [],
+    unknowns: [],
+    keyEvidenceIds: [],
+  });
+
+  function gathererWith(capture: { request?: Record<string, unknown> }) {
+    return new EvidenceGatherer({
+      projects: {
+        findById: async (id: string) => ({ id, name: `Project ${id.slice(0, 4)}` }),
+      } as never,
+      briefings: {
+        assessMany: async (ids: readonly string[]) =>
+          new Map(ids.map((id) => [id, assessment()])) as never,
+        loadEvidence: async () => [],
+      } as never,
+      attention: {} as never,
+      missions: { list: async () => ({ items: [], total: 0 }) } as never,
+      conflicts: { list: async () => [] } as never,
+      retrieval: {
+        retrieve: async (request: Record<string, unknown>) => {
+          capture.request = request;
+          return {
+            evidence: [],
+            diagnostics: { mode: 'lexical_only', truncatedByCharBudget: false },
+          };
+        },
+      } as never,
+    });
+  }
+
+  it('asks as the owner, for exactly the projects in scope, with the answer purpose', async () => {
+    const capture: { request?: Record<string, unknown> } = {};
+    const gatherer = gathererWith(capture);
+
+    await gatherer.gather({
+      question: 'What did we decide about auth?',
+      scope: {
+        scope: 'selected',
+        projectIds: [PROJECT_A, PROJECT_B],
+        rule: 'R-AS2',
+        reason: 'Two projects.',
+      },
+      routing: routeQuestion('What did we decide about auth?'),
+      ownerId: 'owner@example.com',
+    });
+
+    const request = capture.request;
+    expect(request).toBeDefined();
+    expect(request?.purpose).toBe('answer');
+    /* The scope filter is branded, so its contents are read back through JSON. */
+    const scope = JSON.parse(JSON.stringify(request?.scope)) as Record<string, unknown>;
+    expect(scope.audience).toBe('owner');
+    expect(scope.projectIds).toEqual([PROJECT_A, PROJECT_B]);
+    expect(scope.scopes).toEqual(['global', 'project']);
+    /* Bounded, always: an unbounded packet is a cost problem and an injection surface at once. */
+    expect(Number(request?.charBudget)).toBeGreaterThan(0);
+    expect(Number(request?.limit)).toBeGreaterThan(0);
+  });
+
+  it('does not ask for project material at all in a personal scope', async () => {
+    const capture: { request?: Record<string, unknown> } = {};
+    const gatherer = gathererWith(capture);
+
+    await gatherer.gather({
+      question: 'What do I prefer about deploys?',
+      scope: { scope: 'personal', projectIds: [], rule: 'R-AS5', reason: 'Your notes only.' },
+      routing: routeQuestion('What do I prefer about deploys?'),
+      ownerId: 'owner@example.com',
+    });
+
+    const scope = JSON.parse(JSON.stringify(capture.request?.scope)) as Record<string, unknown>;
+    expect(scope.scopes).toEqual(['global']);
+    expect(scope.projectIds).toEqual([]);
+  });
+
+  it('says so when a question needed documents and none matched', async () => {
+    const capture: { request?: Record<string, unknown> } = {};
+    const gatherer = gathererWith(capture);
+
+    const result = await gatherer.gather({
+      question: 'What did we decide about auth?',
+      scope: { scope: 'project', projectIds: [PROJECT_A], rule: 'R-AS2', reason: 'One project.' },
+      routing: routeQuestion('What did we decide about auth?'),
+      ownerId: 'owner@example.com',
+    });
+
+    expect(result.snapshot.gaps.join(' ')).toMatch(/No document or note in scope matches/i);
   });
 });

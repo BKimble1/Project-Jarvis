@@ -558,6 +558,7 @@ export function buildServices(
     attention,
     missions: missionRepo,
     retrieval,
+    conflicts,
   });
 
   /*

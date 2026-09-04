@@ -361,9 +361,16 @@ export function containsFabricatedMetric(text: string): boolean {
   return false;
 }
 
-/** A suggestion phrased as an accomplishment. */
+/**
+ * A suggestion phrased as an accomplishment.
+ *
+ * Two shapes, because a model reaches for both. The passive one — "the fix has been merged" —
+ * and the first-person one — "I have opened a pull request", "I've started the mission". The
+ * second is the more dangerous of the two on this surface: Ask cannot do anything, so a
+ * recommendation claiming it did is describing an event that did not happen.
+ */
 const READS_AS_DONE =
-  /\b(?:has been|have been|was|were|is now|are now)\s+(?:done|fixed|merged|deployed|shipped|released|completed|implemented)\b/i;
+  /\b(?:(?:has|have) been|was|were|is now|are now)\s+(?:done|fixed|merged|deployed|shipped|released|completed|implemented|opened|created|started)\b|\b(?:i|jarvis|we)\s+(?:have\s+|has\s+|'ve\s+)?(?:already\s+)?(?:opened|created|started|merged|deployed|shipped|dispatched|approved|enqueued|queued|pushed|fixed|implemented)\b/i;
 
 /* ------------------------------------------------------------------ context */
 

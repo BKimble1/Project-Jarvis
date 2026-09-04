@@ -115,6 +115,69 @@ describe('the Ask Jarvis pipeline', () => {
       expect(result.run.projectIds).toEqual([a]);
     });
 
+    it('gives a several-project answer exactly the projects chosen', async () => {
+      const a = await makeProject('Alpha');
+      const b = await makeProject('Bravo');
+      const c = await makeProject('Charlie');
+      const canaryC = 'zarquon-ask-charlie-canary-2204';
+      await note({
+        title: 'Alpha hosting',
+        text: `The Alpha hosting arrangement is ${CANARY_A}.`,
+        projectId: a,
+      });
+      await note({
+        title: 'Bravo hosting',
+        text: `The Bravo hosting arrangement is ${CANARY_B}.`,
+        projectId: b,
+      });
+      await note({
+        title: 'Charlie hosting',
+        text: `The Charlie hosting arrangement is ${canaryC}.`,
+        projectId: c,
+      });
+
+      provider.setAnswer(scriptedAnswer({ citations: [] }));
+      const result = await ask({
+        question: 'What is the hosting arrangement?',
+        scope: 'selected',
+        projectIds: [a, b],
+        idempotencyKey: 'iso-selected-1',
+      });
+
+      const seen = await everythingSeenBy(result.run.id);
+      expect(seen).toContain(CANARY_A);
+      expect(seen).toContain(CANARY_B);
+      expect(seen).not.toContain(canaryC);
+      expect([...result.run.projectIds].sort()).toEqual([a, b].sort());
+    });
+
+    it('answers a portfolio question from the status engine, not from prose about it', async () => {
+      const a = await makeProject('Alpha');
+      const b = await makeProject('Bravo');
+      /* A document that *claims* a status. The engine is the authority, and this is not it. */
+      await note({
+        title: 'Optimistic status note',
+        text: 'Everything is finished and nothing is blocked. We are ready to ship.',
+        projectId: a,
+      });
+
+      provider.setAnswer(scriptedAnswer({ citations: [] }));
+      const result = await ask({
+        question: 'Where are we across all projects?',
+        scope: 'portfolio',
+        idempotencyKey: 'portfolio-status-1',
+      });
+
+      const evidence = await harness.services.answerRuns.listEvidence(result.run.id);
+      const statusItems = evidence.filter((item) => item.origin === 'status_engine');
+      /* Both projects assessed, each with its own citable reference. */
+      expect(statusItems.some((item) => item.ref === `project:${a}`)).toBe(true);
+      expect(statusItems.some((item) => item.ref === `project:${b}`)).toBe(true);
+      expect([...result.run.projectIds].sort()).toEqual([a, b].sort());
+      /* The status question did not go to retrieval for its answer. */
+      expect(evidence.some((item) => item.origin === 'knowledge_source')).toBe(false);
+    });
+
     it('refuses a project the owner does not have', async () => {
       await makeProject('Alpha');
       await expect(
@@ -241,6 +304,56 @@ describe('the Ask Jarvis pipeline', () => {
       /* The approved one is the control: retrieval worked, and only the suggestion was withheld. */
       expect(seen).toContain(APPROVED);
       expect(seen).not.toContain(PENDING);
+    });
+
+    it('presents two disagreeing notes as disagreeing rather than as two facts', async () => {
+      const project = await makeProject('Alpha');
+      /*
+       * Jarvis does not pick a winner between the owner's own statements, so both stay active and
+       * both are retrievable. An answer that stated each as settled fact would sound most
+       * confident exactly where it should sound least.
+       */
+      await harness.services.memoryService.remember(
+        {
+          scope: 'project',
+          projectId: project,
+          category: 'preference',
+          statement: 'I prefer to deploy on Tuesday.',
+          tags: [],
+        },
+        OWNER_ACTOR,
+      );
+      const second = await harness.services.memoryService.remember(
+        {
+          scope: 'project',
+          projectId: project,
+          category: 'preference',
+          statement: 'I prefer to deploy on Friday, never Tuesday.',
+          tags: [],
+        },
+        OWNER_ACTOR,
+      );
+      /* Recording the second one raises the question; nothing has to ask for it. */
+      expect(second.conflicts.length).toBeGreaterThan(0);
+      expect(await harness.services.conflicts.list('open')).not.toHaveLength(0);
+
+      provider.setAnswer(scriptedAnswer({ citations: [] }));
+      const result = await ask({
+        question: 'What do I prefer about deploys?',
+        scope: 'project',
+        projectIds: [project],
+        idempotencyKey: 'memory-conflict-1',
+      });
+
+      const evidence = await harness.services.answerRuns.listEvidence(result.run.id);
+      const disputed = evidence.filter((item) => item.label.includes('(disputed)'));
+      expect(disputed.length).toBeGreaterThan(0);
+      expect(disputed[0]?.excerpt).toContain('conflicting note');
+      /* And the disagreement is named in the answer, not only in the packet. */
+      expect(result.run.limitations.join(' ')).toMatch(/Two of your notes disagree/);
+      expect(result.claims.some((claim) => /Two of your notes disagree/.test(claim.text))).toBe(
+        true,
+      );
     });
 
     it('cannot resurrect a forgotten memory through a later turn', async () => {

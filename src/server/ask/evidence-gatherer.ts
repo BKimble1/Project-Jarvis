@@ -12,6 +12,7 @@ import {
   RETRIEVAL_LIMITS,
   buildScopeFilter,
 } from '@/domain/retrieval';
+import type { ConflictRepository } from '@/server/repositories/knowledge-types';
 import type { AttentionService } from '@/server/services/attention-service';
 import type { BriefingService } from '@/server/services/briefing-service';
 import type { RetrievalService } from '@/server/knowledge/retrieval-service';
@@ -49,6 +50,14 @@ export interface EvidenceGathererOptions {
   readonly attention: AttentionService;
   readonly missions: MissionRepository;
   readonly retrieval: RetrievalService;
+  /**
+   * Open disagreements between the owner's own notes.
+   *
+   * Two notes that contradict each other are both `active` — Jarvis does not pick a winner — so
+   * without this an answer would state both as settled fact and sound most confident exactly
+   * where it should sound least. A conflicted note is presented as conflicted.
+   */
+  readonly conflicts: ConflictRepository;
 }
 
 export interface GatherRequest {
@@ -202,18 +211,41 @@ export class EvidenceGatherer {
       retrievalDegraded =
         result.diagnostics.mode === 'hybrid_degraded' || result.diagnostics.mode === 'indexing';
 
+      /*
+       * Fetched once, and only when memories could be in the packet. Open conflicts are a small
+       * set by construction — they are questions waiting for the owner — so this is a list rather
+       * than a per-item lookup.
+       */
+      const conflicted = new Map<string, string>();
+      if (request.routing.needsMemories) {
+        for (const conflict of await this.options.conflicts.list('open')) {
+          conflicted.set(conflict.leftId, conflict.summary);
+          if (conflict.rightId) conflicted.set(conflict.rightId, conflict.summary);
+        }
+      }
+
       for (const evidence of result.evidence) {
         const isMemory = evidence.kind === 'memory';
         if (isMemory) knowledgeConsidered += 1;
         else sourcesConsidered += 1;
+
+        /*
+         * Carried in the excerpt rather than in a flag, because the excerpt is what reaches a
+         * model and what a person reads. A flag would have to be remembered by every renderer;
+         * this cannot be dropped by forgetting to look at it.
+         */
+        const conflict = isMemory ? conflicted.get(evidence.id) : undefined;
+        if (conflict) gaps.push(`Two of your notes disagree: ${conflict}`);
 
         items.push({
           ref: `${isMemory ? 'knowledge' : 'source'}:${evidence.id}`,
           kind: isMemory ? 'knowledge' : 'source',
           origin: isMemory ? 'memory' : 'knowledge_source',
           subjectId: evidence.id,
-          label: evidence.title,
-          excerpt: evidence.excerpt,
+          label: conflict ? `${evidence.title} (disputed)` : evidence.title,
+          excerpt: conflict
+            ? `${evidence.excerpt}\n\n[Jarvis has a conflicting note about this and has not settled it: ${conflict}]`
+            : evidence.excerpt,
           projectId: evidence.projectId,
           locator: evidence.citation.locator,
           /* Pinning the revision is what stops a later refresh rewriting an old answer's basis. */
