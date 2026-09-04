@@ -38,6 +38,18 @@ const appEnv = {
   JARVIS_MISSION_CONCURRENCY: '1',
   LOG_LEVEL: 'warn',
   NEXT_TELEMETRY_DISABLED: '1',
+  /*
+   * A heap sized for the job.
+   *
+   * Next's development server restarts itself when used heap exceeds 80% of the heap limit. The
+   * default limit on a 16GB machine is 8240MB, so it trips at about 6.6GB — which this
+   * application reaches while serving a full suite, taking in-flight requests down with it. The
+   * restart is the failure; the heap is the cause. 10240MB moves the trigger to roughly 8.2GB
+   * while leaving several gigabytes for Chromium and the embedded database, and it is paired
+   * with `webpackMemoryOptimizations` so the ceiling is raised *and* the usage lowered rather
+   * than only the former.
+   */
+  NODE_OPTIONS: '--max-old-space-size=10240',
 };
 
 export default defineConfig({

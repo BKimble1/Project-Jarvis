@@ -23,6 +23,19 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   serverExternalPackages: ['@electric-sql/pglite', 'pg'],
+  experimental: {
+    /*
+     * Trade a little compile speed for a lot less memory.
+     *
+     * The development server restarts itself when its used heap passes 80% of the heap limit
+     * (`next/dist/server/lib/start-server.js`), and for an application this size it reached that
+     * during a full end-to-end run — resetting in-flight requests with ECONNRESET and discarding
+     * every compiled route, which turned a 353-second run into a 574-second failing one. This
+     * flag lowers webpack's peak, which is the half of that equation worth reducing rather than
+     * simply accommodating.
+     */
+    webpackMemoryOptimizations: true,
+  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },
