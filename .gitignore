@@ -16,3 +16,7 @@ next-env.d.ts
 .vercel
 .jarvis-workspaces
 .jarvis-live
+
+# Screenshots captured by `JARVIS_SCREENSHOTS=true npm run test:e2e:one -- screenshots`.
+# Looked at by a person, never compared by a machine — the core animates, so no two captures match.
+.jarvis-shots/

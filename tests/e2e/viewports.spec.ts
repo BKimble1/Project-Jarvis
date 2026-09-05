@@ -20,6 +20,7 @@ const VIEWPORTS = [
 
 const PAGES = [
   '/dashboard',
+  '/portfolio',
   '/projects',
   '/missions',
   '/ask',

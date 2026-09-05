@@ -62,7 +62,7 @@ test.describe('access', () => {
     await page.goto('/dashboard');
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Jarvis', level: 1 })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Ask Jarvis' })).toBeVisible();
   });
 
@@ -70,6 +70,6 @@ test.describe('access', () => {
     await page.goto('/signin');
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Jarvis', level: 1 })).toBeVisible();
   });
 });

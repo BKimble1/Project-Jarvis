@@ -6,9 +6,14 @@ On the machine that has your Claude login, in the checkout:
 npm run jarvis:live
 ```
 
-Then open <http://127.0.0.1:3000> and read the top of the dashboard. It says what Jarvis is doing
-and what needs you, numbered. Reply in the box: **"do the first one"**, **"continue"**, **"not
-tonight"**, or **"remember that …"**.
+Then open <http://127.0.0.1:3000>. Jarvis fills the screen: the core in the middle says what it is
+doing, your projects are on the left, what needs you is on the right, numbered. Reply in the box
+along the bottom: **"do the first one"**, **"continue"**, **"not tonight"**, or
+**"remember that …"**. Press **Speak** to say it instead.
+
+The button at the top right with the arrows makes it fullscreen for a wall or a big monitor;
+Escape brings the navigation back. Beside it, the settings button holds a lighter graphics mode
+and a switch to turn the movement off entirely.
 
 Three things worth knowing on day one:
 

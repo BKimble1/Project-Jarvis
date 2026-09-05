@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   Activity,
   BellRing,
+  LayoutGrid,
   BookOpen,
   MessageCircleQuestion,
   FolderKanban,
@@ -29,7 +30,8 @@ interface NavItem {
 }
 
 const NAV: readonly NavItem[] = [
-  { href: '/dashboard', label: 'Dashboard', shortLabel: 'Home', Icon: LayoutDashboard },
+  { href: '/dashboard', label: 'Jarvis', shortLabel: 'Home', Icon: LayoutDashboard },
+  { href: '/portfolio', label: 'Portfolio', shortLabel: 'Portfolio', Icon: LayoutGrid },
   { href: '/projects', label: 'Projects', shortLabel: 'Projects', Icon: FolderKanban },
   { href: '/missions', label: 'Missions', shortLabel: 'Missions', Icon: Rocket },
   { href: '/ask', label: 'Ask Jarvis', shortLabel: 'Ask', Icon: MessageCircleQuestion },
@@ -49,7 +51,19 @@ const NAV: readonly NavItem[] = [
  * has to be reachable from the dashboard — in every state the dashboard can be in, empty
  * portfolio included — because the tab bar is the only navigation a phone shows by default.
  */
-const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge', '/operations', '/workers', '/setup']);
+const OFF_THE_TAB_BAR = new Set([
+  '/changes',
+  '/knowledge',
+  '/operations',
+  /*
+   * The detailed grid the immersive dashboard replaced. It keeps a place in the sidebar because
+   * it is where a portfolio is actually managed, and stays off the bar because the screen a phone
+   * lands on already answers the question it answers — and six tabs is the ceiling at 320px.
+   */
+  '/portfolio',
+  '/workers',
+  '/setup',
+]);
 
 /**
  * Application chrome.
@@ -75,7 +89,10 @@ export function AppShell({
     <div className="min-h-dvh lg:flex">
       <PwaRegister />
 
-      <aside className="hidden w-60 shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface)] lg:flex lg:flex-col">
+      <aside
+        data-shell-chrome
+        className="hidden w-60 shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface)] lg:flex lg:flex-col"
+      >
         <div className="flex items-center gap-2 px-4 py-5">
           <JarvisMark />
           <div className="min-w-0">
@@ -113,7 +130,10 @@ export function AppShell({
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)]/95 px-4 py-3 backdrop-blur lg:hidden">
+        <header
+          data-shell-chrome
+          className="sticky top-0 z-20 flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)]/95 px-4 py-3 backdrop-blur lg:hidden"
+        >
           <JarvisMark />
           <p className="text-sm font-semibold">Jarvis</p>
           <div className="ml-auto flex items-center gap-2">
@@ -122,12 +142,19 @@ export function AppShell({
         </header>
 
         {demoMode ? (
-          <p className="bg-[var(--color-caution-soft)] px-4 py-2 text-center text-xs font-medium text-[var(--color-caution-text)]">
+          <p
+            data-shell-chrome
+            className="bg-[var(--color-caution-soft)] px-4 py-2 text-center text-xs font-medium text-[var(--color-caution-text)]"
+          >
             Demo mode — every project below is fictional seeded data.
           </p>
         ) : null}
 
-        <main id="main" className="min-w-0 flex-1 px-4 pt-4 pb-24 sm:px-6 lg:px-8 lg:pt-6 lg:pb-10">
+        <main
+          id="main"
+          data-shell-main
+          className="min-w-0 flex-1 px-4 pt-4 pb-24 sm:px-6 lg:px-8 lg:pt-6 lg:pb-10"
+        >
           {children}
         </main>
       </div>
@@ -145,6 +172,7 @@ export function AppShell({
       */}
       <nav
         aria-label="Main"
+        data-shell-chrome
         className="fixed inset-x-0 bottom-0 z-30 flex border-t border-[var(--color-border)] bg-[var(--color-surface)]/97 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
       >
         {NAV.filter((item) => !OFF_THE_TAB_BAR.has(item.href)).map(({ href, shortLabel, Icon }) => (

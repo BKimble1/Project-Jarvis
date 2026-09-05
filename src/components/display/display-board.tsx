@@ -8,6 +8,8 @@ import {
   type DisplayMissionCard,
   type DisplayPayload,
 } from '@/domain/display-device';
+import { JarvisCore } from '@/components/jarvis/core';
+import type { CoreState } from '@/domain/core-state';
 import { cn } from '@/lib/cn';
 
 /**
@@ -72,9 +74,18 @@ export function DisplayBoard() {
   if (!payload) {
     return (
       <Screen>
-        <p className="text-2xl text-[var(--color-text-muted)]">
-          {status === 'error' ? 'Cannot reach Jarvis.' : 'Loading…'}
-        </p>
+        <div className="m-auto flex max-w-2xl flex-col items-center gap-6 text-center">
+          <JarvisCore state={status === 'error' ? 'disconnected' : 'ready'} className="w-72" />
+          <h1 className="jx-label text-base text-[var(--jx-cyan)]">Jarvis</h1>
+          <p className="text-3xl text-[var(--jx-ink)]">
+            {status === 'error' ? 'Cannot reach Jarvis.' : 'Connecting…'}
+          </p>
+          <p className="text-xl text-[var(--jx-ink-dim)]">
+            {status === 'error'
+              ? 'This board is showing nothing rather than showing something out of date. It will keep trying.'
+              : 'Reading the current picture from the control plane.'}
+          </p>
+        </div>
       </Screen>
     );
   }
@@ -129,6 +140,26 @@ export function DisplayBoard() {
           </span>
         </div>
       </header>
+
+      <div className="flex min-w-0 flex-col items-center gap-4 xl:flex-row xl:items-center xl:gap-8">
+        <JarvisCore
+          state={boardState(payload)}
+          activity={payload.counts.activeAgents}
+          className="w-48 shrink-0 xl:w-72"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-2xl text-[var(--jx-ink)] xl:text-3xl">
+            {payload.counts.activeMissions === 0
+              ? 'Nothing running.'
+              : `${payload.counts.activeMissions} mission${payload.counts.activeMissions === 1 ? '' : 's'} running.`}
+          </p>
+          <p className="mt-1 text-lg text-[var(--jx-ink-dim)] xl:text-xl">
+            {payload.counts.awaitingOwner === 0
+              ? 'Nothing is waiting on a person.'
+              : `${payload.counts.awaitingOwner} thing${payload.counts.awaitingOwner === 1 ? '' : 's'} waiting on a person.`}
+          </p>
+        </div>
+      </div>
 
       <section className="grid grid-cols-2 gap-4 xl:grid-cols-5" aria-label="Counts">
         <BigCount label="Missions running" value={payload.counts.activeMissions} />
@@ -192,10 +223,7 @@ export function DisplayBoard() {
           ) : (
             <ul className="flex flex-col gap-2">
               {payload.attention.map((item, index) => (
-                <li
-                  key={index}
-                  className="rounded-xl bg-[var(--color-surface-muted)] px-4 py-3 text-lg"
-                >
+                <li key={index} className="jx-panel px-4 py-3 text-lg">
                   <p className="font-medium">{item.title}</p>
                   <p className="text-[var(--color-text-muted)]">{item.detail}</p>
                 </li>
@@ -228,12 +256,47 @@ export function DisplayBoard() {
   );
 }
 
+/**
+ * The same surface the owner's dashboard wears, on a screen that can do nothing.
+ *
+ * Only the stylesheet is shared. The wallboard still authenticates with its display credential and
+ * still renders exclusively from `/api/display`; sharing a palette must never become sharing a
+ * data path, so nothing under here reads an owner-only endpoint and nothing under here has a
+ * control on it.
+ */
 function Screen({ children }: { children: React.ReactNode }) {
   return (
-    <main className="flex min-h-dvh flex-col gap-5 bg-[var(--color-canvas)] p-6 text-[var(--color-text)] xl:gap-6 xl:p-10">
-      {children}
+    <main className="jarvis-surface relative flex min-h-dvh flex-col p-6 xl:p-10">
+      <div className="jx-grid" aria-hidden />
+      <div className="jx-vignette" aria-hidden />
+      <div className="relative flex min-h-0 flex-1 flex-col gap-5 xl:gap-6">{children}</div>
     </main>
   );
+}
+
+/**
+ * What the core is allowed to say on a wall.
+ *
+ * Only what the display payload actually carries. There is no conversation on a wallboard — no
+ * microphone, no request in flight, no speech — so `listening`, `thinking` and `speaking` are
+ * never reachable here and are not faked to make the screen livelier.
+ */
+function boardState(payload: DisplayPayload): CoreState {
+  const loop = payload.health.jarvis.loop;
+  if (
+    payload.health.controlPlane !== 'ok' ||
+    payload.health.workers.total === 0 ||
+    loop === 'stalled' ||
+    loop === 'failing'
+  ) {
+    return 'disconnected';
+  }
+  if (payload.counts.awaitingOwner > 0) return 'attention';
+  if (payload.health.jarvis.mode === 'paused' || payload.health.jarvis.mode === 'off') {
+    return 'limited';
+  }
+  if (payload.counts.activeMissions > 0) return 'working';
+  return 'ready';
 }
 
 function HealthDot({ ok }: { ok: boolean }) {
@@ -258,7 +321,7 @@ function BigCount({
   tone?: 'plain' | 'good' | 'bad' | 'attention';
 }) {
   return (
-    <div className="rounded-2xl bg-[var(--color-surface)] px-5 py-4">
+    <div className="jx-panel px-5 py-4">
       <p
         className={cn(
           'text-5xl font-semibold tabular-nums xl:text-6xl',
@@ -289,7 +352,7 @@ const ACTIVITY_TONE: Record<DisplayActivity, string> = {
 
 function MissionRow({ mission }: { mission: DisplayMissionCard }) {
   return (
-    <article className="rounded-2xl bg-[var(--color-surface)] px-5 py-4">
+    <article className="jx-panel px-5 py-4">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span
           className={cn(
@@ -372,14 +435,16 @@ function PairScreen({ onPaired }: { onPaired: () => void }) {
 
   return (
     <Screen>
-      <div className="m-auto flex w-full max-w-xl flex-col gap-4">
-        <h1 className="text-3xl font-semibold">Pair this display</h1>
+      <div className="m-auto flex w-full max-w-xl flex-col items-center gap-4 text-center">
+        <JarvisCore state="ready" className="w-64" />
+        <h1 className="jx-label text-base text-[var(--jx-cyan)]">Jarvis</h1>
+        <h2 className="text-3xl font-semibold">Pair this display</h2>
         <p className="text-lg text-[var(--color-text-muted)]">
           In Jarvis, open Settings, pair a new display, and type its token here. The token is shown
           once. This screen will only ever show summaries — it cannot approve, stop or change
           anything.
         </p>
-        <form onSubmit={submit} className="flex flex-col gap-3">
+        <form onSubmit={submit} className="flex w-full flex-col gap-3 text-left">
           <label htmlFor="display-token" className="text-base font-medium">
             Display token
           </label>

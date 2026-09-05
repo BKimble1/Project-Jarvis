@@ -211,3 +211,372 @@
     scrollbar-width: thin;
   }
 }
+
+/* ==========================================================================
+   The Jarvis surface.
+
+   A second, self-contained visual system for the two immersive screens — the owner's command
+   dashboard and the wallboard. It is applied by putting `.jarvis-surface` on a container, and it
+   works by *re-pointing the existing design tokens* rather than by introducing a parallel set of
+   component styles. Everything already built against `--color-surface`, `--color-text`,
+   `--color-accent` and friends — every Button, Card, Badge and Field — therefore adopts the blue
+   language on the way in, with no per-component fork to keep in step.
+
+   It is deliberately always dark. This is a screen designed to be looked at across a room in a
+   room with the lights off; a light variant of it would be a different product, and offering one
+   would mean every contrast decision below had to hold twice.
+
+   `--jx-*` are the tokens this surface adds: the ones with no equivalent in the application
+   palette because nothing else needs them — glow radii, tick colours, grid opacity.
+   ========================================================================== */
+
+@layer components {
+  /*
+   * The second selector extends the surface to the application chrome.
+   *
+   * The immersive screen sets `data-jarvis-scope` on the document while it is mounted, so the
+   * sidebar, the mobile header and the tab bar adopt the same palette instead of framing a blue
+   * screen in a white border. It is the same token block rather than a copy of it, because two
+   * copies would drift and the seam would be visible exactly where the chrome meets the scene.
+   */
+  .jarvis-surface,
+  html[data-jarvis-scope='on'] body {
+    /* --- the surface's own vocabulary ------------------------------------ */
+    --jx-void: #030916;
+    --jx-deep: #071a38;
+    --jx-panel: #0a2041;
+    --jx-line: #16406f;
+    --jx-line-soft: #10305a;
+    --jx-blue: #278cff;
+    --jx-cyan: #79e8ff;
+    --jx-ink: #e5f5ff;
+    --jx-ink-dim: #9cc2e8;
+    --jx-ink-faint: #6e92bc;
+    --jx-amber: #ffb84d;
+    --jx-red: #ff6b7e;
+    --jx-green: #4fe0a8;
+
+    /*
+     * How far the glow behind the core reaches, and how bright it is.
+     *
+     * Two variables rather than a fixed shadow because the core changes them as its state changes
+     * — one place to animate, and one place to turn down in the low-power mode.
+     */
+    --jx-glow: 0.55;
+    --jx-grid: 0.05;
+
+    /* --- the application tokens, re-pointed ------------------------------ */
+    --color-canvas: var(--jx-void);
+    --color-surface: color-mix(in srgb, var(--jx-panel) 72%, transparent);
+    --color-surface-muted: color-mix(in srgb, var(--jx-panel) 88%, white 3%);
+    --color-surface-raised: color-mix(in srgb, var(--jx-panel) 92%, white 4%);
+    --color-border: color-mix(in srgb, var(--jx-line) 62%, transparent);
+    --color-border-strong: var(--jx-line);
+
+    --color-text: var(--jx-ink);
+    --color-text-muted: var(--jx-ink-dim);
+    --color-text-subtle: var(--jx-ink-faint);
+    --color-text-inverse: #04101f;
+
+    --color-accent: var(--jx-blue);
+    --color-accent-hover: #4aa2ff;
+    --color-accent-soft: color-mix(in srgb, var(--jx-blue) 22%, transparent);
+    --color-accent-text: var(--jx-cyan);
+
+    --color-positive: var(--jx-green);
+    --color-positive-soft: color-mix(in srgb, var(--jx-green) 16%, transparent);
+    --color-positive-text: var(--jx-green);
+
+    --color-caution: var(--jx-amber);
+    --color-caution-soft: color-mix(in srgb, var(--jx-amber) 16%, transparent);
+    --color-caution-text: var(--jx-amber);
+
+    --color-critical: var(--jx-red);
+    --color-critical-soft: color-mix(in srgb, var(--jx-red) 16%, transparent);
+    --color-critical-text: var(--jx-red);
+
+    --color-neutral-soft: color-mix(in srgb, var(--jx-line) 30%, transparent);
+    --color-neutral-text: var(--jx-ink-dim);
+
+    --radius-card: 0.375rem;
+    --shadow-card: none;
+    --shadow-raised: 0 0 0 1px color-mix(in srgb, var(--jx-blue) 18%, transparent);
+
+    color: var(--jx-ink);
+    background-color: var(--jx-void);
+    /*
+     * The atmosphere: one wide radial lift behind the middle of the screen and a colder wash at
+     * the top, so the background reads as depth rather than as a flat fill. Both are painted on
+     * the container itself — a separate absolutely positioned layer for this would be one more
+     * thing to keep in the stacking order for no gain.
+     */
+    background-image:
+      radial-gradient(
+        120% 90% at 50% 42%,
+        color-mix(in srgb, #0d2f63 var(--jx-atmos, 85%), transparent) 0%,
+        transparent 68%
+      ),
+      radial-gradient(100% 60% at 50% 0%, #061631 0%, transparent 70%);
+  }
+
+  /* --- background layers ------------------------------------------------- */
+
+  /*
+   * The technical grid.
+   *
+   * Two crossed repeating gradients, masked so it fades out towards the edges of its container.
+   * Very faint on purpose: it should be the thing you notice on the second look, and it must never
+   * compete with a tick mark or a label. `pointer-events: none` because it is decoration sitting
+   * over the whole surface.
+   */
+  .jx-grid {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--jx-grid);
+    background-image:
+      repeating-linear-gradient(
+        to right,
+        var(--jx-blue) 0 1px,
+        transparent 1px var(--jx-grid-size, 64px)
+      ),
+      repeating-linear-gradient(
+        to bottom,
+        var(--jx-blue) 0 1px,
+        transparent 1px var(--jx-grid-size, 64px)
+      );
+    -webkit-mask-image: radial-gradient(115% 95% at 50% 45%, black 30%, transparent 78%);
+    mask-image: radial-gradient(115% 95% at 50% 45%, black 30%, transparent 78%);
+  }
+
+  /* A restrained darkening at the very edges, so the composition sits inside the bezel. */
+  .jx-vignette {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(120% 100% at 50% 50%, transparent 55%, #01050d 100%);
+    opacity: 0.85;
+  }
+
+  /* --- panels ------------------------------------------------------------ */
+
+  /*
+   * A panel is a hairline box with clipped corners and a barely-there tint.
+   *
+   * The corner accents are drawn with two gradient-backed pseudo-elements rather than four
+   * absolutely positioned spans, so a panel stays one element in the DOM and the accents cannot
+   * be read by a screen reader or land in a tab order.
+   */
+  .jx-panel {
+    position: relative;
+    border: 1px solid color-mix(in srgb, var(--jx-line) 70%, transparent);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--jx-panel) 62%, transparent) 0%,
+      color-mix(in srgb, var(--jx-panel) 34%, transparent) 100%
+    );
+    border-radius: 2px;
+    backdrop-filter: blur(2px);
+  }
+
+  .jx-panel::before,
+  .jx-panel::after {
+    content: '';
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    pointer-events: none;
+    border-color: color-mix(in srgb, var(--jx-cyan) 65%, transparent);
+    border-style: solid;
+  }
+  .jx-panel::before {
+    top: -1px;
+    left: -1px;
+    border-width: 1px 0 0 1px;
+  }
+  .jx-panel::after {
+    right: -1px;
+    bottom: -1px;
+    border-width: 0 1px 1px 0;
+  }
+
+  /* A panel that is currently the selected scope. Never colour alone: the border thickens too. */
+  .jx-panel[data-selected='true'] {
+    border-color: color-mix(in srgb, var(--jx-blue) 85%, transparent);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--jx-blue) 16%, transparent) 0%,
+      color-mix(in srgb, var(--jx-panel) 40%, transparent) 100%
+    );
+  }
+
+  /* --- typography -------------------------------------------------------- */
+
+  /*
+   * The widely spaced uppercase label.
+   *
+   * Reserved for short labels — two or three words — because tracking this wide destroys reading
+   * speed in a sentence. Bumped a little above the size it looks right at, because this screen is
+   * also read from three metres away.
+   */
+  .jx-label {
+    font-size: 0.625rem;
+    line-height: 1.2;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--jx-ink-faint);
+  }
+
+  .jx-num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+
+  /* --- motion ------------------------------------------------------------ */
+
+  @keyframes jx-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes jx-spin-back {
+    to {
+      transform: rotate(-360deg);
+    }
+  }
+  @keyframes jx-breathe {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @keyframes jx-sweep {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes jx-blink {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.25;
+    }
+  }
+
+  /*
+   * Rotation is applied to SVG groups with transform-box: fill-box, so a ring spins about its own
+   * centre rather than about the viewBox origin. Without this every ring orbits the corner.
+   */
+  .jx-rot {
+    transform-origin: 50% 50%;
+    transform-box: fill-box;
+    animation-name: jx-spin;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    will-change: transform;
+  }
+  .jx-rot-r {
+    animation-name: jx-spin-back;
+  }
+
+  /* --- graphics modes ---------------------------------------------------- */
+
+  /*
+   * The low-power mode, and the reduced-motion mode, are deliberately different things.
+   *
+   * Lite graphics keeps every motion but spends less on it: fewer particles (decided in the
+   * renderer), no blur, no glow filters. Reduced motion stops the movement but keeps every state
+   * legible — which is why the state is always carried by text and by a static colour as well as
+   * by whether something is turning.
+   */
+  .jarvis-surface[data-graphics='lite'] {
+    --jx-glow: 0.3;
+    --jx-grid: 0.035;
+  }
+  .jarvis-surface[data-graphics='lite'] .jx-panel {
+    backdrop-filter: none;
+  }
+  .jarvis-surface[data-graphics='lite'] .jx-soft-glow {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .jx-rot,
+    .jarvis-surface [class*='jx-'] {
+      animation: none !important;
+    }
+  }
+  .jarvis-surface[data-motion='off'] .jx-rot,
+  .jarvis-surface[data-motion='off'] [class*='jx-'] {
+    animation: none !important;
+  }
+
+  /* --- focus mode -------------------------------------------------------- */
+
+  /*
+   * Hiding the application chrome without unmounting it.
+   *
+   * The alternative — a route that renders outside the shell — would mean the dashboard's
+   * navigation, session and attention badge were fetched by a second layout, and leaving focus
+   * mode would be a full navigation that discarded the typed command and the selected project.
+   * A document-level attribute keeps one tree and one state.
+   */
+  html[data-jarvis-focus='on'] [data-shell-chrome] {
+    display: none !important;
+  }
+  html[data-jarvis-focus='on'] [data-shell-main] {
+    padding: 0 !important;
+  }
+  html[data-jarvis-focus='on'] body {
+    padding-bottom: 0;
+  }
+
+  /*
+   * The immersive scene's height.
+   *
+   * On a wide screen the whole composition is meant to fit without scrolling, which means
+   * subtracting whatever padding the application shell is adding around it. Focus mode removes
+   * that padding, so the inset it has to subtract is zero — expressed as a variable rather than
+   * as two competing `calc()` heights, because the two would drift the first time the shell's
+   * padding changed.
+   */
+  .jx-screen {
+    --jx-screen-inset: 4rem;
+  }
+  html[data-jarvis-focus='on'] .jx-screen {
+    --jx-screen-inset: 0rem;
+  }
+  /*
+   * 1280, not 1024.
+   *
+   * The three-column arrangement needs about 30rem for its two side rails before the core gets
+   * anything at all, and at 1024 that left the centre a few pixels wide with the status line
+   * wrapping through the panels beside it. Below this width the composition stacks and the page
+   * scrolls, which is what a tablet should get.
+   */
+  @media (min-width: 1280px) {
+    .jx-screen {
+      height: calc(100dvh - var(--jx-screen-inset));
+    }
+  }
+
+  /*
+   * A scroll region inside a panel: thin, dim, and never a reason for the panel to grow.
+   * `min-height: 0` is the flexbox detail that makes an overflowing child actually scroll rather
+   * than stretch its parent past the viewport.
+   */
+  .jx-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--jx-blue) 40%, transparent) transparent;
+    overscroll-behavior: contain;
+  }
+}

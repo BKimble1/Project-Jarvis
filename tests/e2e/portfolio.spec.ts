@@ -43,11 +43,16 @@ test.describe('a repository-backed portfolio', () => {
     await expect(firstRun.getByText('ok', { exact: true })).toBeVisible();
   });
 
-  test('the dashboard briefs the portfolio, counts it and shows every project', async ({
+  test('the portfolio briefs itself, counts it and shows every project', async ({
     page,
     scenario,
   }) => {
-    await page.goto('/dashboard');
+    /*
+     * `/portfolio`, not `/dashboard`. The landing page is now the immersive Jarvis screen and the
+     * detailed grid — briefing, count tiles, filters, every project card — moved here whole. The
+     * assertions below are unchanged; only the route they are made against is.
+     */
+    await page.goto('/portfolio');
 
     await expect(page.getByRole('heading', { name: 'Where we are' })).toBeVisible();
 

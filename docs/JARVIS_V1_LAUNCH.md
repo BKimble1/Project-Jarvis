@@ -3,7 +3,9 @@
 What this is, how to run it, what it will and will not do, and — the part worth reading twice —
 what has actually been proved as opposed to merely built.
 
-For the two-minute version, see [TOMORROW_MORNING.md](./TOMORROW_MORNING.md).
+For the two-minute version, see [TOMORROW_MORNING.md](./TOMORROW_MORNING.md). For how the main
+screen is built and what its animation is and is not allowed to claim, see
+[JARVIS_SCREEN.md](./JARVIS_SCREEN.md).
 
 ---
 
@@ -32,7 +34,19 @@ starts, finds nothing, and refuses every mission.
 
 ## 2. Using it
 
-**The dashboard** opens with what Jarvis is doing, what needs you as a numbered list, and a box.
+**The dashboard** is the whole screen. A luminous core in the middle, which says what Jarvis is
+actually doing and nothing else; your projects and their current work down the left; what needs
+you, what is running and what just finished down the right; and one command box along the bottom
+with the microphone, **Brief me**, and how much Claude is left. Nothing on it is decorative
+arithmetic — the core is quiet when nothing is running, and says so in words as well as in colour.
+
+Two controls at the top right: **fullscreen** (Escape leaves it), and **display settings**, which
+hold a lighter graphics mode for a Raspberry Pi or an old tablet and a switch that stops the
+movement while keeping every state readable.
+
+The detailed portfolio — the filtered grid, the mission strip, the whole-portfolio briefing — is
+one click away at **/portfolio**, or "Portfolio" in the sidebar.
+
 Type into the box:
 
 | You say                                 | What happens                                                                      |
@@ -46,7 +60,9 @@ Type into the box:
 | **Brief me**                            | The morning briefing: what finished, what waits, where things stand, what is next |
 
 **Speaking** works where the browser supports it. Press **Speak**, say one thing, correct the text
-if it came out wrong, send. Push-to-talk by default; hands-free keeps listening between messages and
+in the box if it came out wrong, then **Send as spoken**. The core reacts to your voice while the
+microphone is open, and only then — that movement is a real measurement of the microphone, and
+when the browser will not give one it simply does not move. Push-to-talk by default; hands-free keeps listening between messages and
 still starts with a press. There is no wake word and Jarvis does not listen for one — a browser
 cannot do that without holding the microphone open indefinitely.
 
