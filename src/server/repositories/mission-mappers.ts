@@ -11,6 +11,15 @@ import type {
   RunUsage,
 } from '@/domain/mission-run';
 import type { JarvisWorker } from '@/domain/worker';
+import {
+  RATE_WINDOWS,
+  measured,
+  unknown,
+  type CapacityObservation,
+  type Observed,
+  type RateWindow,
+  type WindowObservation,
+} from '@/domain/claude-capacity';
 import type {
   missionApprovals,
   missionArtifacts,
@@ -289,6 +298,62 @@ export function toArtifact(row: Row<typeof missionArtifacts>): MissionArtifact {
     sources: row.sources ?? [],
     createdBy: row.createdBy,
     createdAt: isoRequired(row.createdAt),
+  };
+}
+
+/**
+ * A worker row's capacity columns, as a domain observation — or null if it never took a reading.
+ *
+ * Null and "all zeroes" are the two possible readings of an unmeasured row, and only one of them
+ * is true. A row whose `capacity_observed_at` is null has never managed to look at capacity, so
+ * there is no observation to return; returning a shell of zeroed windows would tell the governor
+ * that the account is completely fresh, which is the single most expensive thing it could believe
+ * incorrectly.
+ *
+ * Below that, each field keeps its own null. `measured` is used only where the provider gave a
+ * number; every gap becomes `unknown()`, which carries no value and cannot be mistaken for one.
+ * The quality here is always the raw one — ageing into `stale` is the caller's job, against the
+ * caller's clock, so that a stored row does not have to be rewritten to become old.
+ */
+export function toCapacityObservation(row: Row<typeof workers>): CapacityObservation | null {
+  const observedAt = row.capacityObservedAt;
+  if (!observedAt) return null;
+
+  const source = row.capacitySource ?? 'worker heartbeat';
+  const stamp = <T>(value: T | null | undefined): Observed<T> =>
+    value === null || value === undefined ? unknown<T>() : measured(value, source, observedAt);
+
+  const columns: Record<RateWindow, { percent: number | null; resetsAt: Date | null }> = {
+    fiveHour: { percent: row.capacityFiveHourPercent, resetsAt: row.capacityFiveHourResetsAt },
+    sevenDay: { percent: row.capacitySevenDayPercent, resetsAt: row.capacitySevenDayResetsAt },
+    sevenDayOpus: {
+      percent: row.capacitySevenDayOpusPercent,
+      resetsAt: row.capacitySevenDayOpusResetsAt,
+    },
+  };
+
+  const windows = {} as Record<RateWindow, WindowObservation>;
+  for (const window of RATE_WINDOWS) {
+    const column = columns[window];
+    windows[window] = {
+      utilisationPercent: stamp(column.percent),
+      resetsAt: stamp(column.resetsAt ? column.resetsAt.toISOString() : null),
+    };
+  }
+
+  return {
+    workerId: row.id,
+    authMode: row.capacityAuthMode ?? 'unknown',
+    subscriptionType: stamp(row.capacitySubscriptionType),
+    windows,
+    context: {
+      usedTokens: stamp(row.capacityContextUsedTokens),
+      maxTokens: stamp(row.capacityContextMaxTokens),
+      percentUsed: stamp(row.capacityContextPercent),
+      overLimit: stamp(row.capacityContextOverLimit),
+    },
+    observedAt: observedAt.toISOString(),
+    source,
   };
 }
 

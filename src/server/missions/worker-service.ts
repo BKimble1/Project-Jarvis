@@ -1,11 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/domain/errors';
-import type {
-  Mission,
-  MissionFailureCode,
-  MissionState,
-  MissionType,
-} from '@/domain/mission';
+import type { Mission, MissionFailureCode, MissionState, MissionType } from '@/domain/mission';
 import { isReadOnlyMissionType } from '@/domain/mission';
 import type { QualificationLevel } from '@/domain/qualification';
 import {
@@ -17,6 +12,7 @@ import type { MissionRun } from '@/domain/mission-run';
 import type {
   MissionAssignment,
   PendingCommand,
+  WorkerCapacityInput,
   WorkerClaimInput,
   WorkerEventBatchInput,
   WorkerHeartbeatInput,
@@ -26,6 +22,8 @@ import type {
   WorkerRunStateInput,
 } from '@/domain/worker-protocol';
 import { WORKER_VERSION, isCompatibleWorkerVersion } from '@/domain/worker-protocol';
+import { RATE_WINDOWS, type RateWindow } from '@/domain/claude-capacity';
+import type { WorkerCapacityReading } from '@/server/repositories/mission-types';
 import { classifyMissionRisk } from '@/domain/mission-risk';
 import { assertMissionBranchName, buildBranchName } from '@/domain/workspace-safety';
 import type { WorkerEnrolment } from '@/domain/worker';
@@ -620,9 +618,10 @@ export class WorkerService {
         outputTokens: input.usage.outputTokens ?? null,
         cachedInputTokens: input.usage.cacheReadTokens ?? null,
         reportedCostUsd: input.usage.totalCostUsd ?? null,
-        costBasis: input.usage.totalCostUsd === null || input.usage.totalCostUsd === undefined
-          ? 'unknown'
-          : 'reported',
+        costBasis:
+          input.usage.totalCostUsd === null || input.usage.totalCostUsd === undefined
+            ? 'unknown'
+            : 'reported',
         durationMs: input.usage.durationMs ?? null,
         failed: input.missionState === 'failed',
         failureCode: input.failureCode ?? null,
@@ -812,6 +811,7 @@ export class WorkerService {
       currentMissionId: heartbeat.currentMissionId ?? null,
       currentRunId: heartbeat.currentRunId ?? null,
       lastActivityAt: heartbeat.lastActivityAt ? new Date(heartbeat.lastActivityAt) : null,
+      capacity: capacityReading(heartbeat.capacity, at),
       at,
     });
   }
@@ -957,3 +957,77 @@ function describeVerification(input: VerificationInput): string {
       return `Verification skipped: ${input.command}${input.reason ? ` — ${input.reason}` : ''}`;
   }
 }
+
+/**
+ * A heartbeat's capacity block as a storable reading, or null when there is nothing to store.
+ *
+ * Three refusals, and each of them is the difference between a governor that can be trusted and
+ * one that quietly makes things up.
+ *
+ * **A reading from the future is discarded.** A worker's clock is not the control plane's, and a
+ * timestamp ahead of now would make a reading permanently fresh — `age` compares against the
+ * clock, so a reading dated tomorrow never becomes stale and the governor keeps deciding on it
+ * long after it stopped being true. A small tolerance absorbs ordinary clock skew; beyond that the
+ * report is dropped rather than trusted or silently rewritten to now.
+ *
+ * **A window with no utilisation is dropped whole.** A reset time on its own describes a window
+ * whose usage is unknown, and storing the half of it that happens to be readable invites a display
+ * that shows a countdown next to a blank and a governor that treats the pair as a measurement.
+ *
+ * **`rateLimitsApplicable: false` empties the windows.** That flag is the provider saying plan
+ * limits do not apply to this account at all — an API key, Bedrock, Vertex. Any window figures
+ * arriving alongside it describe something other than the subscription this account does not have,
+ * and keeping them would let an API worker be throttled against a limit that does not exist.
+ */
+function capacityReading(
+  block: WorkerCapacityInput | null | undefined,
+  at: Date,
+): WorkerCapacityReading | null {
+  if (!block) return null;
+
+  const observedAt = new Date(block.observedAt);
+  if (Number.isNaN(observedAt.getTime())) return null;
+  if (observedAt.getTime() > at.getTime() + CAPACITY_CLOCK_SKEW_MS) return null;
+
+  const windows = {} as Record<
+    RateWindow,
+    { utilisationPercent: number | null; resetsAt: Date | null } | null
+  >;
+  for (const window of RATE_WINDOWS) {
+    const reported = block.rateLimitsApplicable ? block.windows[window] : null;
+    if (
+      !reported ||
+      reported.utilisationPercent === null ||
+      reported.utilisationPercent === undefined
+    ) {
+      windows[window] = null;
+      continue;
+    }
+    const resetsAt = reported.resetsAt ? new Date(reported.resetsAt) : null;
+    windows[window] = {
+      utilisationPercent: reported.utilisationPercent,
+      resetsAt: resetsAt && !Number.isNaN(resetsAt.getTime()) ? resetsAt : null,
+    };
+  }
+
+  return {
+    authMode: block.authMode,
+    subscriptionType: block.subscriptionType ?? null,
+    rateLimitsApplicable: block.rateLimitsApplicable,
+    windows,
+    context: block.context
+      ? {
+          usedTokens: block.context.usedTokens ?? null,
+          maxTokens: block.context.maxTokens ?? null,
+          percentUsed: block.context.percentUsed ?? null,
+          overLimit: block.context.overLimit ?? null,
+        }
+      : null,
+    usingOverage: block.usingOverage ?? null,
+    source: block.source,
+    observedAt,
+  };
+}
+
+/** How far ahead of the control plane a worker's clock may be before its reading is refused. */
+const CAPACITY_CLOCK_SKEW_MS = 2 * 60 * 1000;

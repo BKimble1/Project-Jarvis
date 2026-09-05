@@ -25,6 +25,7 @@ import type {
   VerificationInput,
 } from '@/domain/mission-run';
 import type { JarvisWorker } from '@/domain/worker';
+import type { AuthMode, CapacityObservation, RateWindow } from '@/domain/claude-capacity';
 import type { MissionDraftInput, MissionUpdateInput } from '@/domain/mission';
 import type { PlanAuthor } from '@/domain/mission-plan';
 import type { MissionRiskLevel } from '@/domain/mission';
@@ -364,10 +365,47 @@ export interface WorkerRepository {
       currentMissionId: string | null;
       currentRunId: string | null;
       lastActivityAt: Date | null;
+      /**
+       * The worker's latest Claude capacity reading, or null for "nothing new to report".
+       *
+       * Null must leave the stored reading alone. A worker can only read capacity from a live
+       * Claude session, so most heartbeats have nothing new — and blanking the row on each of
+       * those would turn a fifteen-minute-old measurement into no measurement at all, several
+       * times a minute. The stored reading ages into staleness on its own timestamp instead.
+       */
+      capacity: WorkerCapacityReading | null;
       at: Date;
     },
   ): Promise<JarvisWorker>;
+  /**
+   * The latest capacity reading from every worker that has ever managed to take one.
+   *
+   * Returns one observation per worker rather than an account total: merging them is a domain
+   * decision (newest wins, nothing is ever summed) and belongs in `mergeAccountLimits`, not in a
+   * SQL aggregate that would happily average three workers' readings into a number that describes
+   * no account at all.
+   */
+  capacityObservations(): Promise<readonly CapacityObservation[]>;
   remove(id: string): Promise<void>;
+}
+
+/** What a heartbeat carries about Claude capacity, flattened for storage. */
+export interface WorkerCapacityReading {
+  readonly authMode: AuthMode;
+  readonly subscriptionType: string | null;
+  readonly rateLimitsApplicable: boolean;
+  readonly windows: Readonly<
+    Record<RateWindow, { utilisationPercent: number | null; resetsAt: Date | null } | null>
+  >;
+  readonly context: {
+    readonly usedTokens: number | null;
+    readonly maxTokens: number | null;
+    readonly percentUsed: number | null;
+    readonly overLimit: boolean | null;
+  } | null;
+  readonly usingOverage: boolean | null;
+  readonly source: string;
+  readonly observedAt: Date;
 }
 
 export interface IdempotencyRecord {

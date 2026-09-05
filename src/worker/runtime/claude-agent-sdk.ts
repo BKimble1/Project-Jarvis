@@ -6,6 +6,14 @@ import {
 } from '@/domain/claude-auth';
 import { withoutWorkerSecrets } from '../child-env';
 import { observeClaudeAuth } from '../claude-auth-probe';
+import {
+  buildCapacityReport,
+  type SdkAccountInfo,
+  type SdkContextUsage,
+  type SdkRateLimitInfo,
+  type SdkUsageResponse,
+} from '../claude-telemetry';
+import type { WorkerCapacityInput } from '@/domain/worker-protocol';
 import type { RunUsage } from '@/domain/mission-run';
 import {
   EventQueue,
@@ -73,11 +81,32 @@ interface SdkMessage {
     cache_read_input_tokens?: number;
   };
   message?: { content?: SdkContentBlock[] | string };
+  /*
+   * Telemetry rides along with ordinary messages rather than arriving on its own channel:
+   * `context_usage` is a sibling of `message` on an assistant turn, and a rate-limit warning is a
+   * message of its own type. Both are declared optional because both are absent on most messages
+   * and on any Claude Code older than the one that introduced them.
+   */
+  context_usage?: SdkContextUsage;
+  rate_limit_info?: SdkRateLimitInfo;
 }
 
 interface SdkQuery extends AsyncIterable<SdkMessage> {
   interrupt(): Promise<unknown>;
   close?: () => void;
+  /**
+   * Which account is behind this session. Stable, and cheap.
+   */
+  accountInfo?: () => Promise<SdkAccountInfo>;
+  /**
+   * Plan rate-limit utilisation.
+   *
+   * Optional, and the name is the SDK's own: it is explicitly experimental and explicitly says not
+   * to rely on it. Jarvis therefore feature-detects it rather than calling it, treats a throw as
+   * "unknown" rather than as an error, and keeps working without it — every window simply stays
+   * unknown, which the governor already knows how to be careful about.
+   */
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<SdkUsageResponse>;
 }
 
 interface SdkOptions {
@@ -102,6 +131,16 @@ interface SdkOptions {
 interface SdkModule {
   query(params: { prompt: string | AsyncIterable<unknown>; options?: SdkOptions }): SdkQuery;
 }
+
+/**
+ * Named so a wrong figure can be traced to a wrong reader.
+ *
+ * The value is stored beside every reading and shown next to it, which matters more than it looks:
+ * the usage call is experimental, and when Anthropic changes it the first symptom will be a number
+ * that is subtly wrong rather than an error. A figure that says where it came from can be checked
+ * against that interface; one that does not can only be believed or ignored.
+ */
+const CAPACITY_SOURCE = 'claude-agent-sdk usage + rate_limit_event';
 
 /* -------------------------------------------------------------- the runtime */
 
@@ -136,6 +175,15 @@ export class ClaudeAgentRuntime implements AgentRuntime {
   readonly name = 'claude-agent-sdk';
   private cached: SdkModule | null = null;
   private lastAuth: ClaudeAuthVerdict | null = null;
+  /**
+   * The newest capacity reading this worker has managed to take, kept between sessions.
+   *
+   * Held here rather than recomputed per heartbeat because capacity can only be read from a live
+   * Claude session, and there usually is not one. Keeping the last reading is what lets a worker
+   * report something true between missions; the control plane ages it into staleness on its own
+   * timestamp, so holding it can make a figure old but never makes it wrong.
+   */
+  private lastCapacity: WorkerCapacityInput | null = null;
 
   constructor(private readonly options: ClaudeAgentRuntimeOptions) {}
 
@@ -203,6 +251,49 @@ export class ClaudeAgentRuntime implements AgentRuntime {
    */
   auth(): ClaudeAuthVerdict | null {
     return this.lastAuth;
+  }
+
+  /**
+   * The newest capacity reading, or null if this worker has never managed to take one.
+   *
+   * Null is a real answer and the heartbeat sends it as an absent block, which the control plane
+   * reads as "nothing new" and leaves the stored reading alone. It never means zero.
+   */
+  capacity(): WorkerCapacityInput | null {
+    return this.lastCapacity;
+  }
+
+  /**
+   * Ask a live session what the account's capacity looks like, and remember the answer.
+   *
+   * Everything here is best-effort by design. The usage call is experimental and may be absent or
+   * may throw; the account call may be absent on an older Claude Code. A failure means this
+   * reading did not happen — the previous one stays, and the worker carries on running the
+   * mission, because a governor being unable to see is not a reason to stop the work in flight.
+   */
+  private async collectCapacity(
+    session: SdkQuery,
+    observed: { rateLimit: SdkRateLimitInfo | null; context: SdkContextUsage | null },
+  ): Promise<void> {
+    const usage = await session
+      .usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?.()
+      .catch(() => null);
+    const account = await session.accountInfo?.().catch(() => null);
+
+    const report = buildCapacityReport(
+      {
+        usage: usage ?? null,
+        account: account ?? null,
+        rateLimit: observed.rateLimit,
+        context: observed.context,
+      },
+      {
+        configuredAuthMode: this.options.authMode,
+        now: new Date(),
+        source: CAPACITY_SOURCE,
+      },
+    );
+    if (report) this.lastCapacity = report;
   }
 
   private async observeAuth(): Promise<ClaudeAuthObservation | null> {
@@ -280,6 +371,18 @@ export class ClaudeAgentRuntime implements AgentRuntime {
 
     let sessionId: string | null = request.resumeSessionId;
 
+    /*
+     * Telemetry seen in the stream, newest wins.
+     *
+     * Kept as plain locals rather than pushed into the event queue, because these are not things
+     * that happened in the mission — they are facts about the account and the session, and they
+     * belong in a capacity reading rather than in a mission's timeline.
+     */
+    const observed: { rateLimit: SdkRateLimitInfo | null; context: SdkContextUsage | null } = {
+      rateLimit: null,
+      context: null,
+    };
+
     const pump = (async () => {
       try {
         for await (const message of session) {
@@ -287,6 +390,8 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             sessionId = message.session_id;
             queue.push({ type: 'session', sessionId: message.session_id });
           }
+          if (message.rate_limit_info) observed.rateLimit = message.rate_limit_info;
+          if (message.context_usage) observed.context = message.context_usage;
           for (const event of translate(message)) queue.push(event);
         }
       } catch (error) {
@@ -296,6 +401,17 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           retryable: isRetryable(error),
         });
       } finally {
+        /*
+         * Read capacity while the session is still alive, before the queue is finished and the
+         * subprocess is torn down. This is the only moment a worker has: between missions there is
+         * no session to ask, so a reading missed here is a reading that does not exist until the
+         * next mission runs.
+         *
+         * It runs in `finally` so that a mission which ended in an error still contributes one —
+         * that is often exactly the mission that ran into a rate limit, and it would be perverse
+         * to discard the reading that explains why.
+         */
+        await this.collectCapacity(session, observed).catch(() => undefined);
         inbox.finish();
         queue.finish();
       }

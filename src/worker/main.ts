@@ -111,6 +111,13 @@ export class JarvisWorkerProcess {
       currentMissionId: this.currentMissionId,
       currentRunId: this.currentRunId,
       lastActivityAt: this.lastActivityAt?.toISOString() ?? null,
+      /*
+       * Absent when this runtime has never read capacity, which is most heartbeats: the figures
+       * come from a live Claude session and between missions there is not one. Absent means
+       * "nothing new", and the control plane keeps the last reading and lets it age. The reading
+       * carries its own observation time, so re-sending it does not make it look fresh.
+       */
+      capacity: this.deps.runtime.capacity?.() ?? null,
     };
   }
 

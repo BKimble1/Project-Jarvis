@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import { ConflictError, NotFoundError } from '@/domain/errors';
 import {
   ACTIVE_MISSION_STATES,
@@ -55,6 +55,7 @@ import {
   toMissionRun,
   toPermissionRequest,
   toVerification,
+  toCapacityObservation,
   toWorker,
 } from './mission-mappers';
 import type {
@@ -77,8 +78,10 @@ import type {
   PlanRepository,
   RunRepository,
   VerificationRepository,
+  WorkerCapacityReading,
   WorkerRepository,
 } from './mission-types';
+import type { CapacityObservation } from '@/domain/claude-capacity';
 
 /**
  * Mission Control persistence.
@@ -1246,6 +1249,16 @@ export class DrizzleWorkerRepository implements WorkerRepository {
         currentRunId: input.currentRunId,
         lastActivityAt: input.lastActivityAt,
         lastHeartbeatAt: input.at,
+        /*
+         * Spread, so that a heartbeat with nothing new to say writes none of these columns.
+         *
+         * This is the difference between a governor that works and one that is blind. A worker can
+         * only read Claude's capacity from a live session, so between missions it has nothing new
+         * — and a heartbeat every few seconds that set these columns to null would erase a good
+         * reading within moments of taking it. Omitting them leaves the last reading in place to
+         * age honestly on its own timestamp.
+         */
+        ...capacityColumns(input.capacity),
       })
       .where(eq(workers.id, id))
       .returning();
@@ -1253,9 +1266,63 @@ export class DrizzleWorkerRepository implements WorkerRepository {
     return toWorker(row);
   }
 
+  /**
+   * One reading per worker, newest-first, skipping every worker that has never taken one.
+   *
+   * Deliberately not an aggregate. A rate-limit window belongs to the account, so three workers
+   * reporting 42% means the account is at 42% — and a SQL `sum` would say 126%, a number that
+   * cannot exist, with total confidence. The merge rule lives in `mergeAccountLimits`, which is
+   * tested against exactly that mistake.
+   */
+  async capacityObservations(): Promise<readonly CapacityObservation[]> {
+    const rows = await this.db
+      .select()
+      .from(workers)
+      .where(and(isNull(workers.revokedAt), isNotNull(workers.capacityObservedAt)))
+      .orderBy(desc(workers.capacityObservedAt));
+    return rows
+      .map(toCapacityObservation)
+      .filter((observation): observation is CapacityObservation => observation !== null);
+  }
+
   async remove(id: string): Promise<void> {
     await this.db.delete(workers).where(eq(workers.id, id));
   }
+}
+
+/**
+ * The capacity columns for one heartbeat, or nothing at all.
+ *
+ * Returns an empty object rather than a row of nulls when there is no reading, so that the caller
+ * can spread it into an `update` and have it write nothing. See the call site for why that
+ * distinction carries the whole design.
+ */
+function capacityColumns(
+  reading: WorkerCapacityReading | null,
+): Partial<typeof workers.$inferInsert> {
+  if (!reading) return {};
+  const windows = reading.windows;
+  return {
+    capacityAuthMode: reading.authMode,
+    /* Bounded and redacted like every other worker-supplied string reaching a text column. */
+    capacitySubscriptionType: reading.subscriptionType
+      ? redactSecrets(reading.subscriptionType)
+      : null,
+    capacityRateLimitsApplicable: reading.rateLimitsApplicable,
+    capacityFiveHourPercent: windows.fiveHour?.utilisationPercent ?? null,
+    capacityFiveHourResetsAt: windows.fiveHour?.resetsAt ?? null,
+    capacitySevenDayPercent: windows.sevenDay?.utilisationPercent ?? null,
+    capacitySevenDayResetsAt: windows.sevenDay?.resetsAt ?? null,
+    capacitySevenDayOpusPercent: windows.sevenDayOpus?.utilisationPercent ?? null,
+    capacitySevenDayOpusResetsAt: windows.sevenDayOpus?.resetsAt ?? null,
+    capacityContextUsedTokens: reading.context?.usedTokens ?? null,
+    capacityContextMaxTokens: reading.context?.maxTokens ?? null,
+    capacityContextPercent: reading.context?.percentUsed ?? null,
+    capacityContextOverLimit: reading.context?.overLimit ?? null,
+    capacityUsingOverage: reading.usingOverage ?? null,
+    capacitySource: redactSecrets(reading.source),
+    capacityObservedAt: reading.observedAt,
+  };
 }
 
 /* -------------------------------------------------------------- idempotency */

@@ -736,11 +736,15 @@ export function buildServices(
       active: await tasks.countActiveMissions(),
     }),
     /*
-     * No worker reports its Claude capacity yet, so this is empty — which resolves honestly to
-     * "auth mode unknown, so no subscription window is assumed and money is the constraint"
-     * rather than to a confident number about a limit that may not exist.
+     * The workers' own readings, unmerged. `mergeAccountLimits` decides what the account looks
+     * like from them, because that rule — newest wins, and nothing is ever added — is a domain
+     * decision and not something a query should be trusted to reproduce.
+     *
+     * An empty array is still an honest answer, and stays one: it means no worker has ever managed
+     * to read capacity, which resolves to "unknown" rather than to a confident figure about a limit
+     * that may not exist.
      */
-    capacityObservations: async () => [],
+    capacityObservations: () => workerRepo.capacityObservations(),
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

@@ -87,6 +87,7 @@ import type {
   PriorityBand,
   PriorityFactor,
 } from '@/domain/opportunity';
+import type { AuthMode } from '@/domain/claude-capacity';
 import type { WorkerStatus } from '@/domain/worker';
 import type { AgentRole } from '@/domain/agent-role';
 import type {
@@ -714,6 +715,44 @@ export const workers = pgTable(
       .default(sql`'[]'::jsonb`),
     lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }),
     lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
+
+    /*
+     * ------------------------------------------------------ Claude capacity
+     *
+     * The last capacity reading this worker managed to take, held as scalars rather than as a JSON
+     * blob so that every one of them is a column with a type, and so a null is visibly a null.
+     *
+     * Every figure here is nullable and null means *unknown*. There is no default of zero anywhere
+     * in this block, on purpose: a five-hour window recorded as 0% used reads as "spend freely",
+     * and defaulting an unread column to zero would say that about every worker that has never
+     * managed to look.
+     *
+     * `capacityObservedAt` is when the worker read the figures, not when the row was written. It
+     * is what makes a reading age honestly — a heartbeat arriving now carrying a reading from
+     * forty minutes ago is forty minutes old, and the domain marks it stale on that basis.
+     */
+    capacityAuthMode: text('capacity_auth_mode').$type<AuthMode>(),
+    capacitySubscriptionType: text('capacity_subscription_type'),
+    /** False when the provider says plan limits do not apply. Distinct from "could not read". */
+    capacityRateLimitsApplicable: boolean('capacity_rate_limits_applicable'),
+    capacityFiveHourPercent: doublePrecision('capacity_five_hour_percent'),
+    capacityFiveHourResetsAt: timestamp('capacity_five_hour_resets_at', { withTimezone: true }),
+    capacitySevenDayPercent: doublePrecision('capacity_seven_day_percent'),
+    capacitySevenDayResetsAt: timestamp('capacity_seven_day_resets_at', { withTimezone: true }),
+    capacitySevenDayOpusPercent: doublePrecision('capacity_seven_day_opus_percent'),
+    capacitySevenDayOpusResetsAt: timestamp('capacity_seven_day_opus_resets_at', {
+      withTimezone: true,
+    }),
+    /** One session's context window. Never account capacity; kept apart so it cannot be mistaken. */
+    capacityContextUsedTokens: integer('capacity_context_used_tokens'),
+    capacityContextMaxTokens: integer('capacity_context_max_tokens'),
+    capacityContextPercent: doublePrecision('capacity_context_percent'),
+    capacityContextOverLimit: boolean('capacity_context_over_limit'),
+    /** Reported so an owner can see it. Jarvis never turns overage on and never spends into it. */
+    capacityUsingOverage: boolean('capacity_using_overage'),
+    capacitySource: text('capacity_source'),
+    capacityObservedAt: timestamp('capacity_observed_at', { withTimezone: true }),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     rotatedAt: timestamp('rotated_at', { withTimezone: true }),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
@@ -723,6 +762,8 @@ export const workers = pgTable(
     uniqueIndex('workers_token_hash_idx').on(table.tokenHash),
     index('workers_status_idx').on(table.status),
     index('workers_heartbeat_idx').on(table.lastHeartbeatAt),
+    /* The governor asks for the newest reading across every worker, on every operator tick. */
+    index('workers_capacity_observed_idx').on(table.capacityObservedAt),
   ],
 );
 

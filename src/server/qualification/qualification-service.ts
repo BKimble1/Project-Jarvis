@@ -82,6 +82,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   '0007_operating_charter.sql',
   '0008_standing_authority.sql',
   '0009_operating_loop.sql',
+  '0010_worker_capacity.sql',
 ];
 
 /** Settings keys this service owns. Named once so a typo cannot silently create a second key. */

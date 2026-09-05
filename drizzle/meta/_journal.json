@@ -71,6 +71,13 @@
       "when": 1788568792269,
       "tag": "0009_operating_loop",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788581751448,
+      "tag": "0010_worker_capacity",
+      "breakpoints": true
     }
   ]
 }

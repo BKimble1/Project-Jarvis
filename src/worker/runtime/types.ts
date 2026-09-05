@@ -1,4 +1,5 @@
 import type { RunUsage } from '@/domain/mission-run';
+import type { WorkerCapacityInput } from '@/domain/worker-protocol';
 import type { PolicyDecision } from '../policy';
 
 /**
@@ -73,6 +74,17 @@ export interface AgentRuntime {
   /** Whether this runtime can actually run right now, and why not if it cannot. */
   availability(): Promise<RuntimeAvailability>;
   start(request: AgentSessionRequest): Promise<AgentSession>;
+  /**
+   * The newest reading of the Claude capacity behind this runtime, if it has one.
+   *
+   * Optional, because most runtimes do not have an account behind them at all — the scripted
+   * stand-in used in tests and demonstrations has nothing to report, and should say so by not
+   * implementing this rather than by inventing an empty reading.
+   *
+   * Null from a runtime that does implement it means "I have not managed to read capacity", never
+   * "there is none". The control plane keeps whatever it already knew.
+   */
+  capacity?: () => WorkerCapacityInput | null;
 }
 
 export interface RuntimeAvailability {

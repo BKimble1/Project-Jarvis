@@ -19,6 +19,7 @@ import {
   type CommandKind,
   type RunKind,
 } from './mission-run';
+import { AUTH_MODES, RATE_WINDOWS } from './claude-capacity';
 import { WORKER_REPORTED_STATUSES } from './worker';
 
 /**
@@ -56,6 +57,96 @@ export function isCompatibleWorkerVersion(version: string | null | undefined): b
 
 /* ---------------------------------------------------------------- heartbeat */
 
+/**
+ * One rate-limit window, as a worker read it.
+ *
+ * Both fields are nullable and null means *unknown*, never zero. That distinction is the whole
+ * point of this block: a window reported as 0% used is an invitation to spend, and a window whose
+ * utilisation could not be read looks exactly the same if null collapses to a number on the way
+ * through. `utilisationPercent` is capped at 100 because it is a percentage of a window, not a
+ * count — a provider that ever sent 140 would be describing something this schema does not model,
+ * and rejecting it is better than storing it as if it meant what it appears to mean.
+ */
+export const workerRateWindowSchema = z.object({
+  utilisationPercent: z.number().min(0).max(100).nullish(),
+  resetsAt: z.string().datetime().nullish(),
+});
+
+/**
+ * What one worker can see about the Claude capacity behind it.
+ *
+ * ## Why this is optional, and why absent is not empty
+ *
+ * The whole block is optional, for two independent reasons.
+ *
+ * A worker built before this existed sends no `capacity` at all, and must keep working — zod
+ * strips unknown keys rather than rejecting them, so the compatibility runs both ways, but only
+ * if the field is genuinely optional here.
+ *
+ * More importantly, a worker that *has* this code still cannot read capacity on most heartbeats.
+ * The figures come from a live Claude session, so between missions there is nothing new to read.
+ * Omitting the block then is the honest report, and the control plane leaves the last known
+ * observation in place and lets it age into staleness. Sending zeroes, or blanking the row on
+ * every quiet poll, would turn "I could not look" into "there is nothing there".
+ *
+ * ## What is deliberately not here
+ *
+ * No transcript, no transcript path, no prompt, no file path, no email address and no organisation
+ * name — the SDK offers several of those alongside these figures. Jarvis needs to know how much
+ * capacity remains, and none of that tells it.
+ *
+ * `observedAt` is the worker's own reading time rather than the receipt time, so a report that was
+ * taken during a mission twenty minutes ago is twenty minutes old on arrival rather than fresh.
+ */
+export const workerCapacitySchema = z.object({
+  /** Which credential the figures describe. A window only means anything under a subscription. */
+  authMode: z.enum(AUTH_MODES),
+  /** The plan name when the interface names one — 'pro', 'max'. Never inferred from behaviour. */
+  subscriptionType: z.string().trim().max(60).nullish(),
+  /**
+   * False when the provider says plan limits do not apply — an API key, Bedrock, Vertex.
+   *
+   * Carried explicitly rather than inferred from three nulls, because "this account has no
+   * five-hour window" and "I could not read the five-hour window" are different facts and only one
+   * of them is a reason to stop working.
+   */
+  rateLimitsApplicable: z.boolean(),
+  windows: z.object(
+    Object.fromEntries(
+      RATE_WINDOWS.map((window) => [window, workerRateWindowSchema.nullish()]),
+    ) as {
+      [K in (typeof RATE_WINDOWS)[number]]: z.ZodOptional<
+        z.ZodNullable<typeof workerRateWindowSchema>
+      >;
+    },
+  ),
+  /**
+   * The context window of one session. Never account capacity, and never displayed as though it
+   * were: a session at 90% of its context says nothing about how much subscription is left.
+   */
+  context: z
+    .object({
+      usedTokens: z.number().int().min(0).max(100_000_000).nullish(),
+      maxTokens: z.number().int().min(0).max(100_000_000).nullish(),
+      percentUsed: z.number().min(0).max(1000).nullish(),
+      overLimit: z.boolean().nullish(),
+    })
+    .nullish(),
+  /**
+   * Whether the account is spending beyond the included subscription, as the provider reports it.
+   *
+   * Reported and never acted on. V1 does not enable credits, change a billing setting or accept
+   * paid overflow — but an owner who has turned overage on elsewhere should be able to see that
+   * Jarvis's work is landing on it.
+   */
+  usingOverage: z.boolean().nullish(),
+  /** The documented interface this came from, so a wrong figure can be traced to a wrong reader. */
+  source: z.string().trim().min(1).max(80),
+  /** When the worker read it, not when the control plane received it. */
+  observedAt: z.string().datetime(),
+});
+export type WorkerCapacityInput = z.infer<typeof workerCapacitySchema>;
+
 export const workerHeartbeatSchema = z.object({
   status: z.enum(WORKER_REPORTED_STATUSES),
   version: z.string().trim().max(40).nullish(),
@@ -71,6 +162,8 @@ export const workerHeartbeatSchema = z.object({
   currentMissionId: z.string().uuid().nullish(),
   currentRunId: z.string().uuid().nullish(),
   lastActivityAt: z.string().datetime().nullish(),
+  /** Absent means "nothing new to report", never "nothing there". See `workerCapacitySchema`. */
+  capacity: workerCapacitySchema.nullish(),
 });
 export type WorkerHeartbeatInput = z.infer<typeof workerHeartbeatSchema>;
 
