@@ -25,6 +25,7 @@ function config(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     anthropicApiKey: null,
     anthropicApiKeyPresent: false,
     claudeOauthToken: null,
+    operatorTickIntervalMs: null,
     authMode: 'subscription',
     model: null,
     maxTurns: 10,

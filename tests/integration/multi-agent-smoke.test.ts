@@ -279,6 +279,7 @@ describe('the multi-agent factory, end to end', () => {
       anthropicApiKey: null,
       anthropicApiKeyPresent: false,
       claudeOauthToken: null,
+      operatorTickIntervalMs: null,
       authMode: 'subscription',
       model: null,
       maxTurns: 10,

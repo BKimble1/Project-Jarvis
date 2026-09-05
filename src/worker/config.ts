@@ -26,6 +26,27 @@ const positiveInt = (fallback: number, max: number) =>
       return parsed;
     });
 
+/**
+ * Like `positiveInt`, but zero is a meaningful answer rather than a mistake.
+ *
+ * Kept separate rather than folded in with a flag, because for every other interval in this file
+ * zero is a typo that would spin a loop as fast as the machine allows, and a single helper that
+ * sometimes accepts it is a helper that will eventually accept it in the wrong place.
+ */
+const positiveIntOrZero = (fallback: number, max: number) =>
+  z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      if (!value || value.trim() === '') return fallback;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
+        ctx.addIssue({ code: 'custom', message: `Must be an integer between 0 and ${max}` });
+        return z.NEVER;
+      }
+      return parsed;
+    });
+
 const bool = (fallback: boolean) =>
   z
     .string()
@@ -67,6 +88,19 @@ const schema = z.object({
    * paid for onto an invoice they have not seen.
    */
   JARVIS_WORKER_AUTH_MODE: z.enum(['subscription', 'api_key']).default('subscription'),
+  /**
+   * How often this worker asks the control plane to take a pass of the operating loop.
+   *
+   * The control plane runs on Netlify, where nothing holds a loop open, so the operating loop
+   * needs a caller that keeps existing — and the worker is the only thing in this system that
+   * does. Without it the loop has no production caller at all and Jarvis never raises its own
+   * work: it waits to be asked, for ever.
+   *
+   * A minute rather than a few seconds. A pass reads every project and rewrites the backlog, and
+   * doing that continuously would spend far more on watching than on working. Set to 0 to turn it
+   * off on a worker that should only run missions — the schedule remains as a slower backstop.
+   */
+  JARVIS_WORKER_OPERATOR_TICK_SECONDS: positiveIntOrZero(60, 3600),
   JARVIS_WORKER_MODEL: z.string().trim().optional(),
   JARVIS_WORKER_MAX_TURNS: positiveInt(60, 500),
 
@@ -130,6 +164,8 @@ export interface WorkerConfig {
    */
   readonly claudeOauthToken: string | null;
   readonly authMode: 'subscription' | 'api_key';
+  /** Milliseconds between passes of the operating loop, or null when this worker does not drive it. */
+  readonly operatorTickIntervalMs: number | null;
   readonly model: string | null;
   readonly maxTurns: number;
   readonly githubToken: string | null;
@@ -294,6 +330,10 @@ export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): Work
     claudeOauthToken:
       env.JARVIS_WORKER_AUTH_MODE === 'subscription' ? (env.CLAUDE_CODE_OAUTH_TOKEN ?? null) : null,
     authMode: env.JARVIS_WORKER_AUTH_MODE,
+    operatorTickIntervalMs:
+      env.JARVIS_WORKER_OPERATOR_TICK_SECONDS > 0
+        ? env.JARVIS_WORKER_OPERATOR_TICK_SECONDS * 1000
+        : null,
     model: env.JARVIS_WORKER_MODEL ?? null,
     maxTurns: env.JARVIS_WORKER_MAX_TURNS,
     githubToken: env.JARVIS_WORKER_GITHUB_TOKEN ?? null,

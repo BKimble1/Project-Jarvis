@@ -27,12 +27,22 @@ import {
 } from '@/domain/operating-mode';
 import { missionCapabilityRequests } from '@/domain/mission-capabilities';
 import { scopeContains } from '@/domain/charter';
-import { isReadOnlyMissionType } from '@/domain/mission';
+import { isReadOnlyMissionType, type MissionState } from '@/domain/mission';
 import { buildBranchName } from '@/domain/workspace-safety';
 import { redactSecrets } from '@/domain/redaction';
 import { resolveMissionRepository } from '@/server/missions/repository-resolution';
 import type { MissionService } from '@/server/missions/mission-service';
-import type { PlanRepository } from '@/server/repositories/mission-types';
+import type {
+  ClarificationRepository,
+  EventRepository,
+  MissionRepository,
+  PermissionRepository,
+  PlanRepository,
+  RunRepository,
+} from '@/server/repositories/mission-types';
+import { boundsFromCharter } from '@/domain/progress';
+import type { CharterLimits } from '@/domain/charter';
+import { superviseFromCharter, type SupervisionReport } from './supervisor';
 import type { FreshnessState } from '@/domain/enums';
 import type { OperatingMode } from '@/domain/operating-mode';
 import type { ProjectAssessment } from '@/domain/status';
@@ -77,6 +87,21 @@ export const OPERATOR_TICK_KEY = 'tick';
 /** Long enough for a slow tick, short enough that a dead one does not wedge the loop for long. */
 export const TICK_LEASE_SECONDS = 120;
 
+/**
+ * The mission states the supervisor judges.
+ *
+ * Everything else on the active list is waiting for a person or for a slot, and waiting is not
+ * going nowhere. A supervisor that reported a mission awaiting plan approval as stalled after
+ * twenty minutes would teach an owner to ignore it.
+ */
+const WORKING_MISSION_STATES = new Set<MissionState>([
+  'claimed',
+  'preparing_workspace',
+  'running',
+  'verifying',
+  'creating_pull_request',
+]);
+
 export interface OperatorServiceDeps {
   readonly charter: CharterService;
   readonly projects: ProjectRepository;
@@ -115,6 +140,18 @@ export interface OperatorServiceDeps {
    * confident number about a window that may not exist.
    */
   readonly capacityObservations: () => Promise<readonly CapacityObservation[]>;
+  /**
+   * The supervisor's inputs, read straight from the mission repositories.
+   *
+   * Deliberately narrow: the latest run for its usage, the count of things a person could answer,
+   * and somewhere to record the verdict. The supervisor is a reader — it does not need, and is not
+   * given, anything that could move a mission.
+   */
+  readonly missionRepo: MissionRepository;
+  readonly runs: RunRepository;
+  readonly permissions: PermissionRepository;
+  readonly clarifications: ClarificationRepository;
+  readonly events: EventRepository;
   readonly clock?: () => Date;
 }
 
@@ -130,6 +167,8 @@ export interface TickResult {
   /** What it actually started, and how far each got. */
   readonly started: readonly StartedWork[];
   readonly capacity: CapacityDecision | null;
+  /** What the supervisor made of each mission that is currently running. */
+  readonly supervision: readonly SupervisionReport[];
 }
 
 export const START_OUTCOMES = [
@@ -208,6 +247,7 @@ export class OperatorService {
         selected: [],
         started: [],
         capacity: null,
+        supervision: [],
       };
     }
 
@@ -216,6 +256,97 @@ export class OperatorService {
     } finally {
       await this.deps.leases.release(OPERATOR_LEASE_SCOPE, OPERATOR_TICK_KEY, holder);
     }
+  }
+
+  /**
+   * Judge every mission that is currently running, and write the verdict where it will be read.
+   *
+   * ## Only the missions that are actually working
+   *
+   * `listActive` includes missions waiting for a plan approval and missions sitting in the queue,
+   * and neither is "going nowhere" in any sense the supervisor is about — a mission waiting for a
+   * person is waiting correctly, and reporting it as stalled after twenty minutes would train an
+   * owner to ignore the one signal that matters.
+   *
+   * ## Why an unanswered question means the owner could unblock it
+   *
+   * `ownerCouldUnblock` decides between escalating and stopping, so getting it wrong in the
+   * pessimistic direction ends missions a person could have rescued with one sentence. An open
+   * permission request or an unanswered clarification is the clearest evidence there is that a
+   * person is the missing piece, and both are already recorded.
+   *
+   * ## Failures here are not the tick's failure
+   *
+   * The supervisor is an observer. A mission whose run cannot be read is skipped rather than
+   * allowed to abort the pass — the loop's job is to keep the rest of the work moving, and a
+   * supervisor that could take the operator down would be a worse problem than the one it detects.
+   */
+  private async supervise(
+    limits: CharterLimits | null,
+    now: Date,
+  ): Promise<readonly SupervisionReport[]> {
+    if (!limits) return [];
+    const bounds = boundsFromCharter(limits);
+
+    const active = await this.deps.missionRepo.listActive();
+    const working = active.filter((mission) => WORKING_MISSION_STATES.has(mission.state));
+    if (working.length === 0) return [];
+
+    const reports: SupervisionReport[] = [];
+
+    for (const mission of working) {
+      try {
+        const [run, openPermissions, clarifications] = await Promise.all([
+          mission.activeRunId ? this.deps.runs.findById(mission.activeRunId) : null,
+          this.deps.permissions.listOpen(mission.id),
+          this.deps.clarifications.list(mission.id),
+        ]);
+
+        const unanswered = clarifications.filter((entry) => entry.answeredAt === null);
+        const verdict = superviseFromCharter({
+          mission,
+          run,
+          /*
+           * The questions a person has actually been asked. `repeated_question` fires when the
+           * same one comes back, which is a different and much stronger signal than a mission
+           * simply having a question outstanding.
+           */
+          openQuestions: unanswered.map((entry) => entry.question),
+          bounds,
+          /*
+           * Nothing records that a mission was narrowed, and nothing narrows one yet, so this is
+           * honestly false rather than speculatively true. It matters when narrowing is
+           * implemented: a mission that could be narrowed twice would spend its whole budget being
+           * cut down by degrees.
+           */
+          alreadyNarrowed: false,
+          ownerCouldUnblock: openPermissions.length > 0 || unanswered.length > 0,
+          now,
+        });
+
+        if (verdict.action === 'continue') continue;
+
+        reports.push({ missionId: mission.id, missionTitle: mission.title, verdict });
+
+        await this.deps.events.record(mission.id, {
+          type: verdict.action === 'stop' ? 'warning' : 'info',
+          actor: 'charter',
+          level: verdict.action === 'stop' ? 'warning' : 'notice',
+          summary: verdict.reason,
+          detail: {
+            action: verdict.action,
+            signals: verdict.verdict.findings.map((finding) => finding.signal),
+            limitsReached: verdict.verdict.limitsReached,
+            preserve: verdict.preserve,
+          },
+        });
+      } catch {
+        /* Skip this mission; see the header. One unreadable run must not end the pass. */
+        continue;
+      }
+    }
+
+    return reports;
   }
 
   private async run(now: Date): Promise<TickResult> {
@@ -257,6 +388,7 @@ export class OperatorService {
         selected: [],
         started: [],
         capacity: null,
+        supervision: [],
       });
     }
 
@@ -283,6 +415,26 @@ export class OperatorService {
       { previous },
     );
 
+    /* -------------------------------------------------------- supervise */
+
+    /*
+     * Look at what is already running before looking for more to do.
+     *
+     * `superviseMission` has been written, tested and callable for some time with nothing calling
+     * it, which meant a mission that had used all its attempts, or had not moved for forty
+     * minutes, or had spent its whole token budget producing nothing, went unremarked until an
+     * owner happened to look. Every pass now judges each running mission and writes the verdict
+     * into that mission's own timeline, where the person who cares about it will see it.
+     *
+     * It reports and does not intervene, and that is deliberate rather than unfinished. This
+     * file's own state table withholds `stopping` and `pausing` from standing authority on the
+     * reasoning that stopping is the owner's decision, and a supervisor that quietly terminated a
+     * mission would be overruling that from a different direction. Acting on these verdicts is a
+     * decision for the owner to make explicitly, not one to arrive at as a side effect of wiring
+     * up the caller.
+     */
+    const supervision = await this.supervise(authority.charter?.content.limits ?? null, now);
+
     /* ---------------------------------------------------------- observe */
 
     const projects = await this.deps.projects.listAllForAssessment(false);
@@ -295,6 +447,7 @@ export class OperatorService {
         selected: [],
         started: [],
         capacity,
+        supervision,
       });
     }
 
@@ -484,6 +637,7 @@ export class OperatorService {
        */
       outcome: queued > 0 ? 'worked' : 'observed',
       summary,
+      supervision,
       coverage,
       backlog,
       selected,

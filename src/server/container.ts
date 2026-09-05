@@ -745,6 +745,12 @@ export function buildServices(
      * that may not exist.
      */
     capacityObservations: () => workerRepo.capacityObservations(),
+    /* The supervisor's reading surface. Nothing here can move a mission; see `supervise`. */
+    missionRepo,
+    runs: missionRuns,
+    permissions,
+    clarifications,
+    events: missionEvents,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

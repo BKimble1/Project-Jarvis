@@ -16,6 +16,15 @@ import type {
 } from '@/domain/mission-run';
 import { redactSecrets } from '@/domain/redaction';
 
+/** What the worker learns from driving a pass. It acts on none of it; the control plane decides. */
+export interface OperatorTickResponse {
+  readonly outcome: string;
+  readonly summary: string;
+  readonly tickId: string | null;
+  readonly missionsStarted: number;
+  readonly capacity: { readonly verdict: string; readonly reason: string } | null;
+}
+
 /**
  * The worker's client for the Jarvis control plane.
  *
@@ -58,6 +67,17 @@ export class ControlPlaneClient {
 
   poll(input: WorkerPollInput): Promise<WorkerPollResponse> {
     return this.post('/api/worker/poll', input, { idempotent: false });
+  }
+
+  /**
+   * Ask the control plane to take one pass of the operating loop.
+   *
+   * Not idempotency-guarded, and deliberately so: repeating it is the whole point. The pass takes
+   * a lease, so two overlapping calls do not both run, and a pass that finds nothing to do records
+   * that and returns.
+   */
+  operatorTick(): Promise<OperatorTickResponse> {
+    return this.post('/api/worker/operator-tick', {}, { idempotent: false });
   }
 
   async claim(input: WorkerClaimInput): Promise<MissionAssignment | null> {

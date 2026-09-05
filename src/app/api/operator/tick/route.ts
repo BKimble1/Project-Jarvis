@@ -55,6 +55,14 @@ function shape(result: Awaited<ReturnType<Services['operatorService']['tick']>>)
       score: entry.priority.score,
       factors: entry.priority.factors,
     })),
+    /* What the supervisor made of the work already running. Reason first: it is what gets read. */
+    supervision: result.supervision.map((report) => ({
+      missionId: report.missionId,
+      missionTitle: report.missionTitle,
+      action: report.verdict.action,
+      reason: report.verdict.reason,
+      preserve: report.verdict.preserve,
+    })),
     selected: result.selected.map((entry) => entry.opportunity.key),
     /* What it actually started, and — for each one that did not start — the reason. */
     started: result.started,
@@ -75,4 +83,6 @@ export async function POST(request: Request) {
 }
 
 /** The same pass, run by the owner from the interface. */
-export const PUT = ownerRoute(async ({ services }) => json(shape(await services.operatorService.tick())));
+export const PUT = ownerRoute(async ({ services }) =>
+  json(shape(await services.operatorService.tick())),
+);

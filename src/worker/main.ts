@@ -167,7 +167,69 @@ export class JarvisWorkerProcess {
     this.log(`Runtime: ${this.deps.runtime.name} — ${this.runtimeDetail}`);
     this.log(`Workspaces: ${this.workspaceDetail}`);
 
-    await Promise.all([this.pollLoop(), this.workLoop()]);
+    await Promise.all([this.pollLoop(), this.workLoop(), this.operatorLoop()]);
+  }
+
+  /**
+   * Ask the control plane to take a pass of the operating loop, on a timer.
+   *
+   * ## Why the worker drives this
+   *
+   * The operating loop had no production caller at all. `netlify.toml` schedules the project sync
+   * and nothing else, and the two route handlers were reached only by an owner pressing a button
+   * or by a test. Jarvis could observe, prioritise and raise its own work, and never did, because
+   * nothing ever asked it to — the difference between an autonomous operator and a very
+   * well-designed one that waits to be told.
+   *
+   * A control plane on Netlify cannot be the caller: a request arrives, is answered, and the
+   * process goes away. The worker is the only part of this system that keeps existing, so it is
+   * the only thing that can turn a loop that *can* run into a loop that *does*.
+   *
+   * ## Why it is a third loop
+   *
+   * For the same reason the poll is a second one. A pass reads every project and can start a
+   * mission, so putting it in the work loop would mean it stopped happening for the whole length
+   * of every mission — exactly the silence the poll loop exists to end. And it must not delay the
+   * heartbeat, which rules out the poll loop.
+   *
+   * A minute by default, against a poll measured in seconds: a pass rewrites the backlog, and
+   * doing that continuously would spend more on watching than on working.
+   *
+   * Failures are logged and nothing else. The operating loop is a convenience the worker provides
+   * on the control plane's behalf, not part of its own job — a control plane that cannot take a
+   * pass right now must not stop a worker from finishing the mission in its hands.
+   */
+  private async operatorLoop(): Promise<void> {
+    const interval = this.deps.config.operatorTickIntervalMs;
+    if (interval === null) return;
+
+    while (!this.stopped) {
+      await this.sleep(interval);
+      if (this.stopped) break;
+      try {
+        const result = await this.deps.client.operatorTick();
+        /*
+         * Only worth a line when something happened. A pass that found nothing to do is the normal
+         * case, once a minute, for ever — logging it would bury everything else.
+         */
+        if (result.missionsStarted > 0) {
+          this.log(`Jarvis started ${result.missionsStarted} mission(s): ${result.summary}`);
+        }
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.fatal) {
+          /*
+           * Not a reason to exit. A 403 here means this worker may not drive the loop, which is a
+           * perfectly reasonable thing for an owner to decide — the same 403 from the poll means
+           * the worker has been revoked, and only that one ends the process.
+           */
+          this.log(`This worker may not drive the operating loop: ${error.message}`);
+          return;
+        }
+        this.log(
+          `Operating loop pass failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
   }
 
   /**

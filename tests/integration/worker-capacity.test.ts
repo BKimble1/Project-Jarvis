@@ -308,3 +308,63 @@ describe('Claude capacity through the heartbeat', () => {
     expect(resumed.capacity?.mayStartNewWork).toBe(true);
   });
 });
+
+describe('the operating loop’s caller', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it('lets an enrolled worker drive a pass, and refuses one that is not', async () => {
+    /*
+     * The loop had no production caller at all: the schedule covers the project sync and nothing
+     * else, and the two route handlers were reached only by an owner pressing a button or by a
+     * test. Jarvis could observe, prioritise and raise its own work, and never did — the
+     * difference between an autonomous operator and a very well-designed one that waits to be
+     * told.
+     *
+     * Driven through the shipping route with a real bearer token, because the interesting half is
+     * the authentication: a worker may drive the loop, and nothing else may.
+     */
+    const { charterService, workerService } = harness.services;
+    await charterService.setMode({ to: 'observer', actor: 'owner', changedBy: 'owner' });
+    const enrolled = await workerService.enrol('driving-worker', 1);
+
+    const route = await import('@/app/api/worker/operator-tick/route');
+
+    const authorised = await route.POST(
+      new Request('http://localhost:3000/api/worker/operator-tick', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${enrolled.token}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      }),
+    );
+    expect(authorised.status).toBe(200);
+    const body = (await authorised.json()) as { outcome: string; summary: string };
+    expect(body.outcome).toBe('observed');
+
+    /* A pass really happened, and is on the record where an owner can see it. */
+    const ticks = await harness.services.operatorService.recentTicks();
+    expect(ticks).toHaveLength(1);
+    expect(ticks[0]?.finishedAt).not.toBeNull();
+
+    const anonymous = await route.POST(
+      new Request('http://localhost:3000/api/worker/operator-tick', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+    );
+    expect(anonymous.status).toBe(401);
+    /* And no second tick row: an unauthenticated request is refused before anything runs. */
+    expect(await harness.services.operatorService.recentTicks()).toHaveLength(1);
+  });
+});
