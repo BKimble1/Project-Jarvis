@@ -336,6 +336,11 @@ export class DrizzleChunkRepository implements ChunkRepository {
   }
 }
 
+/** "Its time has come": no start date, or a start date that has passed. */
+function notYetEffective() {
+  return sql`(${knowledgeItems.effectiveFrom} is null or ${knowledgeItems.effectiveFrom} <= now())`;
+}
+
 export class DrizzleKnowledgeRepository implements KnowledgeRepository {
   constructor(private readonly db: Database) {}
 
@@ -359,6 +364,7 @@ export class DrizzleKnowledgeRepository implements KnowledgeRepository {
         createdBy: input.createdBy,
         confidence: input.confidence ?? null,
         reviewAt: input.reviewAt ?? null,
+        effectiveFrom: input.effectiveFrom ?? null,
         expiresAt: input.expiresAt ?? null,
         supersedesId: input.supersedesId ?? null,
         confirmedAt: input.confirmedAt ?? null,
@@ -447,6 +453,7 @@ export class DrizzleKnowledgeRepository implements KnowledgeRepository {
             }
           : {}),
         ...(patch.reviewAt !== undefined ? { reviewAt: patch.reviewAt } : {}),
+        ...(patch.effectiveFrom !== undefined ? { effectiveFrom: patch.effectiveFrom } : {}),
         ...(patch.expiresAt !== undefined ? { expiresAt: patch.expiresAt } : {}),
         ...(patch.supersededById !== undefined ? { supersededById: patch.supersededById } : {}),
         ...(patch.supersededReason !== undefined
@@ -477,6 +484,13 @@ export class DrizzleKnowledgeRepository implements KnowledgeRepository {
     const clauses = [
       eq(knowledgeItems.status, 'active'),
       sql`${knowledgeItems.searchVector} @@ websearch_to_tsquery('english', ${query})`,
+      /*
+       * Not yet true is not true. A memory recorded in January for March must not be returned in
+       * February, or Jarvis states the new address two months before it is the address. Applied in
+       * the query rather than filtered afterwards, so it cannot be forgotten by a caller and
+       * cannot consume a result slot it is not entitled to.
+       */
+      notYetEffective(),
     ];
     if (input.scopes && input.scopes.length > 0) {
       clauses.push(inArray(knowledgeItems.scope, [...input.scopes] as never));
@@ -512,7 +526,7 @@ export class DrizzleKnowledgeRepository implements KnowledgeRepository {
     readonly projectIds?: readonly string[];
     readonly limit?: number;
   }): Promise<readonly KnowledgeItem[]> {
-    const clauses = [eq(knowledgeItems.status, 'active')];
+    const clauses = [eq(knowledgeItems.status, 'active'), notYetEffective()];
     if (input.scopes.length > 0) {
       clauses.push(inArray(knowledgeItems.scope, [...input.scopes] as never));
     }

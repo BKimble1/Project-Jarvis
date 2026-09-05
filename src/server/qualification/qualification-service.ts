@@ -87,6 +87,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   '0012_usage_identity_and_capacity.sql',
   '0013_task_reclaim.sql',
   '0014_operator_pause_origin.sql',
+  '0015_knowledge_effective_from.sql',
 ];
 
 /** Settings keys this service owns. Named once so a typo cannot silently create a second key. */

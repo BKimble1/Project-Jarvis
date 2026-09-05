@@ -90,6 +90,7 @@ export function toKnowledgeItem(row: Row<typeof knowledgeItems>): KnowledgeItem 
     confirmedAt: iso(row.confirmedAt),
     confirmedBy: row.confirmedBy,
     reviewAt: iso(row.reviewAt),
+    effectiveFrom: iso(row.effectiveFrom),
     expiresAt: iso(row.expiresAt),
     supersedesId: row.supersedesId,
     supersededById: row.supersededById,

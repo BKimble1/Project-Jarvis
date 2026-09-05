@@ -151,6 +151,7 @@ export interface KnowledgeCreateInput {
   readonly createdBy: string;
   readonly confidence?: KnowledgeConfidence | null;
   readonly reviewAt?: Date | null;
+  readonly effectiveFrom?: Date | null;
   readonly expiresAt?: Date | null;
   readonly supersedesId?: string | null;
   readonly confirmedAt?: Date | null;
@@ -168,6 +169,7 @@ export interface KnowledgePatch {
   readonly confirmedBy?: string | null;
   readonly rejectedReason?: string | null;
   readonly reviewAt?: Date | null;
+  readonly effectiveFrom?: Date | null;
   readonly expiresAt?: Date | null;
   readonly supersededById?: string | null;
   readonly supersededReason?: string | null;

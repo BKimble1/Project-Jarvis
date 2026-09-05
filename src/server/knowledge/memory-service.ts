@@ -21,6 +21,8 @@ import type {
   KnowledgeProposalInput,
   KnowledgeUpdateInput,
 } from '@/domain/knowledge';
+import { interpretCapture } from '@/domain/memory-capture';
+import type { KnowledgeScope } from '@/domain/knowledge';
 import type { Sensitivity } from '@/domain/retrieval';
 import type {
   AuditRepository,
@@ -121,6 +123,26 @@ export interface MemoryExplanation {
   readonly embedded: boolean;
 }
 
+/** What `capture` did with one sentence. Every branch says why, because most branches say no. */
+export type CaptureResult =
+  | { readonly kind: 'none'; readonly rule: string }
+  | { readonly kind: 'refused'; readonly rule: string; readonly reason: string }
+  | {
+      readonly kind: 'forget';
+      readonly rule: string;
+      readonly subject: string;
+      /** Nothing is deleted here. Forgetting needs a typed confirmation against one id. */
+      readonly candidates: readonly KnowledgeItem[];
+    }
+  | {
+      readonly kind: 'remembered';
+      readonly rule: string;
+      readonly reason: string;
+      readonly explicit: boolean;
+      readonly uncertain: boolean;
+      readonly outcome: MemoryOutcome;
+    };
+
 export class MemoryService {
   private readonly clock: () => Date;
 
@@ -170,6 +192,7 @@ export class MemoryService {
       createdBy: actor.actor,
       confidence: null,
       reviewAt: input.reviewAt ? new Date(input.reviewAt) : null,
+      effectiveFrom: input.effectiveFrom ? new Date(input.effectiveFrom) : null,
       expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
       supersedesId: input.supersedesId ?? null,
       confirmedAt: now,
@@ -209,6 +232,97 @@ export class MemoryService {
    * supplied — and even that requires `sourceOwnerSupplied` to be true, which a proposer cannot
    * assert about itself because it is derived from the source row rather than from the request.
    */
+  /**
+   * "Remember that…" — one sentence in, one memory out, or an honest refusal.
+   *
+   * ## Why the interpretation is not this service's business
+   *
+   * `interpretCapture` is a pure function with its own tests, and everything interesting about
+   * capture is in the rules it applies: explicit beats implicit, sensitive material is never filed
+   * because it came up, a hedge stays a hedge. This method is the plumbing — it takes the verdict
+   * and routes it to the two writers that already exist, so a captured memory goes through exactly
+   * the same lifecycle, supersession and conflict detection as one typed into the form.
+   *
+   * ## Why an implicit capture is `inferred` rather than `explicit`
+   *
+   * Because it is. The owner said "I always squash my commits" while asking about something else;
+   * they did not ask Jarvis to write it down. `resolveInitialStatus` then makes it a suggestion
+   * under R-KN5, which is exactly right: it is visible, it is labelled as a guess, and it counts
+   * for nothing until a person agrees.
+   */
+  async capture(
+    text: string,
+    actor: MemoryActor,
+    options: { readonly projectId?: string | null; readonly fromOwner?: boolean } = {},
+  ): Promise<CaptureResult> {
+    const verdict = interpretCapture(text, {
+      now: this.clock(),
+      fromOwner: options.fromOwner ?? actor.actorKind === 'owner',
+    });
+
+    if (verdict.kind === 'none') return { kind: 'none', rule: verdict.rule };
+
+    if (verdict.kind === 'refused') {
+      return { kind: 'refused', rule: verdict.rule, reason: verdict.reason };
+    }
+
+    if (verdict.kind === 'forget') {
+      /*
+       * Deliberately does not delete. `forget` requires a typed confirmation against a specific
+       * id, and resolving "forget the thing about the invoice" to an id by search is exactly the
+       * step where a near-match becomes the wrong deletion. So this finds the candidates and hands
+       * them back for a person to point at.
+       */
+      const matches = await this.options.memories.searchActive({
+        query: verdict.subject,
+        limit: 5,
+      });
+      return {
+        kind: 'forget',
+        rule: verdict.rule,
+        subject: verdict.subject,
+        candidates: matches.map((match) => match.item),
+      };
+    }
+
+    const shared = {
+      scope: (options.projectId ? 'project' : 'global') as KnowledgeScope,
+      category: verdict.category,
+      statement: verdict.statement,
+      projectId: options.projectId ?? null,
+      tags: [] as string[],
+      sensitivity: verdict.sensitivity,
+      ...(verdict.effectiveFrom ? { effectiveFrom: verdict.effectiveFrom } : {}),
+      ...(verdict.expiresAt ? { expiresAt: verdict.expiresAt } : {}),
+    };
+
+    const outcome = verdict.explicit
+      ? await this.remember(shared, actor)
+      : await this.propose(
+          {
+            ...shared,
+            /*
+             * `inferred`, and `low` confidence when the sentence hedged. Both are displayed and
+             * neither is a threshold: a confident guess is still a guess, and the reason this is a
+             * suggestion is where it came from, not how sure anything was.
+             */
+            origin: 'inferred' as const,
+            confidence: verdict.uncertain ? ('low' as const) : ('medium' as const),
+            excerpts: [],
+          },
+          actor,
+        );
+
+    return {
+      kind: 'remembered',
+      rule: verdict.rule,
+      reason: verdict.reason,
+      explicit: verdict.explicit,
+      uncertain: verdict.uncertain,
+      outcome,
+    };
+  }
+
   async propose(
     input: KnowledgeProposalInput & {
       readonly sourceOwnerSupplied?: boolean;

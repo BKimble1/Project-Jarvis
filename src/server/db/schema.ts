@@ -2150,6 +2150,16 @@ export const knowledgeItems = pgTable(
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
     confirmedBy: text('confirmed_by'),
     reviewAt: timestamp('review_at', { withTimezone: true }),
+    /**
+     * When this starts being true.
+     *
+     * Null means "already". The column exists because people say things like "from March I'm at
+     * the new address" and "the retainer ends on the 30th", and a memory system that can only
+     * record the present has to choose between recording it now — where it is wrong until March —
+     * and not recording it at all, where it is forgotten. Retrieval skips an item whose time has
+     * not come; `expires_at` is the same idea from the other end.
+     */
+    effectiveFrom: timestamp('effective_from', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
     supersedesId: uuid('supersedes_id'),
     supersededById: uuid('superseded_by_id'),

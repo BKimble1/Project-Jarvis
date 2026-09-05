@@ -73,6 +73,24 @@ export const KNOWLEDGE_CATEGORIES = [
   'procedure',
   'lesson_learned',
   'open_question',
+  /*
+   * The categories a *personal* operator needs, added because "relationship" was carrying all of
+   * them and carrying none of them well. "Sarah runs engineering at Acme", "I do the accounts on
+   * the last Friday of the month" and "the flat sale completes in March" are three different
+   * shapes of thing: one is durable, one recurs, and one stops being true on a date. Filed
+   * together they retrieve together, and a question about a person returns a reminder about a
+   * routine.
+   */
+  /** A person: who they are, how they work, what they care about. */
+  'person',
+  /** A company, client, supplier or other organisation. */
+  'organisation',
+  /** Something that happens on a rhythm. Weekly, monthly, every quarter. */
+  'routine',
+  /** Something to do. Distinct from a mission: a mission is work Jarvis runs. */
+  'task',
+  /** True for now and not for long. A trip, an outage, a deadline week. */
+  'temporary_context',
 ] as const;
 export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number];
 
@@ -87,6 +105,11 @@ export const KNOWLEDGE_CATEGORY_LABELS: Record<KnowledgeCategory, string> = {
   procedure: 'Procedure',
   lesson_learned: 'Lesson learned',
   open_question: 'Open question',
+  person: 'Person',
+  organisation: 'Organisation',
+  routine: 'Routine',
+  task: 'Task',
+  temporary_context: 'For now',
 };
 
 /**
@@ -101,6 +124,16 @@ export const OWNER_ONLY_CATEGORIES = [
   'decision',
   'goal',
   'constraint',
+  /*
+   * A routine and a task are the same shape of claim as a preference: they are statements about
+   * what the owner does and intends, and a model that recorded one on their behalf would be
+   * putting words in their mouth about their own life. A *person* is here for a different reason
+   * — an inferred claim about somebody is the one kind of memory that can be wrong about a third
+   * party, and that is not a mistake to make quietly.
+   */
+  'routine',
+  'task',
+  'person',
 ] as const satisfies readonly KnowledgeCategory[];
 
 export function isOwnerOnlyCategory(category: KnowledgeCategory): boolean {
@@ -259,6 +292,13 @@ export interface KnowledgeItem {
   readonly confirmedBy: string | null;
   /** When this should be looked at again. Operational facts rot; a runbook from 2023 is a hazard. */
   readonly reviewAt: string | null;
+  /**
+   * When this starts being true. Null means already.
+   *
+   * Retrieval and citation both skip an item whose time has not come, so "from March I am at the
+   * new address" can be recorded in January without being wrong for two months.
+   */
+  readonly effectiveFrom: string | null;
   readonly expiresAt: string | null;
   /** The item this replaced, and the item that replaced this one. Both kept. */
   readonly supersedesId: string | null;
@@ -303,6 +343,7 @@ export const knowledgeCreateSchema = z.object({
   missionId: z.string().uuid().nullish(),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).default([]),
   reviewAt: z.string().datetime().nullish(),
+  effectiveFrom: z.string().datetime().nullish(),
   expiresAt: z.string().datetime().nullish(),
   /** Set when this deliberately replaces an existing item. */
   supersedesId: z.string().uuid().nullish(),
@@ -350,6 +391,7 @@ export const knowledgeUpdateSchema = z.object({
   scope: z.enum(KNOWLEDGE_SCOPES).optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
   reviewAt: z.string().datetime().nullish(),
+  effectiveFrom: z.string().datetime().nullish(),
   expiresAt: z.string().datetime().nullish(),
 });
 export type KnowledgeUpdateInput = z.infer<typeof knowledgeUpdateSchema>;
@@ -440,11 +482,13 @@ export function resolveInitialStatus(input: {
  * still worth showing with a warning, but it is not something to build a recommendation on.
  */
 export function isCitableAuthority(
-  item: Pick<KnowledgeItem, 'status' | 'origin' | 'expiresAt'>,
+  item: Pick<KnowledgeItem, 'status' | 'origin' | 'expiresAt' | 'effectiveFrom'>,
   nowIso: string,
 ): boolean {
   if (!isRetrievable(item.status)) return false;
   if (item.expiresAt && Date.parse(item.expiresAt) <= Date.parse(nowIso)) return false;
+  /* Not yet true is not true. See `effectiveFrom`. */
+  if (item.effectiveFrom && Date.parse(item.effectiveFrom) > Date.parse(nowIso)) return false;
   return item.origin !== 'inferred' && item.origin !== 'model_suggested';
 }
 
@@ -926,5 +970,11 @@ export function canDecide(input: {
  * because "safe to show on a screen in the kitchen" is a judgement only I can make.
  */
 export function defaultSensitivity(category: KnowledgeCategory): 'public' | 'internal' | 'private' {
+  /*
+   * `temporary_context` is private despite not being owner-only. "I am away until the 12th" is a
+   * perfectly ordinary note and precisely the sort of thing that should not appear on a screen in
+   * a kitchen that visitors walk past.
+   */
+  if (category === 'temporary_context') return 'private';
   return isOwnerOnlyCategory(category) ? 'private' : 'internal';
 }

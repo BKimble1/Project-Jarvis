@@ -75,10 +75,47 @@ export function NowPanel({
     }
   }
 
+  async function capture(text: string) {
+    setBusy(true);
+    setSaid(null);
+    try {
+      const response = await fetch('/api/knowledge/memories/capture', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        said?: string;
+        error?: { message?: string };
+      };
+      if (response.ok) setReply('');
+      setSaid(payload.said ?? payload.error?.message ?? 'That did not work.');
+    } catch {
+      setSaid('Could not reach Jarvis.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     const text = reply.trim();
     if (text.length === 0) return;
+
+    /*
+     * Remembering first, because "remember that I always squash commits" contains no ordinal, no
+     * negation and no affirmation — it would fall through to Ask, which would search for it
+     * instead of keeping it. Checked here rather than server-side so the panel can say what
+     * happened without a page change.
+     */
+    if (
+      /^(?:please\s+)?(?:remember|note|make a note|keep in mind|jot down|forget|stop remembering)\b/i.test(
+        text,
+      )
+    ) {
+      await capture(text);
+      return;
+    }
 
     const intent = interpretReply(text, actions.length);
 
@@ -186,7 +223,9 @@ export function NowPanel({
           value={reply}
           onChange={(event) => setReply(event.target.value)}
           placeholder={
-            actions.length > 0 ? 'Do the first one · Continue · Not tonight' : 'Ask me anything'
+            actions.length > 0
+              ? 'Do the first one · Continue · Remember that… · Not tonight'
+              : 'Ask me anything, or say “remember that…”'
           }
           aria-label="Reply to Jarvis"
           className="min-w-0 flex-1 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-sm"
