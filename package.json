@@ -29,6 +29,7 @@
     "test:e2e:install": "playwright install --with-deps chromium",
     "verify": "tsx scripts/verify.ts",
     "verify:ci": "tsx scripts/verify.ts --skip-e2e",
+    "jarvis:live": "tsx scripts/jarvis-live.mts",
     "worker": "tsx scripts/worker.ts",
     "worker:health": "tsx scripts/worker-health.ts",
     "worker:workspaces": "tsx scripts/workspaces.ts",
