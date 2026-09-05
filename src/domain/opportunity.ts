@@ -503,7 +503,8 @@ export function prioritise(opportunity: Opportunity, context: PriorityContext): 
   }
 
   const score = factors.reduce((total, factor) => total + factor.points, 0);
-  let band: PriorityBand = score >= 60 ? 'now' : score >= 35 ? 'next' : score >= 15 ? 'later' : 'watch';
+  let band: PriorityBand =
+    score >= 60 ? 'now' : score >= 35 ? 'next' : score >= 15 ? 'later' : 'watch';
 
   const cap = (to: PriorityBand, name: string, why: string) => {
     if (PRIORITY_BANDS.indexOf(band) < PRIORITY_BANDS.indexOf(to)) {
@@ -546,7 +547,10 @@ export function rank(
   context: (opportunity: Opportunity) => PriorityContext,
 ): readonly RankedOpportunity[] {
   return [...opportunities]
-    .map((opportunity) => ({ opportunity, priority: prioritise(opportunity, context(opportunity)) }))
+    .map((opportunity) => ({
+      opportunity,
+      priority: prioritise(opportunity, context(opportunity)),
+    }))
     .sort((left, right) => {
       const byBand =
         PRIORITY_BANDS.indexOf(left.priority.band) - PRIORITY_BANDS.indexOf(right.priority.band);

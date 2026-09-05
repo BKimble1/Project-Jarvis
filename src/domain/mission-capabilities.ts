@@ -78,7 +78,11 @@ export function missionCapabilityClasses(input: {
    * mission type is what the owner asked for; the plan is what Jarvis intends to do, and the second
    * is the one that has to be authorised.
    */
-  if (input.plan && input.plan.testsToAddOrUpdate.length > 0 && !isReadOnlyMissionType(input.type)) {
+  if (
+    input.plan &&
+    input.plan.testsToAddOrUpdate.length > 0 &&
+    !isReadOnlyMissionType(input.type)
+  ) {
     classes.add('test.add');
   }
   if (input.plan && input.plan.dataMigrations.length > 0) {

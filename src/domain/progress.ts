@@ -263,7 +263,8 @@ export function detectNoProgress(
 
   if (snapshot.repairRoundsUsed >= bounds.repairRounds) limitsReached.push('repairRounds');
   if (snapshot.elapsedMinutes >= bounds.missionMinutes) limitsReached.push('missionMinutes');
-  if (snapshot.outputTokens >= bounds.missionOutputTokens) limitsReached.push('missionOutputTokens');
+  if (snapshot.outputTokens >= bounds.missionOutputTokens)
+    limitsReached.push('missionOutputTokens');
   if (snapshot.changedFileCount >= bounds.writeSetFiles) limitsReached.push('writeSetFiles');
   if (
     bounds.missionSpendUsd !== null &&

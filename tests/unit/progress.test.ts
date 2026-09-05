@@ -23,8 +23,13 @@ import { charterContentSchema } from '@/domain/charter';
  */
 
 const BOUNDS = boundsFromCharter(
-  charterContentSchema.parse({ goals: [], projectIds: [], grants: [], limits: {}, communication: {} })
-    .limits,
+  charterContentSchema.parse({
+    goals: [],
+    projectIds: [],
+    grants: [],
+    limits: {},
+    communication: {},
+  }).limits,
 );
 
 function snapshot(overrides: Partial<ProgressSnapshot> = {}): ProgressSnapshot {
@@ -83,7 +88,13 @@ describe('detecting a stall', () => {
 
   it('catches the same error coming back', () => {
     const verdict = detectNoProgress(
-      snapshot({ errorSignatures: ['TS2345 in importer.ts', 'TS2345 in importer.ts', 'TS2345 in importer.ts'] }),
+      snapshot({
+        errorSignatures: [
+          'TS2345 in importer.ts',
+          'TS2345 in importer.ts',
+          'TS2345 in importer.ts',
+        ],
+      }),
       BOUNDS,
     );
     expect(verdict.findings.map((finding) => finding.signal)).toContain('repeated_error');
@@ -160,7 +171,10 @@ describe('the supervisor', () => {
   });
 
   it('narrows once, then stops', () => {
-    const stalling = snapshot({ errorSignatures: ['same', 'same', 'same'], diffHashes: ['a', 'a'] });
+    const stalling = snapshot({
+      errorSignatures: ['same', 'same', 'same'],
+      diffHashes: ['a', 'a'],
+    });
     const first = superviseMission({
       snapshot: stalling,
       bounds: { ...BOUNDS, repeatedErrors: 99 },

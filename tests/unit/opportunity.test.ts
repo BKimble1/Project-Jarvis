@@ -290,17 +290,17 @@ describe('text Jarvis did not write', () => {
   });
 
   it('bounds it, so a long injection cannot push the framing out of the window', () => {
-    const request = operatorRequestText(
-      opportunity({ detail: 'x'.repeat(50_000) }),
-      redact,
-    );
+    const request = operatorRequestText(opportunity({ detail: 'x'.repeat(50_000) }), redact);
     expect(request.length).toBeLessThan(2_000);
     expect(request).toContain('--- end observed ---');
   });
 
   it('redacts a credential somebody pasted into an issue title', () => {
     const secret = `ghp_${'a'.repeat(36)}`;
-    const request = operatorRequestText(opportunity({ detail: `The token ${secret} stopped working.` }), redact);
+    const request = operatorRequestText(
+      opportunity({ detail: `The token ${secret} stopped working.` }),
+      redact,
+    );
     expect(request).not.toContain(secret);
     expect(request).toContain('[redacted]');
   });

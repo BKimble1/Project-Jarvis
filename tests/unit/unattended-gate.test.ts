@@ -161,9 +161,7 @@ describe('standing authority in the mission state machine', () => {
     const actual = MISSION_TRANSITIONS.filter((transition) =>
       transition.actors.includes('charter'),
     ).map((transition) => `${transition.from}→${transition.to}`);
-    expect(actual.sort()).toEqual(
-      CHARTER_TRANSITIONS.map(([from, to]) => `${from}→${to}`).sort(),
-    );
+    expect(actual.sort()).toEqual(CHARTER_TRANSITIONS.map(([from, to]) => `${from}→${to}`).sort());
     expect(actual).toHaveLength(4);
   });
 

@@ -54,9 +54,7 @@ import {
  * edit files" and "Jarvis may push to GitHub" are different questions that happen to sit on the
  * same rung today.
  */
-export function missionUnattendedCapabilities(
-  type: MissionType,
-): readonly ActivationCapability[] {
+export function missionUnattendedCapabilities(type: MissionType): readonly ActivationCapability[] {
   if (isReadOnlyMissionType(type)) return ['model_task_readonly'];
   return ['model_task_readonly', 'model_task_write', 'github_write'];
 }
@@ -132,10 +130,7 @@ export interface UnattendedVerdict {
   readonly reason: string | null;
 }
 
-function allows(
-  capabilities: readonly ActivationCapability[],
-  level: QualificationLevel,
-): boolean {
+function allows(capabilities: readonly ActivationCapability[], level: QualificationLevel): boolean {
   return capabilities.every((capability) =>
     meetsLevel(level, CAPABILITY_REQUIRED_LEVEL[capability]),
   );

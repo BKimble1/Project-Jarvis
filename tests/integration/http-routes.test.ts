@@ -424,7 +424,6 @@ describe('HTTP route handlers', () => {
     expect(response.status).toBe(403);
   });
 
-
   /* ---------------------------------------------------------------- operator */
 
   describe('standing authority', () => {
@@ -445,10 +444,9 @@ describe('HTTP route handlers', () => {
       const id = (await body(created)).charter.id as string;
 
       const activate = await import('@/app/api/operator/charter/[id]/activate/route');
-      const activated = await activate.POST(
-        post(`/api/operator/charter/${id}/activate`),
-        { params: Promise.resolve({ id }) },
-      );
+      const activated = await activate.POST(post(`/api/operator/charter/${id}/activate`), {
+        params: Promise.resolve({ id }),
+      });
       expect(activated.status).toBe(200);
       return id;
     }

@@ -142,7 +142,11 @@ describe('coverage', () => {
   it('accepts an authorisation that covers more than enough', () => {
     const needed = missionCapabilityClasses({ type: 'code_change', plan: PLAN });
     expect(
-      coversPlan({ authorised: [...needed, 'testflight.dispatch'], type: 'code_change', plan: PLAN }),
+      coversPlan({
+        authorised: [...needed, 'testflight.dispatch'],
+        type: 'code_change',
+        plan: PLAN,
+      }),
     ).toBeNull();
   });
 

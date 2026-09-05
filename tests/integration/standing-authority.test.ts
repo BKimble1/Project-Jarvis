@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 
-import {
-  charterContentSchema,
-  charterDigest,
-  type CharterContent,
-} from '@/domain/charter';
+import { charterContentSchema, charterDigest, type CharterContent } from '@/domain/charter';
 import type { AuthorizationRequest, CapabilityRequest } from '@/domain/authorization';
 import { missionCapabilityRequests } from '@/domain/mission-capabilities';
 import { ConflictError, ForbiddenError, NotFoundError } from '@/domain/errors';
@@ -144,7 +140,9 @@ describe('standing authority', () => {
   describe('charters', () => {
     it('numbers versions and records a digest of what was written', async () => {
       const { charterService } = harness.services;
-      const content = charter({ goals: [{ id: 'g1', statement: 'Ship the importer', priority: 1 }] });
+      const content = charter({
+        goals: [{ id: 'g1', statement: 'Ship the importer', priority: 1 }],
+      });
 
       const first = await charterService.draft({ content, authoredBy: 'owner' });
       const second = await charterService.draft({ content: charter(), authoredBy: 'owner' });
@@ -344,9 +342,7 @@ describe('standing authority', () => {
         request({ capabilities: [ask({ capability: 'marketing.create' })] }),
       );
       expect(beyondCharter.decision.outcome).toBe('needs_owner');
-      expect(
-        beyondCharter.decision.verdicts.every((verdict) => verdict.ownerCanGrant),
-      ).toBe(true);
+      expect(beyondCharter.decision.verdicts.every((verdict) => verdict.ownerCanGrant)).toBe(true);
 
       /* Granted by the charter, and still refused: the deployment has qualified for nothing. */
       const beyondLadder = await charterService.decide(request());
@@ -587,9 +583,9 @@ describe('standing authority', () => {
 
       await observing();
       const result = await harness.services.operatorService.tick();
-      expect(
-        result.coverage.find((entry) => entry.projectId === created.id)?.state,
-      ).not.toBe('observed');
+      expect(result.coverage.find((entry) => entry.projectId === created.id)?.state).not.toBe(
+        'observed',
+      );
 
       const record = await harness.services.opportunities.findByKey('b'.repeat(32));
       expect(record?.state).toBe('open');
@@ -770,9 +766,9 @@ describe('standing authority', () => {
       /* The timeline says a person did not do this. */
       const detail = await harness.services.missions.detail(mission!.id);
       expect(detail.events.some((event) => event.actor === 'charter')).toBe(true);
-      expect(
-        detail.events.find((event) => event.type === 'mission_created')?.summary,
-      ).toMatch(/raised this itself/);
+      expect(detail.events.find((event) => event.type === 'mission_created')?.summary).toMatch(
+        /raised this itself/,
+      );
     });
 
     /*
@@ -1026,7 +1022,9 @@ describe('standing authority', () => {
       const { charterService } = harness.services;
       const version = await charterService.draft({
         content: charter({
-          grants: [{ capability: 'project.status.update', scope: { projects: ['*'] } } as GrantInput],
+          grants: [
+            { capability: 'project.status.update', scope: { projects: ['*'] } } as GrantInput,
+          ],
           limits: { dailySpendUsd: 1 },
         }),
         authoredBy: 'owner',

@@ -9,10 +9,7 @@ export const dynamic = 'force-dynamic';
  * activates and then chooses a mode, and both are separate entries in the audit trail.
  */
 export const POST = ownerRouteWithParams<{ id: string }>(async ({ services, session, params }) => {
-  const charter = await services.charterService.activate(
-    params.id,
-    session.githubLogin ?? 'owner',
-  );
+  const charter = await services.charterService.activate(params.id, session.githubLogin ?? 'owner');
   return json({
     charter: {
       id: charter.id,

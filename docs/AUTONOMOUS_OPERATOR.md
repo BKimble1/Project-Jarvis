@@ -12,10 +12,10 @@ yet wired, it says so in those words. Nothing here describes a capability Jarvis
 Every autonomous act has to get past three separate gates. They are separate because they answer
 different questions, and none of them implies the others.
 
-| Question | Who answers | Where |
-|---|---|---|
-| Is Jarvis operating at all right now? | The **operating mode** | `src/domain/operating-mode.ts` |
-| Did the owner permit this? | The **charter** | `src/domain/charter.ts` |
+| Question                                        | Who answers               | Where                                                     |
+| ----------------------------------------------- | ------------------------- | --------------------------------------------------------- |
+| Is Jarvis operating at all right now?           | The **operating mode**    | `src/domain/operating-mode.ts`                            |
+| Did the owner permit this?                      | The **charter**           | `src/domain/charter.ts`                                   |
 | Has this deployment proved it can do it safely? | The **activation ladder** | `src/domain/qualification.ts`, `src/domain/unattended.ts` |
 
 A charter granting `code.change` across every repository still cannot make an unqualified
@@ -32,14 +32,14 @@ authority by asking a model is an operator whose authority cannot be explained a
 
 Six modes, and the order is the meaning.
 
-| Mode | What happens |
-|---|---|
-| `off` | Nothing. Jarvis does not even look. |
-| `observer` | Looks and reports. Creates nothing. |
-| `supervised` | Proposes missions and waits for you on each one. This is Phase 2–4 behaviour. |
-| `operator` | Creates and runs missions inside the charter, without asking again. |
-| `paused` | Finishes or safely stops what is running. Begins nothing new. |
-| `emergency_stop` | Stops everything that can be safely stopped. |
+| Mode             | What happens                                                                  |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `off`            | Nothing. Jarvis does not even look.                                           |
+| `observer`       | Looks and reports. Creates nothing.                                           |
+| `supervised`     | Proposes missions and waits for you on each one. This is Phase 2–4 behaviour. |
+| `operator`       | Creates and runs missions inside the charter, without asking again.           |
+| `paused`         | Finishes or safely stops what is running. Begins nothing new.                 |
+| `emergency_stop` | Stops everything that can be safely stopped.                                  |
 
 The transition table has one safety property, and it is deliberate: **every move toward less
 autonomy is available from anywhere and to the system; every move toward more autonomy is
@@ -62,7 +62,7 @@ The owner's standing authority, written down, versioned and never edited in plac
 
 - **25 capability classes**, ordered by blast radius, from `research.read` to `testflight.dispatch`.
   Each names what it means, whether it writes, how far it reaches, which activation capability it
-  needs, and which scope dimensions it *must* enumerate. `code.change` cannot be granted with
+  needs, and which scope dimensions it _must_ enumerate. `code.change` cannot be granted with
   `repositories: ['*']` — naming three repositories is a small cost; naming all of them by accident
   is not a small consequence.
 - **Eight exceptional actions** — moving money, signing an agreement, changing authentication,
@@ -71,7 +71,7 @@ The owner's standing authority, written down, versioned and never edited in plac
   `authorize` refuses them under R-AU6 even against a charter that grants everything else.
 - **Limits**: daily and weekly spend, mission minutes, attempts, repair rounds, parallel agents,
   and the reserve percentages to keep back in each Claude window.
-- **A content digest.** Every authorisation decision records the charter version id *and* its
+- **A content digest.** Every authorisation decision records the charter version id _and_ its
   digest, so a later reader can prove the charter was not edited underneath a decision that cited
   it. It is not a signature — anyone who can write the table can rewrite both — but it makes silent
   editing something that shows.
@@ -98,7 +98,7 @@ current, the risk level being the one the approver was shown, and `canQueueMissi
 Three things change and nothing else:
 
 1. The recorded authorisation decision is **re-read and re-proved**. `confirmDecision` checks that
-   it exists, that it came out `authorized`, that it was made for *this* mission, and that it cites
+   it exists, that it came out `authorized`, that it was made for _this_ mission, and that it cites
    the charter still in force with the same digest. A decision id is a string until somebody looks
    it up.
 2. The approval and the mission record which charter said so.
@@ -111,7 +111,7 @@ operator could ask for permission to update a project's status, be granted it, a
 mission that rewrites a repository, with every other check passing because nothing had compared the
 two.
 
-`manual_task` is refused as a *type* rather than by an empty capability list, because an empty list
+`manual_task` is refused as a _type_ rather than by an empty capability list, because an empty list
 would read as full coverage. No charter grants the ability to do something only a person can do.
 
 `acknowledgedRiskLevel` is deliberately **not** relaxed for a machine. A decision made at T and
@@ -137,7 +137,7 @@ decision. When the supervisor decides a mission has become a rabbit hole it ends
 ## The activation ladder, applied to real work
 
 Phase 4A built the lock and wired it to one caller. That was survivable only while a person
-approved every mission and therefore *was* the gate.
+approved every mission and therefore _was_ the gate.
 
 `src/domain/unattended.ts` maps the concrete things a worker is handed onto the capabilities they
 consume:
@@ -205,7 +205,7 @@ Opportunities are **derived, never invented**. Every one carries the determinist
 produced it and the evidence ids behind that rule. There is no constructor that takes free text
 with no rule attached, because "keep the agents busy" is the failure mode of an autonomous system.
 
-Identity is a hash of what the opportunity is *about* — project, rule, subject — and never of when
+Identity is a hash of what the opportunity is _about_ — project, rule, subject — and never of when
 it was noticed or how it was worded, so the same failing workflow seen on twenty consecutive ticks
 is one row with a newer `last_seen_at`. `first_seen_at` is never updated: it is what the age factor
 reads, and the reason a problem nobody has dealt with eventually rises.
@@ -243,7 +243,7 @@ three are recorded on the opportunity:
 - It becomes a **queued** mission, because the charter authorised exactly what the plan will do.
 - It becomes a **proposal** waiting for the owner — either because Jarvis is supervised, or because
   the charter fell short of what the plan turned out to need. That second case matters: the plan is
-  only knowable *after* planning, so an operator that decided authorisation up front would be
+  only knowable _after_ planning, so an operator that decided authorisation up front would be
   deciding about work it had not yet described.
 - It is **declined**, with the reason. Failures are caught per opportunity rather than allowed to
   end the tick: one project with a prohibited request must not stop Jarvis looking after the other
@@ -300,8 +300,8 @@ seven fixed, because an owner should not have to reason about "how many turns be
 looping" to use Jarvis safely.
 
 Ten no-progress signals, every one read from what a mission already recorded rather than by asking a
-model whether it thinks it is progressing. *A stalled agent asked that question says yes, sincerely,
-every time.*
+model whether it thinks it is progressing. _A stalled agent asked that question says yes, sincerely,
+every time._
 
 The supervisor's escalation is one-way and shallow: `continue → narrow → escalate`/`stop`, with
 `narrow` offered at most once. **There is no outcome that adds an agent.** The tempting fix for "the
@@ -326,7 +326,7 @@ carries whether it was measured, estimated, stale or unknown, all the way to the
 
 Two mistakes it exists to prevent:
 
-- **Summing a shared limit across workers.** Rate limits on a subscription are per *account*. Three
+- **Summing a shared limit across workers.** Rate limits on a subscription are per _account_. Three
   workers each reporting 42% means the account is at 42%, not 126%. There is no code path that adds
   two utilisation figures together.
 - **Applying subscription assumptions to API workers.** A worker on an API key has no five-hour
