@@ -146,3 +146,49 @@ describe('speaking to Jarvis', () => {
     );
   });
 });
+
+describe('the morning briefing', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it('says what it cannot see, rather than filling the gap', async () => {
+    const { buildMorningBriefing } = await import('@/server/ops/morning-briefing');
+    const briefing = await buildMorningBriefing(harness.services);
+
+    /*
+     * The line that matters most. A briefing is the surface where invention is most tempting and
+     * least detectable — "you have three things on today" reads identically whether it came from a
+     * calendar or from nowhere — so the connections Jarvis does not have are named every time.
+     */
+    expect(briefing.notConnected).toContain('calendar');
+    expect(briefing.notConnected).toContain('email');
+    expect(briefing.notConnected).toContain('revenue and finance');
+    expect(briefing.notConnected).toContain('Nothing here is estimated.');
+
+    /* And nothing anywhere in it claims to know about a day, a meeting or a number. */
+    const everything = JSON.stringify(briefing).toLowerCase();
+    expect(everything).not.toMatch(/\bmeetings?\b/);
+    expect(everything).not.toMatch(/\byour (?:day|inbox|schedule)\b/);
+  });
+
+  it('says a quiet night was quiet rather than saying nothing', async () => {
+    const { buildMorningBriefing } = await import('@/server/ops/morning-briefing');
+    const briefing = await buildMorningBriefing(harness.services);
+    expect(briefing.overnight).toHaveLength(1);
+    expect(briefing.overnight[0]?.text).toMatch(/Nothing finished in the last \d+ hours?\./);
+  });
+
+  it('does not promise that Jarvis will start anything it has no authority to start', async () => {
+    const { buildMorningBriefing } = await import('@/server/ops/morning-briefing');
+    const briefing = await buildMorningBriefing(harness.services);
+    /* No worker, no charter, mode off: the honest sentence is about what will not happen. */
+    expect(briefing.next).toMatch(/will not|nothing will run/i);
+  });
+});

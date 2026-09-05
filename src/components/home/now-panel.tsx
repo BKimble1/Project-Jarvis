@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { interpretReply } from '@/domain/reply-intent';
 import type { NextAction } from '@/domain/next-actions';
 import { Button } from '@/components/ui/button';
+import type { MorningBriefing } from '@/domain/briefing-shape';
 import { VoiceControl } from '@/components/voice/voice-control';
 
 /**
@@ -53,6 +54,7 @@ export function NowPanel({
   const [reply, setReply] = React.useState('');
   const [said, setSaid] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [briefing, setBriefing] = React.useState<MorningBriefing | null>(null);
 
   async function runPass() {
     setBusy(true);
@@ -69,6 +71,35 @@ export function NowPanel({
           : (payload.error?.message ?? 'That did not work.'),
       );
       router.refresh();
+    } catch {
+      setSaid('Could not reach Jarvis.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * The whole picture in one read, fetched only when asked for.
+   *
+   * Not rendered on every page load, because it walks the status engine across every project and
+   * this panel is above the fold. A briefing is something a person asks for once in the morning,
+   * not something a dashboard pays for on every refresh.
+   */
+  async function brief() {
+    setBusy(true);
+    setSaid(null);
+    try {
+      const response = await fetch('/api/briefing/morning');
+      const payload = (await response.json().catch(() => ({}))) as {
+        briefing?: MorningBriefing;
+        error?: { message?: string };
+      };
+      if (!response.ok || !payload.briefing) {
+        setSaid(payload.error?.message ?? 'Jarvis could not put a briefing together.');
+        return;
+      }
+      setBriefing(payload.briefing);
+      setSaid(spokenBriefing(payload.briefing));
     } catch {
       setSaid('Could not reach Jarvis.');
     } finally {
@@ -273,6 +304,21 @@ export function NowPanel({
         <p className="text-sm text-[var(--color-text-muted)]">Nothing needs you right now.</p>
       )}
 
+      {briefing ? (
+        <div className="flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-border)] p-3 text-sm">
+          <p className="font-medium">
+            {briefing.greeting}. {briefing.headline}
+          </p>
+          <BriefingSection title="Since you last looked" lines={briefing.overnight} />
+          <BriefingSection title="Waiting for you" lines={briefing.needsYou} />
+          <BriefingSection title="Where things stand" lines={briefing.projects} />
+          <p className="text-xs text-[var(--color-text-muted)]">{briefing.next}</p>
+          {briefing.notConnected ? (
+            <p className="text-xs text-[var(--color-text-subtle)]">{briefing.notConnected}</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <form onSubmit={(event) => void submit(event)} className="flex gap-2">
         <input
           value={reply}
@@ -288,6 +334,9 @@ export function NowPanel({
         <Button type="submit" disabled={busy}>
           {busy ? 'Working…' : 'Send'}
         </Button>
+        <Button type="button" variant="secondary" disabled={busy} onClick={() => void brief()}>
+          Brief me
+        </Button>
       </form>
 
       {said ? <p className="text-xs text-[var(--color-text-muted)]">{said}</p> : null}
@@ -299,4 +348,46 @@ export function NowPanel({
       <VoiceControl onTranscript={speak} speakThis={said} disabled={busy} />
     </section>
   );
+}
+
+function BriefingSection({ title, lines }: { title: string; lines: MorningBriefing['overnight'] }) {
+  if (lines.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <p className="text-xs font-semibold tracking-wide text-[var(--color-text-subtle)] uppercase">
+        {title}
+      </p>
+      <ul className="flex flex-col gap-0.5">
+        {lines.map((line, index) => (
+          <li key={`${title}:${index}`} className="text-sm">
+            {line.href ? (
+              <Link href={line.href} className="hover:underline">
+                {line.text}
+              </Link>
+            ) : (
+              line.text
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The briefing as one paragraph, for reading aloud.
+ *
+ * Deliberately shorter than what is on screen. A list is easy to skim and painful to listen to, so
+ * the spoken version is the headline, the count of things waiting, and the one thing Jarvis will
+ * do next — the rest is there to be read.
+ */
+function spokenBriefing(briefing: MorningBriefing): string {
+  const waiting = briefing.needsYou.length;
+  return [
+    `${briefing.greeting}. ${briefing.headline}`,
+    waiting === 0
+      ? 'Nothing is waiting for you.'
+      : `${waiting} thing${waiting === 1 ? '' : 's'} waiting for you.`,
+    briefing.next,
+  ].join(' ');
 }
