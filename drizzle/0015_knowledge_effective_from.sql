@@ -1,0 +1,1 @@
+ALTER TABLE "knowledge_items" ADD COLUMN "effective_from" timestamp with time zone;

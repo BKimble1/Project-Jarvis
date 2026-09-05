@@ -1,0 +1,352 @@
+import { isContentDestroyed } from '@/domain/knowledge';
+import { json, ownerRoute } from '@/server/http/handler';
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * Full data export.
+ *
+ * Contains projects, sources, sub-entities, evidence, snapshots, activity and — since Prompt 2 —
+ * missions, plans, approvals, runs, events, verifications and artifacts. Since Prompt 3 it also
+ * contains the factory's own record: task graphs, tasks, reviews, findings, receipts, playbooks,
+ * CI dispatch requests, release approvals, app profiles and paired displays.
+ *
+ * What it deliberately does **not** contain is every class of credential §27 names: agent runtime
+ * credentials, worker secrets, GitHub credentials, CI-controller credentials, Apple credentials,
+ * session secrets, display tokens, raw environment values, credential-helper configuration and
+ * internal signed commands.
+ *
+ * Almost none of that is achieved by filtering here, and that is the point. A worker's
+ * `token_hash` and a display's `token_hash` are not fields on `JarvisWorker` or `DisplayDevice` at
+ * all, so they cannot reach this file even by accident; the CI controller's credential lives in
+ * `AppConfig` and never in a row; an app profile stores the *name* of a GitHub Actions secret and
+ * refuses at its schema to store a value. The one thing this route does by hand is swap a run's
+ * `workerId` for the worker's name, so a run's history stays readable without exporting an
+ * identity that pairs with a credential.
+ *
+ * `assertNoCredentials` is the backstop: a cheap structural scan that fails the export rather
+ * than shipping a payload containing something that looks like a key. It exists because the
+ * guarantee above is a property of a dozen type definitions, and a future field added to one of
+ * them should break the export rather than quietly widen it.
+ */
+
+/** Column names that would mean a credential column had been added to an exported table. */
+const FORBIDDEN_EXPORT_KEYS = [
+  'tokenhash',
+  'secrethash',
+  'accesstoken',
+  'refreshtoken',
+  'clientsecret',
+  'sessionsecret',
+  'credentialtoken',
+  'privatekey',
+  'apikey',
+  'password',
+  'authorization',
+  'installationtoken',
+] as const;
+
+/**
+ * Values that are a credential whatever they are called.
+ *
+ * Deliberately only the shapes that are unambiguous — a PEM header, a provider's own token
+ * prefix. The "long base64 blob" heuristic that belongs in an input validator is left out here:
+ * an artifact body may legitimately contain one, and an export that refuses to serve because a
+ * research report quoted a hash would be a worse failure than the one it prevents.
+ */
+const CREDENTIAL_VALUES = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bghp_[A-Za-z0-9]{20,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{30,}\b/,
+  /\bsk-ant-[A-Za-z0-9-]{20,}\b/,
+  /\bjarvisw_[0-9a-f-]{36}\.[A-Za-z0-9_-]{20,}/,
+  /\bjarvisd_[0-9a-f-]{36}\.[A-Za-z0-9_-]{20,}/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+];
+
+/**
+ * Blobs whose *keys* come from outside Jarvis.
+ *
+ * An event detail, a workflow input map and the repository-facts bag are free-form: an agent or a
+ * repository chose those key names, and one of them being called `apiKey` says nothing about
+ * whether a secret is present — the value is redacted on the way in. So inside these, values are
+ * checked and key names are not. Everywhere else, both are.
+ */
+const FREE_FORM_KEYS = new Set(['detail', 'inputs', 'repositoryFacts', 'metadata', 'facts']);
+
+/**
+ * Refuse to serve an export that contains a credential.
+ *
+ * A whole-payload scan rather than a per-table allow-list, because the failure it guards against
+ * is a field nobody remembered to think about — and only a scan catches that one. It is a
+ * backstop, not the mechanism: no credential reaches this file in the first place, because none
+ * of the exported types has a field that could carry one.
+ */
+function assertNoCredentials(payload: unknown, path = 'export', freeForm = false): void {
+  if (typeof payload === 'string') {
+    for (const pattern of CREDENTIAL_VALUES) {
+      if (pattern.test(payload)) {
+        throw new Error(`The export would have contained a credential at ${path}.`);
+      }
+    }
+    return;
+  }
+  if (payload === null || typeof payload !== 'object') return;
+  if (Array.isArray(payload)) {
+    payload.forEach((entry, index) => assertNoCredentials(entry, `${path}[${index}]`, freeForm));
+    return;
+  }
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    const flattened = key.toLowerCase().replace(/[^a-z]/g, '');
+    if (
+      !freeForm &&
+      FORBIDDEN_EXPORT_KEYS.includes(flattened as (typeof FORBIDDEN_EXPORT_KEYS)[number])
+    ) {
+      throw new Error(`The export would have contained ${path}.${key}, which is a credential.`);
+    }
+    assertNoCredentials(value, `${path}.${key}`, freeForm || FREE_FORM_KEYS.has(key));
+  }
+}
+
+/**
+ * Refuse to serve an export containing something that was forgotten.
+ *
+ * Forgetting already destroys the statement in the row, so this cannot normally trigger — which
+ * is exactly why it is worth having. It is the assertion that fails if some later change starts
+ * exporting from a path that predates the destruction: a cached projection, a soft-deleted copy,
+ * an archive table added for convenience. "Removed from normal exports" is a property that has to
+ * keep being true as the export grows, and a check is the only form of that promise that does.
+ */
+function assertNothingForgotten(memories: readonly { readonly status: string }[]): void {
+  const leaked = memories.filter((memory) => isContentDestroyed(memory.status as never));
+  if (leaked.length > 0) {
+    throw new Error(
+      `The export would have contained ${leaked.length} forgotten note(s). Forgotten content is not exported.`,
+    );
+  }
+}
+
+export const GET = ownerRoute(async ({ services, session }) => {
+  const projects = await services.projects.listAllForAssessment(true);
+  const ids = projects.map((project) => project.id);
+  const aggregates = await services.projects.aggregateMany(ids);
+
+  const workerNames = new Map(
+    (await services.workerRepo.list()).map((worker) => [worker.id, worker.name] as const),
+  );
+
+  const missionPage = await services.missionRepo.list({ limit: 200 });
+  const missions = await Promise.all(
+    missionPage.items.map(async (mission) => {
+      const [
+        plans,
+        approvals,
+        clarifications,
+        runs,
+        events,
+        permissionRequests,
+        verifications,
+        artifacts,
+      ] = await Promise.all([
+        services.plans.list(mission.id),
+        services.approvals.list(mission.id),
+        services.clarifications.list(mission.id),
+        services.missionRuns.list(mission.id),
+        services.missionEvents.list(mission.id, { limit: 500 }),
+        services.permissions.list(mission.id),
+        services.verifications.list(mission.id),
+        services.artifacts.list(mission.id),
+      ]);
+      const graphs = await services.graphs.list(mission.id);
+      const tasks = (
+        await Promise.all(graphs.map((graph) => services.tasks.listByGraph(graph.id)))
+      ).flat();
+      const [reviews, findings, receipt] = await Promise.all([
+        services.reviews.listByMission(mission.id),
+        services.reviews.listFindings(mission.id),
+        services.receipts.findByMission(mission.id),
+      ]);
+
+      return {
+        mission,
+        plans,
+        approvals,
+        clarifications,
+        /* Worker identity is exported as a name, never as an id-plus-credential pair. */
+        runs: runs.map(({ workerId, ...run }) => ({
+          ...run,
+          workerName: workerNames.get(workerId) ?? 'removed worker',
+        })),
+        events,
+        permissionRequests,
+        verifications,
+        artifacts,
+        graphs,
+        tasks,
+        reviews,
+        findings,
+        receipt,
+      };
+    }),
+  );
+
+  const [playbooks, dispatches, displays, appProfiles] = await Promise.all([
+    services.playbookService.list(),
+    services.ciDispatches.listRecent(200),
+    services.displays.list(),
+    services.appProfiles.list(),
+  ]);
+
+  /*
+   * Knowledge, minus what was deliberately removed.
+   *
+   * Forgotten memories are excluded by status rather than by hoping their content is empty, and
+   * deleted sources are excluded by the repository's own default. What replaces them is the
+   * deletion receipts: a record that content was removed, when, and from where — which is the
+   * useful half of an audit trail without being a copy of the thing that was deleted.
+   *
+   * Source rows carry no `bodyText`, because `toKnowledgeSource` has no such field. A document's
+   * full text cannot reach this payload even if a future caller wanted it to.
+   */
+  const [allMemories, knowledgeSources, openConflicts, deletionReceipts] = await Promise.all([
+    services.knowledge.list({ limit: 5000 }),
+    services.knowledgeSources.list({ limit: 2000 }),
+    services.conflicts.list(),
+    services.deletionReceipts.list(500),
+  ]);
+  const memories = allMemories.filter((memory) => !isContentDestroyed(memory.status));
+  assertNothingForgotten(memories);
+
+  const knowledgeRevisions = (
+    await Promise.all(
+      knowledgeSources.map(async (source) => {
+        const revisions = await services.revisions.list(source.id, 50);
+        return revisions.map((revision) => ({
+          id: revision.id,
+          sourceId: revision.sourceId,
+          number: revision.revisionNumber,
+          state: revision.state,
+          isActive: revision.isActive,
+          contentHash: revision.contentHash,
+          parser: `${revision.parserName}@${revision.parserVersion}`,
+          chunker: revision.chunkerVersion,
+          charCount: revision.charCount,
+          chunkCount: revision.chunkCount,
+          provenance: revision.provenance,
+          fetchedAt: revision.fetchedAt,
+          activatedAt: revision.activatedAt,
+        }));
+      }),
+    )
+  ).flat();
+  const releaseApprovals = (
+    await Promise.all(ids.map((projectId) => services.releaseApprovals.listForProject(projectId)))
+  ).flat();
+
+  /*
+   * Ask Jarvis conversations: the questions, and what Jarvis answered.
+   *
+   * The evidence snapshots are deliberately **not** here. They are frozen copies of documents and
+   * notes, and those are already exported once under `knowledge` — under the rules that apply
+   * there, where a deleted source is absent and a forgotten memory is absent. Exporting the
+   * snapshots too would be a second copy governed by nothing, and it would be the copy through
+   * which deleted material came back. What is exported instead is how many pieces of evidence an
+   * answer stood on, which is the checkable part.
+   *
+   * The claims are included because they are the answer itself — what Jarvis actually told the
+   * owner about their own work — and an export that omitted them would not be an export.
+   */
+  const ownerId = session.githubLogin ?? session.id;
+  const conversationRows = await services.answerService.listConversations(ownerId);
+  const conversations = await Promise.all(
+    conversationRows.map(async (conversation) => {
+      const runs = await services.answerRuns.listForConversation(conversation.id, ownerId, 200);
+      const answers = await Promise.all(
+        runs.map(async (run) => {
+          const stored = await services.answers.findById(run.id);
+          return {
+            id: run.id,
+            question: run.question,
+            scope: run.scope,
+            projectIds: run.projectIds,
+            state: run.state,
+            mode: run.mode,
+            method: run.method,
+            headline: run.headline,
+            claims: stored?.claims ?? [],
+            limitations: run.limitations,
+            rejectionRule: run.rejectionRule,
+            retrievalMode: run.retrievalMode,
+            provider: run.provider,
+            model: run.model,
+            /* Numbers, and null where the provider reported nothing. Never zero for missing. */
+            inputTokens: run.inputTokens,
+            outputTokens: run.outputTokens,
+            cachedInputTokens: run.cachedInputTokens,
+            costUsd: run.costUsd,
+            latencyMs: run.latencyMs,
+            evidenceCount: (await services.answerRuns.listEvidence(run.id)).length,
+            askedAt: run.createdAt,
+          };
+        }),
+      );
+      return {
+        id: conversation.id,
+        title: conversation.title,
+        scope: conversation.scope,
+        projectIds: conversation.projectIds,
+        answerCount: conversation.answerCount,
+        createdAt: conversation.createdAt,
+        lastAnsweredAt: conversation.lastAnsweredAt,
+        answers,
+      };
+    }),
+  );
+
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    version: 4,
+    /*
+     * The controller's *shape*, from `describe()`, which reports whether a credential is
+     * configured and never what it is. There is no other accessor that could return one.
+     */
+    ciController: services.ci.describe(),
+    playbooks,
+    ciDispatches: dispatches,
+    releaseApprovals,
+    /* `DisplayDevice` carries a token prefix for recognition, never a token or its hash. */
+    displays,
+    appProfiles,
+    knowledge: {
+      memories,
+      sources: knowledgeSources,
+      revisions: knowledgeRevisions,
+      conflicts: openConflicts,
+      /* What was removed, and from where. Never what it said. */
+      deletionReceipts,
+      forgottenCount: allMemories.length - memories.length,
+    },
+    conversations,
+    projects: await Promise.all(
+      [...aggregates.values()].map(async (aggregate) => ({
+        ...aggregate,
+        evidence: await services.evidence.list({ projectId: aggregate.project.id, limit: 1000 }),
+        snapshots: await services.snapshots.list(aggregate.project.id, 50),
+        syncRuns: await services.runs.listByProject(aggregate.project.id, 50),
+        activity: await services.activity.listByProject(aggregate.project.id, 200),
+      })),
+    ),
+    missions,
+  };
+
+  assertNoCredentials(payload);
+
+  await services.activity.record({
+    kind: 'data_exported',
+    summary: `Exported ${projects.length} project${projects.length === 1 ? '' : 's'}, ${missions.length} mission${missions.length === 1 ? '' : 's'}, ${playbooks.length} playbook${playbooks.length === 1 ? '' : 's'} and ${memories.length} note${memories.length === 1 ? '' : 's'}.`,
+  });
+
+  return json(payload, {
+    headers: { 'content-disposition': `attachment; filename="jarvis-export.json"` },
+  });
+});

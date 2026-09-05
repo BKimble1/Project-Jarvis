@@ -1,0 +1,1037 @@
+import { randomUUID } from 'node:crypto';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/domain/errors';
+import type { Mission, MissionFailureCode, MissionState, MissionType } from '@/domain/mission';
+import { isReadOnlyMissionType } from '@/domain/mission';
+import type { QualificationLevel } from '@/domain/qualification';
+import {
+  missionUnattendedCapabilities,
+  unattendedMissionTypes,
+  unattendedVerdict,
+} from '@/domain/unattended';
+import type { MissionRun } from '@/domain/mission-run';
+import type {
+  MissionAssignment,
+  PendingCommand,
+  WorkerCapacityInput,
+  WorkerClaimInput,
+  WorkerEventBatchInput,
+  WorkerHeartbeatInput,
+  WorkerPlanSubmissionInput,
+  WorkerPollInput,
+  WorkerPollResponse,
+  WorkerRunStateInput,
+} from '@/domain/worker-protocol';
+import { WORKER_VERSION, isCompatibleWorkerVersion } from '@/domain/worker-protocol';
+import { RATE_WINDOWS, type RateWindow } from '@/domain/claude-capacity';
+import type { WorkerCapacityReading } from '@/server/repositories/mission-types';
+import { classifyMissionRisk } from '@/domain/mission-risk';
+import { usageOutcomeFor, usageRowForRun } from './usage-ledger';
+import { assertMissionBranchName, buildBranchName } from '@/domain/workspace-safety';
+import type { WorkerEnrolment } from '@/domain/worker';
+import type {
+  ArtifactInput,
+  PermissionRequestInput,
+  VerificationInput,
+} from '@/domain/mission-run';
+import type {
+  ApprovalRepository,
+  ArtifactRepository,
+  ClarificationRepository,
+  CommandRepository,
+  EventRepository,
+  MissionRepository,
+  PermissionRepository,
+  PlanRepository,
+  RunRepository,
+  VerificationRepository,
+  WorkerRepository,
+} from '@/server/repositories/mission-types';
+import type {
+  EvidenceRepository,
+  ProjectRepository,
+  SourceRepository,
+} from '@/server/repositories/types';
+import type { TaskRepository } from '../repositories/factory-types';
+import type { UsageRepository } from '../repositories/accounting-types';
+import { resolveMissionRepository } from './repository-resolution';
+import { issueWorkerToken } from '@/server/workers/auth';
+import type { MissionService } from './mission-service';
+
+/**
+ * The worker-facing half of Mission Control.
+ *
+ * Everything a worker sends passes through here, and the guiding rule is the same in every
+ * method: **the worker's claims about the world are never taken at face value.** It says "run
+ * <id>"; the control plane looks that run up, checks it belongs to this worker, checks it is the
+ * mission's active run, and only then acts. A worker never tells Jarvis which project a mission
+ * belongs to — Jarvis reads that from its own table when it builds the assignment.
+ */
+
+export interface WorkerServiceDeps {
+  readonly missions: MissionRepository;
+  readonly plans: PlanRepository;
+  readonly approvals: ApprovalRepository;
+  readonly clarifications: ClarificationRepository;
+  readonly runs: RunRepository;
+  readonly events: EventRepository;
+  readonly commands: CommandRepository;
+  readonly permissions: PermissionRepository;
+  readonly verifications: VerificationRepository;
+  readonly artifacts: ArtifactRepository;
+  readonly workers: WorkerRepository;
+  /** The spend ledger. Written from here because this is where a run reports what it cost. */
+  readonly usage: UsageRepository;
+  /** Present since Prompt 3, so a task run can be authorised against its own task. */
+  readonly tasks?: TaskRepository;
+  readonly projects: ProjectRepository;
+  readonly sources: SourceRepository;
+  readonly evidence: EvidenceRepository;
+  readonly missionService: MissionService;
+  readonly concurrencyLimit: number;
+  readonly allowWebResearch: boolean;
+  /**
+   * The qualification rung in force right now.
+   *
+   * Required rather than optional, and asked at claim time rather than at construction. Optional
+   * would mean a caller that forgot it got no gate and no error, which is how `assertActivationAllowed`
+   * spent Phase 4 with one call site. Asked late because qualification changes while the process
+   * runs — a deployment can be demoted mid-shift by an assumption change, and a level cached at
+   * start-up would keep handing out work it is no longer entitled to.
+   */
+  readonly currentLevel: () => Promise<QualificationLevel>;
+  readonly clock?: () => Date;
+}
+
+/** How often the worker should come back. Faster while it holds work, slower while idle. */
+const POLL_INTERVAL_BUSY_MS = 1000;
+const POLL_INTERVAL_IDLE_MS = 3000;
+
+export class WorkerService {
+  private readonly clock: () => Date;
+
+  constructor(private readonly deps: WorkerServiceDeps) {
+    this.clock = deps.clock ?? (() => new Date());
+  }
+
+  /* ---------------------------------------------------------------- enrolment */
+
+  /**
+   * Enrol a worker and return its secret — the only time that value exists outside the worker.
+   *
+   * The id is generated here rather than by the database, because the id is *part of the token*
+   * and the token's hash has to be in the row the moment the row exists. Doing it the other way —
+   * insert a placeholder, mint the token, update — writes a row whose `token_hash` is a shared
+   * constant, which collides on the unique index the moment two workers are enrolled at once and,
+   * in between, leaves a half-enrolled worker in the table.
+   */
+  async enrol(name: string, maxConcurrency: number): Promise<WorkerEnrolment> {
+    const id = randomUUID();
+    const { token, hash, prefix } = issueWorkerToken(id);
+    const worker = await this.deps.workers.enrol({
+      id,
+      name,
+      tokenHash: hash,
+      tokenPrefix: prefix,
+      maxConcurrency,
+    });
+    return { worker, token };
+  }
+
+  async rotate(workerId: string): Promise<WorkerEnrolment> {
+    const existing = await this.deps.workers.findById(workerId);
+    if (!existing) throw new NotFoundError('Worker');
+    const { token, hash, prefix } = issueWorkerToken(workerId);
+    const worker = await this.deps.workers.rotate(workerId, hash, prefix);
+    return { worker, token };
+  }
+
+  async revoke(workerId: string, reason: string): Promise<void> {
+    const worker = await this.deps.workers.revoke(workerId, reason);
+    /*
+     * Revoking does not fail whatever the worker was doing. The mission stays where it is with
+     * its workspace intact, and the owner decides whether to retry it elsewhere.
+     */
+    if (worker.currentMissionId) {
+      await this.deps.events.record(worker.currentMissionId, {
+        type: 'warning',
+        actor: 'owner',
+        level: 'warning',
+        summary: `The worker holding this mission (${worker.name}) was revoked. Its work is preserved.`,
+      });
+    }
+  }
+
+  /* --------------------------------------------------------------------- poll */
+
+  /**
+   * One round trip: heartbeat, fetch commands, and learn about any assignment.
+   *
+   * Deliberately combined. A worker that heartbeats and polls separately can be healthy in one
+   * call and stale in the other, and the mission screen would show two different truths.
+   */
+  /**
+   * Record a heartbeat without asking for work.
+   *
+   * The task claim endpoint needs the heartbeat side effect but not the mission assignment, and
+   * duplicating `applyHeartbeat`'s call site is how the two drift apart.
+   */
+  async heartbeat(workerId: string, input: WorkerPollInput['heartbeat']): Promise<void> {
+    await this.applyHeartbeat(workerId, input, this.clock());
+  }
+
+  /**
+   * Refuse *work* to a worker whose build disagrees with this control plane.
+   *
+   * Called before either kind of claim, and deliberately not before a report. A worker on the
+   * wrong major version still needs to say how the mission it is already holding ended — cutting
+   * that off would strand a live run to protect a claim that has not happened yet.
+   *
+   * The refusal is a 403, which the worker treats as fatal: it logs this message and exits,
+   * rather than looping against a control plane that will never give it anything. Until now the
+   * mismatch was only *observed*, by a qualification check, while the incompatible worker went on
+   * claiming missions.
+   */
+  assertCompatibleBuild(version: string | null | undefined): void {
+    if (isCompatibleWorkerVersion(version)) return;
+    throw new ForbiddenError(
+      `This worker reports version ${version?.trim() || 'none'}, and this Jarvis expects ${WORKER_VERSION}. ` +
+        'Update the worker to the same release as the application, then start it again. No work was assigned.',
+    );
+  }
+
+  async poll(workerId: string, input: WorkerPollInput): Promise<WorkerPollResponse> {
+    const now = this.clock();
+    await this.applyHeartbeat(workerId, input.heartbeat, now);
+
+    const worker = await this.deps.workers.findById(workerId);
+    if (!worker) throw new NotFoundError('Worker');
+
+    if (worker.revokedAt) {
+      return {
+        workerId,
+        serverTime: now.toISOString(),
+        assignment: null,
+        commands: [],
+        directive: 'revoked',
+        pollIntervalMs: POLL_INTERVAL_IDLE_MS,
+      };
+    }
+
+    /* Acknowledge whatever the worker says it has seen, so it is not delivered forever. */
+    if (input.acknowledgedCommandIds.length > 0) {
+      await this.deps.commands.markDelivered(input.acknowledgedCommandIds, now);
+    }
+
+    const held = await this.currentAssignment(workerId);
+    const assignment = held ? await this.buildAssignment(held.mission, held.run) : null;
+    const commands = held ? await this.pendingCommands(held.mission.id) : [];
+
+    return {
+      workerId,
+      serverTime: now.toISOString(),
+      assignment,
+      commands,
+      directive: input.heartbeat.status === 'draining' ? 'drain' : 'continue',
+      pollIntervalMs: assignment ? POLL_INTERVAL_BUSY_MS : POLL_INTERVAL_IDLE_MS,
+    };
+  }
+
+  /* -------------------------------------------------------------------- claim */
+
+  /**
+   * Take the next runnable mission.
+   *
+   * Two paths converge here: a mission `queued` for execution, and a mission `inspecting` that
+   * needs a read-only planning run. Both end with the worker holding exactly one run.
+   */
+  async claim(workerId: string, input: WorkerClaimInput): Promise<MissionAssignment | null> {
+    const now = this.clock();
+    await this.applyHeartbeat(workerId, input.heartbeat, now);
+
+    const worker = await this.deps.workers.findById(workerId);
+    if (!worker) throw new NotFoundError('Worker');
+    if (worker.revokedAt) throw new ForbiddenError('This worker has been revoked.');
+    this.assertCompatibleBuild(input.heartbeat.version);
+
+    /* A worker already holding a run gets that run back rather than a second one. */
+    const held = await this.currentAssignment(workerId);
+    if (held) return this.buildAssignment(held.mission, held.run);
+
+    if (input.accepts.includes('inspection')) {
+      const inspection = await this.claimInspection(workerId, now);
+      if (inspection) return inspection;
+    }
+    if (!input.accepts.includes('execution') && !input.accepts.includes('research')) return null;
+
+    /*
+     * The unattended gate, first as a filter and then as an assertion.
+     *
+     * The filter is what makes an unqualified deployment behave sanely: an autonomous mission it
+     * may not run is never handed out, so no run is started and nothing has to be unwound. The
+     * assertion afterwards is what makes the gate *true* rather than merely likely — the filter
+     * lives in SQL and could drift from the mapping, and this is the line past which a real model
+     * session begins.
+     */
+    const level = await this.deps.currentLevel();
+    const claimed = await this.deps.missions.claimNext({
+      workerId,
+      kinds: input.accepts,
+      concurrencyLimit: this.deps.concurrencyLimit,
+      now,
+      unattendedMissionTypes: unattendedMissionTypes(level),
+    });
+    if (!claimed) return null;
+
+    /*
+     * The exact gate, after the claim, and the unwind that has to come with it.
+     *
+     * Reaching this is a bug — the filter inside the claim should have skipped the row — but a
+     * gate that only holds while an adjacent SQL clause is correct is not a gate. Getting here
+     * means the two have drifted, and the mission must go back to the queue rather than sit in
+     * `claimed` with a run nobody is executing.
+     *
+     * It returns null rather than throwing. A 403 would kill the worker's poll loop over a
+     * control-plane defect the worker has no part in; the refused mission's own timeline is where
+     * this belongs, and it is written there.
+     */
+    if (claimed.mission.autonomous) {
+      const verdict = unattendedVerdict(missionUnattendedCapabilities(claimed.mission.type), level);
+      if (!verdict.allowed) {
+        await this.releaseClaim(claimed.mission, claimed.run.id, now, {
+          failureCode: 'policy_violation',
+          failureMessage: verdict.reason ?? 'Not qualified to run unattended.',
+        });
+        return null;
+      }
+    }
+
+    /* Re-validate the approval after claiming: the guard inside the SQL is necessary, not sufficient. */
+    const approval = await this.deps.approvals.activeFor(claimed.mission.id);
+    if (!approval || approval.planVersion !== claimed.mission.currentPlanVersion) {
+      await this.releaseClaim(claimed.mission, claimed.run.id, now, {
+        failureCode: 'plan_superseded',
+        failureMessage: 'The approved plan version changed between queueing and claiming.',
+        returnTo: 'awaiting_plan_approval',
+      });
+      return null;
+    }
+
+    await this.deps.events.append(claimed.mission.id, claimed.run.id, [
+      {
+        seq: 0,
+        type: 'run_started',
+        level: 'notice',
+        actor: 'worker',
+        summary: `Worker ${worker.name} claimed this mission (attempt ${claimed.run.attempt}).`,
+        detail: { runId: claimed.run.id, attempt: claimed.run.attempt },
+      },
+    ]);
+
+    return this.buildAssignment(claimed.mission, claimed.run);
+  }
+
+  /**
+   * Undo a claim that should not have happened.
+   *
+   * Both post-claim checks land here, because the unwind is the part that is easy to get subtly
+   * wrong twice: the run has to be failed with a reason, the mission has to let go of it, and the
+   * mission has to end up somewhere a later claim can find it. A mission left in `claimed` with no
+   * worker is invisible to every queue and to every ceiling, and stays that way until somebody
+   * notices it by hand.
+   *
+   * The event is written last and deliberately: it is the only place an owner can see that a
+   * mission was picked up and put down again, which otherwise looks exactly like nothing having
+   * happened at all.
+   */
+  private async releaseClaim(
+    mission: Mission,
+    runId: string,
+    now: Date,
+    input: {
+      readonly failureCode: MissionFailureCode;
+      readonly failureMessage: string;
+      /** Where it should end up after being released. Reached *through* `queued`, see below. */
+      readonly returnTo?: MissionState;
+    },
+  ): Promise<void> {
+    await this.deps.runs.patch(runId, {
+      state: 'failed',
+      finishedAt: now,
+      failureCode: input.failureCode,
+      failureMessage: input.failureMessage,
+    });
+    await this.deps.missions.patch(mission.id, { activeRunId: null, claimedByWorkerId: null });
+
+    /*
+     * Out through `queued`, always, and then on if it needs to go further.
+     *
+     * `claimed → queued` is the only exit from `claimed` the state machine gives the system, and
+     * the previous version of this unwind went straight for `awaiting_plan_approval` — which is
+     * not in the table, so `tryMove` swallowed the conflict and left the mission sitting in
+     * `claimed` with no run and no worker. A mission in that state is invisible to every queue and
+     * every ceiling, and stays there until somebody finds it by hand.
+     */
+    const released = await this.deps.missionService.tryMove(mission, 'queued', 'system', {});
+    if (input.returnTo && input.returnTo !== 'queued') {
+      await this.deps.missionService.tryMove(released, input.returnTo, 'system', {});
+    }
+
+    await this.deps.events.record(mission.id, {
+      type: 'policy_refusal',
+      actor: 'system',
+      level: 'warning',
+      summary: input.failureMessage,
+      detail: { runId, failureCode: input.failureCode },
+    });
+  }
+
+  /** Planning runs bypass the execution queue: they change nothing, so they need no approval. */
+  private async claimInspection(workerId: string, now: Date): Promise<MissionAssignment | null> {
+    const open = await this.deps.missions.listOpen();
+    /*
+     * An inspection changes nothing, but it still runs a real model against a real repository, so
+     * an autonomous mission's inspection is gated on `model_task_readonly` like any other model
+     * session. The mission types are pre-computed once rather than per candidate: the list is
+     * short, and doing it inside the predicate would ask the ladder the same question ten times.
+     */
+    const level = await this.deps.currentLevel();
+    const claimable = new Set<MissionType>(unattendedMissionTypes(level));
+    const candidate = open.find(
+      (mission) =>
+        mission.state === 'inspecting' &&
+        mission.activeRunId === null &&
+        mission.projectId &&
+        (!mission.autonomous || claimable.has(mission.type)),
+    );
+    if (!candidate) return null;
+
+    const attempt = await this.deps.runs.nextAttempt(candidate.id);
+    const run = await this.deps.runs.start({
+      missionId: candidate.id,
+      workerId,
+      attempt,
+      kind: 'inspection',
+      planVersion: null,
+      startedAt: now,
+    });
+    const mission = await this.deps.missions.patch(candidate.id, {
+      activeRunId: run.id,
+      claimedByWorkerId: workerId,
+      lastActivityAt: now,
+    });
+    await this.deps.events.append(mission.id, run.id, [
+      {
+        seq: 0,
+        type: 'run_started',
+        level: 'notice',
+        actor: 'worker',
+        summary: 'Read-only inspection started. Nothing will be changed during this run.',
+        detail: { runId: run.id, kind: 'inspection' },
+      },
+    ]);
+    return this.buildAssignment(mission, run);
+  }
+
+  /* --------------------------------------------------------------- reporting */
+
+  /**
+   * Validate that a worker may act on a run.
+   *
+   * This is the single choke point every worker write goes through, and it enforces three
+   * separate things: the run exists, it belongs to *this* worker, and it is still the current run
+   * of whatever it is a run *of*. The third check is what stops a worker resurrected from an old
+   * attempt writing over a newer one.
+   *
+   * "Whatever it is a run of" is the part Prompt 3 changed. A mission-level run is checked
+   * against `mission.activeRunId`, exactly as before. A *task* run is checked against its own
+   * task's `activeRunId` — because a mission running six task agents has no single active run,
+   * and holding task runs to the mission's would have meant no task could ever store an
+   * artifact or a verification. The guarantee is unchanged; only its granularity is.
+   */
+  async authoriseRun(
+    workerId: string,
+    runId: string,
+  ): Promise<{ mission: Mission; run: MissionRun }> {
+    const run = await this.deps.runs.findById(runId);
+    if (!run) throw new NotFoundError('Run');
+    if (run.workerId !== workerId) {
+      throw new ForbiddenError('That run belongs to a different worker.');
+    }
+    const mission = await this.deps.missions.findById(run.missionId);
+    if (!mission) throw new NotFoundError('Mission');
+
+    if (run.taskId) {
+      const task = this.deps.tasks ? await this.deps.tasks.findById(run.taskId) : null;
+      if (!task) throw new NotFoundError('Task');
+      if (task.activeRunId !== run.id) {
+        throw new ConflictError(
+          'That run is no longer this task’s active run. Stop reporting against it.',
+          { activeRunId: task.activeRunId },
+        );
+      }
+      return { mission, run };
+    }
+
+    if (mission.activeRunId !== run.id) {
+      throw new ConflictError(
+        'That run is no longer this mission’s active run. Stop reporting against it.',
+        { activeRunId: mission.activeRunId },
+      );
+    }
+    return { mission, run };
+  }
+
+  async appendEvents(
+    workerId: string,
+    input: WorkerEventBatchInput,
+  ): Promise<{ accepted: number }> {
+    const { mission, run } = await this.authoriseRun(workerId, input.runId);
+    /*
+     * A stopped or finished mission stops accepting ordinary execution events. It still accepts
+     * the errors and run_finished notes that explain *why* it stopped, so the record is complete.
+     */
+    const terminal =
+      mission.state === 'stopped' || mission.state === 'completed' || mission.state === 'cancelled';
+    const allowed = terminal
+      ? input.events.filter((event) =>
+          ['run_finished', 'error', 'warning', 'info'].includes(event.type),
+        )
+      : input.events;
+
+    if (allowed.length === 0) {
+      throw new ConflictError(
+        `This mission is ${mission.state}; it no longer accepts execution events.`,
+      );
+    }
+    const written = await this.deps.events.append(mission.id, run.id, allowed);
+    await this.deps.missions.patch(mission.id, { lastActivityAt: this.clock() });
+    return { accepted: written.length };
+  }
+
+  /**
+   * Apply a worker's report of where its run has got to.
+   *
+   * The worker proposes a mission state; the state machine decides whether that move exists and
+   * whether a worker is allowed to make it. `completed` in particular is only reachable from the
+   * states that genuinely precede finishing, so a crashed worker cannot report success.
+   *
+   * A report with no `missionState` is metadata only — a session id, a token count. It updates
+   * the run row and the activity clock and deliberately leaves the mission state alone.
+   */
+  async reportRunState(workerId: string, input: WorkerRunStateInput): Promise<Mission> {
+    const { mission, run } = await this.authoriseRun(workerId, input.runId);
+    const now = this.clock();
+
+    if (input.branchName) assertMissionBranchName(input.branchName);
+
+    await this.deps.runs.patch(run.id, {
+      currentAction: input.currentAction ?? null,
+      ...(input.agentSessionId !== undefined
+        ? { agentSessionId: input.agentSessionId ?? null }
+        : {}),
+      ...(input.runtimeName !== undefined ? { runtimeName: input.runtimeName ?? null } : {}),
+      ...(input.runtimeVersion !== undefined
+        ? { runtimeVersion: input.runtimeVersion ?? null }
+        : {}),
+      ...(input.workspacePath !== undefined ? { workspacePath: input.workspacePath ?? null } : {}),
+      ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch ?? null } : {}),
+      ...(input.baseSha !== undefined ? { baseSha: input.baseSha ?? null } : {}),
+      ...(input.branchName !== undefined ? { branchName: input.branchName ?? null } : {}),
+      ...(input.headSha !== undefined ? { headSha: input.headSha ?? null } : {}),
+      ...(input.pullRequestUrl !== undefined
+        ? { pullRequestUrl: input.pullRequestUrl ?? null }
+        : {}),
+      ...(input.pullRequestNumber !== undefined
+        ? { pullRequestNumber: input.pullRequestNumber ?? null }
+        : {}),
+      ...(input.filesChanged ? { filesChanged: input.filesChanged } : {}),
+      ...(input.usage !== undefined
+        ? {
+            usage: input.usage
+              ? {
+                  inputTokens: input.usage.inputTokens ?? null,
+                  outputTokens: input.usage.outputTokens ?? null,
+                  cacheReadTokens: input.usage.cacheReadTokens ?? null,
+                  totalCostUsd: input.usage.totalCostUsd ?? null,
+                  turns: input.usage.turns ?? null,
+                  durationMs: input.usage.durationMs ?? null,
+                }
+              : null,
+          }
+        : {}),
+      ...(input.failureCode !== undefined ? { failureCode: input.failureCode ?? null } : {}),
+      ...(input.failureMessage !== undefined
+        ? { failureMessage: input.failureMessage ?? null }
+        : {}),
+      ...(input.workspacePreserved !== undefined && input.workspacePreserved !== null
+        ? { workspacePreserved: input.workspacePreserved }
+        : {}),
+      ...(input.missionState ? { state: runStateFor(input.missionState) } : {}),
+      lastEventAt: now,
+    });
+
+    const patch = {
+      lastActivityAt: now,
+      ...(input.branchName !== undefined ? { workingBranch: input.branchName ?? null } : {}),
+      ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch ?? null } : {}),
+      ...(input.baseSha !== undefined ? { baseSha: input.baseSha ?? null } : {}),
+      ...(input.pullRequestUrl !== undefined
+        ? { pullRequestUrl: input.pullRequestUrl ?? null }
+        : {}),
+      ...(input.pullRequestNumber !== undefined
+        ? { pullRequestNumber: input.pullRequestNumber ?? null }
+        : {}),
+      ...(input.completionSummary !== undefined
+        ? { completionSummary: input.completionSummary ?? null }
+        : {}),
+      ...(input.failureCode !== undefined ? { failureCode: input.failureCode ?? null } : {}),
+      ...(input.failureMessage !== undefined
+        ? { failureMessage: input.failureMessage ?? null }
+        : {}),
+    };
+
+    /*
+     * The ledger.
+     *
+     * Written on every report that carries usage rather than only on the last, because a run that
+     * dies without a final report still spent what it spent. `upsertForRun` replaces one row keyed
+     * on the run, so repeating the report cannot double-count — the worker sends the run's total
+     * so far, not the delta, and appending those would count the same tokens once per report.
+     *
+     * `costBasis` is `reported` only when the provider actually told us a number. An absent cost
+     * is recorded as unknown, never as zero: zero is a claim that something was free, and a budget
+     * computed from zeroes is a budget that does not hold.
+     */
+    if (input.usage) {
+      await this.deps.usage.upsertForRun(
+        usageRowForRun({
+          /*
+           * Derived from the run rather than from the task, because the task would cost a query on
+           * every report to distinguish a review from a repair — a distinction that changes a label
+           * and nothing else. An inspection is separated because it is genuinely a different kind
+           * of spending: read-only, and the one kind that runs before anybody approved anything.
+           */
+          kind: run.kind === 'inspection' ? 'inspection' : 'agent_task',
+          runId: run.id,
+          missionId: mission.id,
+          taskId: run.taskId ?? null,
+          projectId: mission.projectId,
+          workerId,
+          attempt: run.attempt ?? null,
+          usage: input.usage,
+          outcome: usageOutcomeFor({
+            terminal:
+              input.missionState === 'completed' || input.missionState === 'pull_request_ready',
+            failed: input.missionState === 'failed',
+            stopped: input.missionState === 'stopped',
+            paused: input.missionState === 'paused',
+          }),
+          failureCode: input.failureCode ?? null,
+          occurredAt: run.startedAt ? new Date(run.startedAt) : now,
+          capacity: await this.deps.workers.capacityObservationFor(workerId),
+        }),
+      );
+    }
+
+    if (!input.missionState) {
+      /* Metadata only: record the activity and leave the state machine untouched. */
+      return this.deps.missions.patch(mission.id, patch);
+    }
+
+    const finished =
+      input.missionState === 'completed' ||
+      input.missionState === 'failed' ||
+      input.missionState === 'stopped';
+
+    const moved = await this.deps.missionService.move(mission, input.missionState, 'worker', {
+      ...patch,
+      ...(finished ? { finishedAt: now, activeRunId: null } : {}),
+    });
+
+    if (finished) {
+      await this.deps.runs.patch(run.id, {
+        state: runStateFor(input.missionState),
+        finishedAt: now,
+      });
+      await this.deps.permissions.cancelForRun(run.id);
+    }
+    return moved;
+  }
+
+  /** A plan produced by a worker that actually read the repository. */
+  async submitPlan(
+    workerId: string,
+    missionId: string,
+    input: WorkerPlanSubmissionInput,
+  ): Promise<Mission> {
+    const mission = await this.deps.missions.findById(missionId);
+    if (!mission) throw new NotFoundError('Mission');
+    if (input.runId) await this.authoriseRun(workerId, input.runId);
+    else if (mission.claimedByWorkerId !== workerId) {
+      throw new ForbiddenError('This mission is not held by that worker.');
+    }
+
+    /*
+     * The worker's own risk opinion is advisory. The control plane re-classifies from the plan's
+     * text, so a plan that describes something prohibited is caught even if the worker said it
+     * was low risk.
+     */
+    const risk = classifyMissionRisk({
+      text: [input.content.summary, input.content.proposedOutcome, input.content.approach].join(
+        '\n',
+      ),
+      type: mission.type,
+    });
+    if (risk.level === 'prohibited') {
+      await this.deps.events.record(missionId, {
+        type: 'policy_refusal',
+        actor: 'system',
+        level: 'error',
+        summary: 'The submitted plan described a prohibited operation and was rejected.',
+        detail: { ruleIds: risk.ruleIds },
+      });
+      throw new ForbiddenError(risk.refusal ?? 'That plan describes something Jarvis will not do.');
+    }
+
+    const planning = await this.deps.missionService.tryMove(mission, 'planning', 'worker', {});
+    const stored = await this.deps.missionService.storePlan(
+      planning,
+      input.content,
+      'worker_inspection',
+      'verified',
+      input.runId ?? null,
+    );
+
+    /* An inspection run ends when its plan lands. */
+    if (input.runId) {
+      await this.deps.runs.patch(input.runId, { state: 'succeeded', finishedAt: this.clock() });
+      await this.deps.missions.patch(missionId, { activeRunId: null });
+    }
+    return stored;
+  }
+
+  async recordPermissionRequest(
+    workerId: string,
+    runId: string,
+    input: PermissionRequestInput,
+  ): Promise<{ id: string }> {
+    const { mission, run } = await this.authoriseRun(workerId, runId);
+    const request = await this.deps.permissions.create(mission.id, run.id, input);
+    await this.deps.events.record(mission.id, {
+      type: 'permission_requested',
+      actor: 'agent',
+      level: 'warning',
+      summary: `Permission needed: ${input.requestedAction}`,
+      detail: { requestKey: input.requestKey, risk: input.risk, kind: input.kind },
+    });
+    await this.deps.missionService.tryMove(
+      mission,
+      input.kind === 'clarification' ? 'waiting_for_input' : 'waiting_for_permission',
+      'worker',
+      {},
+    );
+    return { id: request.id };
+  }
+
+  async recordVerification(
+    workerId: string,
+    runId: string,
+    input: VerificationInput,
+  ): Promise<{ id: string }> {
+    const { mission, run } = await this.authoriseRun(workerId, runId);
+    const record = await this.deps.verifications.record(mission.id, run.id, input);
+    await this.deps.events.record(mission.id, {
+      type: 'verification_finished',
+      actor: 'worker',
+      level: input.outcome === 'failed' ? 'warning' : 'info',
+      summary: describeVerification(input),
+      detail: {
+        command: record.command,
+        outcome: record.outcome,
+        exitCode: record.exitCode,
+        missionRelated: record.missionRelated,
+      },
+    });
+    return { id: record.id };
+  }
+
+  async recordArtifact(
+    workerId: string,
+    missionId: string,
+    runId: string | null,
+    input: ArtifactInput,
+  ): Promise<{ id: string }> {
+    if (runId) await this.authoriseRun(workerId, runId);
+    else {
+      const mission = await this.deps.missions.findById(missionId);
+      if (!mission) throw new NotFoundError('Mission');
+      if (mission.claimedByWorkerId !== workerId) {
+        throw new ForbiddenError('This mission is not held by that worker.');
+      }
+    }
+    const artifact = await this.deps.missionService.addArtifact(missionId, input, 'agent', runId);
+    return { id: artifact.id };
+  }
+
+  async acknowledgeCommand(
+    workerId: string,
+    commandId: string,
+    outcome: 'acknowledged' | 'completed' | 'failed',
+    detail: string | null,
+  ): Promise<void> {
+    const worker = await this.deps.workers.findById(workerId);
+    if (!worker) throw new NotFoundError('Worker');
+    const command = await this.deps.commands.setState(commandId, outcome, detail);
+    await this.deps.events.record(command.missionId, {
+      type: 'command_acknowledged',
+      actor: 'worker',
+      summary: `The worker ${outcome} the ${command.kind} command.`,
+      detail: { commandId, outcome, ...(detail ? { detail } : {}) },
+    });
+  }
+
+  /* ---------------------------------------------------------------- internals */
+
+  private async applyHeartbeat(
+    workerId: string,
+    heartbeat: WorkerHeartbeatInput,
+    at: Date,
+  ): Promise<void> {
+    await this.deps.workers.heartbeat(workerId, {
+      status: heartbeat.status,
+      version: heartbeat.version ?? null,
+      platform: heartbeat.platform ?? null,
+      runtimeAvailable: heartbeat.runtimeAvailable,
+      runtimeName: heartbeat.runtimeName ?? null,
+      runtimeDetail: heartbeat.runtimeDetail ?? null,
+      workspaceHealthy: heartbeat.workspaceHealthy,
+      workspaceRootLabel: heartbeat.workspaceRootLabel ?? null,
+      githubDeliveryConfigured: heartbeat.githubDeliveryConfigured,
+      diagnostics: heartbeat.diagnostics,
+      /*
+       * The mission and run a worker reports are *display* fields. Authorisation always comes
+       * from `mission_runs.worker_id`, never from what the worker says it is holding.
+       */
+      currentMissionId: heartbeat.currentMissionId ?? null,
+      currentRunId: heartbeat.currentRunId ?? null,
+      lastActivityAt: heartbeat.lastActivityAt ? new Date(heartbeat.lastActivityAt) : null,
+      capacity: capacityReading(heartbeat.capacity, at),
+      at,
+    });
+  }
+
+  private async currentAssignment(
+    workerId: string,
+  ): Promise<{ mission: Mission; run: MissionRun } | null> {
+    const active = await this.deps.missions.listActive();
+    const held = active.find(
+      (mission) => mission.claimedByWorkerId === workerId && mission.activeRunId,
+    );
+    if (!held?.activeRunId) return null;
+    const run = await this.deps.runs.findById(held.activeRunId);
+    if (!run || run.workerId !== workerId) return null;
+    return { mission: held, run };
+  }
+
+  private async pendingCommands(missionId: string): Promise<readonly PendingCommand[]> {
+    const commands = await this.deps.commands.pendingFor(missionId);
+    return commands.map((command) => ({
+      id: command.id,
+      kind: command.kind,
+      missionId: command.missionId,
+      runId: command.runId,
+      payload: command.payload,
+      requestedAt: command.requestedAt,
+    }));
+  }
+
+  /**
+   * Assemble everything the worker needs for one mission.
+   *
+   * Built entirely from the control plane's own tables. In particular the repository, the base
+   * branch and the branch name are Jarvis's, not the worker's, which is what makes "the worker
+   * cannot push to the default branch" enforceable rather than merely requested.
+   */
+  private async buildAssignment(mission: Mission, run: MissionRun): Promise<MissionAssignment> {
+    if (!mission.projectId) throw new ValidationError('That mission has no project.');
+    const project = await this.deps.projects.findById(mission.projectId);
+    if (!project) throw new NotFoundError('Project');
+
+    const sources = await this.deps.sources.listByProject(project.id);
+
+    const plan = mission.currentPlanVersion
+      ? await this.deps.plans.byVersion(mission.id, mission.currentPlanVersion)
+      : null;
+    const clarifications = await this.deps.clarifications.list(mission.id);
+    const evidence = await this.deps.evidence.list({ projectId: project.id, limit: 25 });
+
+    const readOnly = run.kind === 'inspection' || isReadOnlyMissionType(mission.type);
+    const branchName = readOnly
+      ? null
+      : (mission.workingBranch ?? buildBranchName(mission.id, mission.title));
+
+    return {
+      missionId: mission.id,
+      runId: run.id,
+      kind: run.kind,
+      attempt: run.attempt,
+      missionTitle: mission.title,
+      missionDescription: mission.description,
+      rawRequest: mission.rawRequest,
+      missionType: mission.type,
+      riskLevel: mission.riskLevel,
+      projectId: project.id,
+      projectName: project.name,
+      projectGoal: project.goal,
+      planVersion: run.kind === 'inspection' ? null : mission.approvedPlanVersion,
+      /* An inspection run gets no plan: producing one is the point of the run. */
+      plan: run.kind === 'inspection' ? null : (plan?.content ?? null),
+      constraints: mission.constraints,
+      doNotTouch: mission.doNotTouch,
+      acceptanceCriteria: mission.acceptanceCriteria,
+      deliverable: mission.deliverable,
+      /* One resolver, shared with the task assignment, so the two can never disagree again. */
+      repository: resolveMissionRepository(mission, sources),
+      branchName,
+      resumeSessionId: run.agentSessionId,
+      /*
+       * So the worker can tell a first claim from a re-claim after its own restart. Sent as the
+       * record's own state rather than as a derived "isResume" flag: a boolean would have to be
+       * computed here, and the worker would then be trusting this service's reading of the state
+       * machine instead of the state machine.
+       */
+      missionState: mission.state,
+      clarifications: clarifications
+        .filter((record) => record.answer !== null)
+        .map((record) => ({
+          question: record.question,
+          answer: record.answer ?? '',
+          assumed: record.answerProvenance === 'inferred',
+        })),
+      projectContext: buildProjectContext(project.goal, project.phase, evidence.slice(0, 8)),
+      allowWebResearch: this.deps.allowWebResearch && isReadOnlyMissionType(mission.type),
+    };
+  }
+}
+
+function buildProjectContext(
+  goal: string | null,
+  phase: string | null,
+  evidence: readonly { title: string; kind: string; observedAt: string }[],
+): readonly string[] {
+  const lines: string[] = [];
+  if (goal) lines.push(`Project goal: ${goal}`);
+  if (phase) lines.push(`Current phase: ${phase}`);
+  for (const item of evidence) {
+    lines.push(`Recent ${item.kind.replace(/_/g, ' ')}: ${item.title}`);
+  }
+  return lines;
+}
+
+/** How a mission state maps onto the run's own lifecycle. */
+function runStateFor(state: MissionState): MissionRun['state'] {
+  switch (state) {
+    case 'completed':
+    case 'pull_request_ready':
+      return 'succeeded';
+    case 'failed':
+      return 'failed';
+    case 'stopped':
+      return 'stopped';
+    case 'stopping':
+      return 'stopping';
+    case 'paused':
+      return 'paused';
+    default:
+      return 'running';
+  }
+}
+
+function describeVerification(input: VerificationInput): string {
+  switch (input.outcome) {
+    case 'passed':
+      return `Verification passed: ${input.command}`;
+    case 'failed':
+      return `Verification failed: ${input.command}${
+        input.missionRelated === false ? ' (pre-existing, not caused by this mission)' : ''
+      }`;
+    case 'unavailable':
+      return `Verification unavailable: ${input.command}${input.reason ? ` — ${input.reason}` : ''}`;
+    default:
+      return `Verification skipped: ${input.command}${input.reason ? ` — ${input.reason}` : ''}`;
+  }
+}
+
+/**
+ * A heartbeat's capacity block as a storable reading, or null when there is nothing to store.
+ *
+ * Three refusals, and each of them is the difference between a governor that can be trusted and
+ * one that quietly makes things up.
+ *
+ * **A reading from the future is discarded.** A worker's clock is not the control plane's, and a
+ * timestamp ahead of now would make a reading permanently fresh — `age` compares against the
+ * clock, so a reading dated tomorrow never becomes stale and the governor keeps deciding on it
+ * long after it stopped being true. A small tolerance absorbs ordinary clock skew; beyond that the
+ * report is dropped rather than trusted or silently rewritten to now.
+ *
+ * **A window with no utilisation is dropped whole.** A reset time on its own describes a window
+ * whose usage is unknown, and storing the half of it that happens to be readable invites a display
+ * that shows a countdown next to a blank and a governor that treats the pair as a measurement.
+ *
+ * **`rateLimitsApplicable: false` empties the windows.** That flag is the provider saying plan
+ * limits do not apply to this account at all — an API key, Bedrock, Vertex. Any window figures
+ * arriving alongside it describe something other than the subscription this account does not have,
+ * and keeping them would let an API worker be throttled against a limit that does not exist.
+ */
+function capacityReading(
+  block: WorkerCapacityInput | null | undefined,
+  at: Date,
+): WorkerCapacityReading | null {
+  if (!block) return null;
+
+  const observedAt = new Date(block.observedAt);
+  if (Number.isNaN(observedAt.getTime())) return null;
+  if (observedAt.getTime() > at.getTime() + CAPACITY_CLOCK_SKEW_MS) return null;
+
+  const windows = {} as Record<
+    RateWindow,
+    { utilisationPercent: number | null; resetsAt: Date | null } | null
+  >;
+  for (const window of RATE_WINDOWS) {
+    const reported = block.rateLimitsApplicable ? block.windows[window] : null;
+    if (
+      !reported ||
+      reported.utilisationPercent === null ||
+      reported.utilisationPercent === undefined
+    ) {
+      windows[window] = null;
+      continue;
+    }
+    const resetsAt = reported.resetsAt ? new Date(reported.resetsAt) : null;
+    windows[window] = {
+      utilisationPercent: reported.utilisationPercent,
+      resetsAt: resetsAt && !Number.isNaN(resetsAt.getTime()) ? resetsAt : null,
+    };
+  }
+
+  return {
+    authMode: block.authMode,
+    subscriptionType: block.subscriptionType ?? null,
+    rateLimitsApplicable: block.rateLimitsApplicable,
+    windows,
+    context: block.context
+      ? {
+          usedTokens: block.context.usedTokens ?? null,
+          maxTokens: block.context.maxTokens ?? null,
+          percentUsed: block.context.percentUsed ?? null,
+          overLimit: block.context.overLimit ?? null,
+        }
+      : null,
+    usingOverage: block.usingOverage ?? null,
+    source: block.source,
+    observedAt,
+  };
+}
+
+/** How far ahead of the control plane a worker's clock may be before its reading is refused. */
+const CAPACITY_CLOCK_SKEW_MS = 2 * 60 * 1000;

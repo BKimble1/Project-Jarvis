@@ -1,0 +1,22 @@
+node_modules
+.next
+out
+build
+coverage
+playwright-report
+test-results
+.env
+.env.local
+.env*.local
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+.netlify
+.jarvis-data
+.vercel
+.jarvis-workspaces
+.jarvis-live
+
+# Screenshots captured by `JARVIS_SCREENSHOTS=true npm run test:e2e:one -- screenshots`.
+# Looked at by a person, never compared by a machine — the core animates, so no two captures match.
+.jarvis-shots/
