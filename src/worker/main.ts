@@ -122,11 +122,42 @@ export class JarvisWorkerProcess {
   }
 
   /**
-   * The main loop.
+   * Two loops, running at the same time.
    *
-   * Poll → deliver any commands → claim if idle → run. Errors never end the loop unless the
-   * worker has been revoked: a control plane that is briefly unreachable is a normal condition
-   * for a worker running on someone's home network.
+   * ## Why this is not one loop
+   *
+   * It used to be: poll, then claim, then run the mission to completion, then poll again. That
+   * reads perfectly well and is wrong the moment a mission takes longer than two minutes, which
+   * every real Claude mission does. The heartbeat is only written by the poll, so a worker
+   * happily running a mission stopped saying anything at all for the entire mission, and after
+   * `WORKER_DISCONNECT_SECONDS` the control plane concluded — correctly, from what it could see —
+   * that the worker had died.
+   *
+   * That single silence produced four separate dishonesties, all of them at exactly the moment an
+   * owner is most likely to be watching. The workers page showed a healthy worker as disconnected.
+   * An owner's Stop was confirmed as "stopped, nothing touched" while the agent was in fact still
+   * running and would still open a pull request. The qualification ladder demoted itself
+   * mid-mission, because a rung that needs a live worker could not see one. And no owner command
+   * — stop, pause, or a message into the conversation — could reach the running agent, because
+   * commands are delivered by the poll and the poll was not happening.
+   *
+   * So the poll runs on its own now: it keeps the heartbeat current and keeps delivering commands
+   * for the whole length of a mission, while the work loop is busy running it.
+   *
+   * ## What each loop owns
+   *
+   * The poll loop owns talking: the heartbeat, the revoke directive, and handing owner commands to
+   * whatever is running. The work loop owns doing: claiming, running, and deciding when a drain is
+   * complete. Neither touches the other's business, and only the work loop ever blocks for long.
+   *
+   * `stopped` is the one thing they share, and it is set by whichever notices first. A revoke seen
+   * by the poll loop ends the poll loop immediately but lets the work loop finish the mission it
+   * is holding rather than abandoning a half-written branch — which is also what the single-loop
+   * version did, since it could only ever check between missions.
+   *
+   * Neither loop is allowed to throw. A control plane that is briefly unreachable is an ordinary
+   * condition for a worker on someone's home network, and it must not take the worker down; a
+   * throw escaping one loop would leave the other running forever with nothing to end it.
    */
   async run(): Promise<void> {
     await this.refreshHealth();
@@ -136,13 +167,36 @@ export class JarvisWorkerProcess {
     this.log(`Runtime: ${this.deps.runtime.name} — ${this.runtimeDetail}`);
     this.log(`Workspaces: ${this.workspaceDetail}`);
 
+    await Promise.all([this.pollLoop(), this.workLoop()]);
+  }
+
+  /**
+   * Whether this worker would take something new right now.
+   *
+   * Now that the poll runs during a mission, this has to account for being busy — before, a poll
+   * only ever happened while idle, so "I am free" was true by construction and the field was
+   * decorative. A worker that reported `wantsWork: true` from inside a mission would be stating
+   * something plainly false about itself several times a minute.
+   */
+  private wantsWork(): boolean {
+    return (
+      !this.draining &&
+      !this.current &&
+      !this.currentTask &&
+      this.runtimeAvailable &&
+      this.workspaceHealthy
+    );
+  }
+
+  /** Keep the control plane informed, and keep owner commands flowing to a running mission. */
+  private async pollLoop(): Promise<void> {
     let interval = this.deps.config.pollIntervalMs;
 
     while (!this.stopped) {
       try {
         const response = await this.deps.client.poll({
           heartbeat: await this.heartbeat(),
-          wantsWork: !this.draining && this.runtimeAvailable && this.workspaceHealthy,
+          wantsWork: this.wantsWork(),
           acknowledgedCommandIds: [],
         });
 
@@ -160,18 +214,37 @@ export class JarvisWorkerProcess {
             this.lastActivityAt = new Date();
           }
         }
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.fatal) {
+          this.log(`The control plane rejected this worker: ${error.message}`);
+          this.stopped = true;
+          break;
+        }
+        this.log(`Poll failed: ${error instanceof Error ? error.message : String(error)}`);
+        await this.refreshHealth().catch(() => undefined);
+      }
 
+      await this.sleep(interval);
+    }
+  }
+
+  /** Claim and run. The only loop that blocks for a long time, and the one that ends a drain. */
+  private async workLoop(): Promise<void> {
+    while (!this.stopped) {
+      try {
         if (!this.current && !this.currentTask && !this.draining && this.workspaceHealthy) {
           /*
-           * Missions first, then tasks. A Prompt 2 mission is a whole unit of work and finishing
-           * one is worth more than starting a fragment of another; a worker with no model still
+           * Missions first, then tasks, and genuinely first: `claimAndRun` reports whether it took
+           * anything, so a worker that just finished a mission goes back round rather than
+           * immediately claiming a task in the same breath. A worker with no model runtime still
            * reaches the task claim, because verification and integration need no model at all.
            */
-          if (this.runtimeAvailable) await this.claimAndRun();
-          if (!this.current) await this.claimAndRunTask();
+          const tookMission = this.runtimeAvailable ? await this.claimAndRun() : false;
+          if (!tookMission) await this.claimAndRunTask();
         }
         if (this.draining && !this.current && !this.currentTask) {
           this.log('Drained. Exiting.');
+          this.stopped = true;
           break;
         }
       } catch (error) {
@@ -180,11 +253,11 @@ export class JarvisWorkerProcess {
           this.stopped = true;
           break;
         }
-        this.log(`Poll failed: ${error instanceof Error ? error.message : String(error)}`);
-        await this.refreshHealth();
+        this.log(`Work failed: ${error instanceof Error ? error.message : String(error)}`);
+        await this.refreshHealth().catch(() => undefined);
       }
 
-      await this.sleep(interval);
+      await this.sleep(this.deps.config.pollIntervalMs);
     }
   }
 
@@ -199,12 +272,13 @@ export class JarvisWorkerProcess {
     return this.runtimeAvailable ? [...AGENT_ROLES] : [...DETERMINISTIC_ROLES];
   }
 
-  private async claimAndRunTask(): Promise<void> {
+  /** Returns whether a task was claimed. Symmetrical with `claimAndRun`, for the same reason. */
+  private async claimAndRunTask(): Promise<boolean> {
     const assignment = await this.deps.client.claimTask({
       heartbeat: await this.heartbeat(),
       roles: this.acceptedRoles(),
     });
-    if (!assignment) return;
+    if (!assignment) return false;
 
     this.currentMissionId = assignment.missionId;
     this.currentRunId = assignment.runId;
@@ -232,14 +306,16 @@ export class JarvisWorkerProcess {
       this.lastActivityAt = new Date();
       this.log(`Finished task ${assignment.taskKey}.`);
     }
+    return true;
   }
 
-  private async claimAndRun(): Promise<void> {
+  /** Returns whether a mission was claimed, so the work loop can genuinely prefer one to a task. */
+  private async claimAndRun(): Promise<boolean> {
     const assignment = await this.deps.client.claim({
       heartbeat: await this.heartbeat(),
       accepts: [...this.deps.config.accepts],
     });
-    if (!assignment) return;
+    if (!assignment) return false;
 
     this.currentMissionId = assignment.missionId;
     this.currentRunId = assignment.runId;
@@ -266,6 +342,7 @@ export class JarvisWorkerProcess {
       this.lastActivityAt = new Date();
       this.log(`Finished the run for "${assignment.missionTitle}".`);
     }
+    return true;
   }
 }
 

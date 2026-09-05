@@ -14,6 +14,7 @@ import type {
 } from '@/domain/mission-run';
 import type { WorkerConfig } from '@/worker/config';
 import { MissionRunner } from '@/worker/mission-runner';
+import { JarvisWorkerProcess, type WorkerRuntimeDeps } from '@/worker/main';
 import { ScriptedRuntime, type ScriptedStep } from '@/worker/runtime/scripted';
 import { git } from '@/worker/git';
 import { createSandboxRepo, type SandboxRepo } from '../helpers/sandbox-repo';
@@ -145,6 +146,77 @@ function asClient(recorder: RecordingClient) {
     acknowledgeCommand: (commandId: string, outcome: string) =>
       recorder.acknowledgeCommand(commandId, outcome),
   } as unknown as ConstructorParameters<typeof MissionRunner>[0]['client'];
+}
+
+/**
+ * Config and assignment at module scope, for the process-level suite below.
+ *
+ * The `MissionRunner` suite has its own copies closed over its own temporary directory; these are
+ * parameterised instead, because the process suite creates a separate workspace root and a
+ * separate sandbox repository per test and cannot reach into that closure.
+ */
+function processConfig(workspaceRoot: string): WorkerConfig {
+  return {
+    controlPlaneUrl: 'http://localhost:3000',
+    token: 'jarvisw_test',
+    name: 'loop-worker',
+    workspaceRoot,
+    anthropicApiKey: null,
+    anthropicApiKeyPresent: false,
+    claudeOauthToken: null,
+    authMode: 'subscription',
+    model: null,
+    maxTurns: 10,
+    githubToken: null,
+    githubApiUrl: 'https://api.github.test',
+    pollIntervalMs: 5,
+    verifyTimeoutMs: 60_000,
+    runTimeoutMs: 300_000,
+    accepts: ['inspection', 'execution', 'research'],
+    allowWebResearch: false,
+    runtime: 'scripted',
+    allowedRepositories: null,
+    sandboxRepositories: new Map(),
+    version: WORKER_VERSION,
+    diagnostics: [],
+  };
+}
+
+function assignmentFor(repo: SandboxRepo): MissionAssignment {
+  return {
+    missionId: MISSION_ID,
+    runId: RUN_ID,
+    kind: 'execution',
+    attempt: 1,
+    missionTitle: 'Improve the readme',
+    missionDescription: null,
+    rawRequest: 'Improve the readme',
+    missionType: 'documentation',
+    riskLevel: 'low',
+    projectId: 'project-1',
+    projectName: 'Sandbox',
+    projectGoal: null,
+    planVersion: 1,
+    plan: null,
+    constraints: [],
+    doNotTouch: [],
+    acceptanceCriteria: [],
+    deliverable: null,
+    repository: {
+      owner: 'test-owner',
+      name: 'sandbox',
+      fullName: 'test-owner/sandbox',
+      defaultBranch: 'main',
+      cloneUrl: repo.remotePath,
+      visibility: 'private',
+    },
+    branchName: `jarvis/${MISSION_ID}-improve-the-readme`,
+    resumeSessionId: null,
+    missionState: 'claimed',
+    clarifications: [],
+    projectContext: [],
+    allowWebResearch: false,
+  };
 }
 
 describe('MissionRunner', () => {
@@ -925,5 +997,134 @@ describe('MissionRunner', () => {
       'utf8',
     );
     expect(gitConfig).not.toContain('ghp_fake_worker_token');
+  });
+});
+
+/**
+ * The worker *process*, with a real mission in flight.
+ *
+ * `MissionRunner` is covered exhaustively above; what these cover is the loop around it, which had
+ * no test and which had stopped talking to the control plane for the whole duration of every run.
+ * The mission here is a real one — a real clone of the sandbox repo, a real branch, a real
+ * scripted agent waiting for a message — so the heartbeats being asserted are taken while an
+ * actual run is in progress, not while a stub sleeps.
+ */
+describe('JarvisWorkerProcess with a mission in flight', () => {
+  let repo: SandboxRepo;
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    repo = await createSandboxRepo();
+    workspaceRoot = await mkdtemp(path.join(tmpdir(), 'jarvis-loop-'));
+  });
+
+  afterEach(async () => {
+    await repo.cleanup();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it('heartbeats throughout a run and delivers an owner stop into it', async () => {
+    const recorder = new RecordingClient();
+    const polls: { status: string; wantsWork: boolean }[] = [];
+
+    /* An agent that starts work and then waits — a stand-in for a mission that takes minutes. */
+    const runtime = new ScriptedRuntime({
+      steps: [
+        { kind: 'message', text: 'Starting.' },
+        { kind: 'wait_for_message' },
+        { kind: 'done', result: 'never reached' },
+      ],
+    });
+
+    let claimed = false;
+    let stopSent = false;
+
+    const client = {
+      ...asClient(recorder),
+      async poll(input: { heartbeat: { status: string }; wantsWork: boolean }) {
+        polls.push({ status: input.heartbeat.status, wantsWork: input.wantsWork });
+
+        /*
+         * Once the worker has been seen alive several times *while running*, send the owner's
+         * stop through the poll — which is the only channel a command has, and the channel that
+         * did not exist during a run before the loop was split.
+         */
+        const commands: PendingCommand[] = [];
+        if (
+          recorder.states.includes('running') &&
+          polls.filter((entry) => entry.status === 'busy').length >= 3 &&
+          !stopSent
+        ) {
+          stopSent = true;
+          recorder.ownerMove('stopping');
+          commands.push({
+            id: 'command-1',
+            kind: 'stop',
+            missionId: MISSION_ID,
+            runId: RUN_ID,
+            payload: { reason: 'Changed my mind.' },
+            requestedAt: new Date().toISOString(),
+          } satisfies PendingCommand);
+        }
+
+        return {
+          workerId: 'worker-1',
+          serverTime: new Date().toISOString(),
+          assignment: null,
+          commands,
+          /* Once the run has finished, end the process so the test terminates. */
+          directive:
+            recorder.states.includes('stopped') || polls.length > 80
+              ? ('revoked' as const)
+              : ('continue' as const),
+          pollIntervalMs: 5,
+        };
+      },
+      async claim() {
+        if (claimed) return null;
+        claimed = true;
+        return assignmentFor(repo);
+      },
+      async claimTask() {
+        return null;
+      },
+    };
+
+    const worker = new JarvisWorkerProcess({
+      config: {
+        ...processConfig(workspaceRoot),
+        githubToken: 'ghp_fake_worker_token_for_tests_only_00',
+      },
+      client: client as unknown as WorkerRuntimeDeps['client'],
+      runtime,
+      delivery: new FakeDelivery(),
+      sleep: async (ms: number) => {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5)));
+      },
+      log: () => undefined,
+    });
+
+    await worker.run();
+
+    /*
+     * Heartbeats arrived *while the mission was running*. Before the loop was split there would be
+     * one poll before the claim and then nothing until the run ended — which, for a real Claude
+     * mission, is well past the point where the control plane declares the worker disconnected.
+     */
+    const busy = polls.filter((entry) => entry.status === 'busy');
+    expect(busy.length).toBeGreaterThanOrEqual(3);
+
+    /* And it did not ask for more work while it was holding a mission. */
+    expect(busy.every((entry) => entry.wantsWork === false)).toBe(true);
+
+    /*
+     * The owner's stop reached the running agent through the poll, and the run honoured it. This
+     * is the dishonesty that mattered most: without it Jarvis confirmed "stopped, nothing touched"
+     * while the agent carried on and would still have opened a pull request.
+     */
+    expect(stopSent).toBe(true);
+    expect(recorder.states).toContain('stopped');
+    expect(recorder.last.workspacePreserved).toBe(true);
+    expect(await repo.branches()).toEqual(['main']);
   });
 });
