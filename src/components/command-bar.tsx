@@ -33,10 +33,29 @@ export function CommandBar({ initialHistory = [] }: { initialHistory?: readonly 
   const [answer, setAnswer] = React.useState<QueryAnswer | null>(null);
   /* The words that produced the answer on screen, which a work request has to carry onwards. */
   const [asked, setAsked] = React.useState('');
+
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [history, setHistory] = React.useState<readonly string[]>(initialHistory);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  /*
+   * Keep whatever was typed before this component came alive.
+   *
+   * The field is controlled, so React's first render after hydration writes its own state into the
+   * DOM — and anything typed in the gap between the HTML arriving and the JavaScript attaching is
+   * silently wiped. On a fast machine that gap is imperceptible; on a slow one, on a cold route, or
+   * on a phone, it is long enough to lose a sentence somebody has already finished typing, and the
+   * failure is invisible: the words vanish and the button stays disabled, so pressing it does
+   * nothing at all.
+   *
+   * Reading the field once on mount closes it. The dashboard grew heavier when the operating
+   * picture moved above this bar, which is what turned a race that was theoretically lost into one
+   * that was reliably lost.
+   */
+  React.useEffect(() => {
+    const typedBeforeHydration = inputRef.current?.value ?? '';
+    if (typedBeforeHydration.length > 0) setQuery(typedBeforeHydration);
+  }, []);
 
   const ask = React.useCallback(async (text: string) => {
     const trimmed = text.trim();
