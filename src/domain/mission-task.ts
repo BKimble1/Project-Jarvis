@@ -261,6 +261,14 @@ export interface MissionTask {
   readonly activeRunId: string | null;
   readonly attempt: number;
   readonly maxAttempts: number;
+  /**
+   * How many times this task has been taken back from a worker that stopped reporting.
+   *
+   * Bounds the reclaim loop on its own, separately from `attempt`. A worker crashing is not the
+   * task failing, so it must not consume the attempt budget — but it must not be free either, or
+   * one unstable machine could hand the same task out for ever.
+   */
+  readonly reclaimCount: number;
   readonly maxTurns: number | null;
   readonly timeLimitMs: number | null;
   readonly maxOutputTokens: number | null;
@@ -377,6 +385,34 @@ export const TASK_TRANSITIONS: readonly TaskTransition[] = [
   T('paused', 'stopped', ['worker', 'system'], 'Stopped while paused'),
   T('paused', 'cancelled', ['owner'], 'Cancelled while paused'),
   T('paused', 'failed', ['worker', 'system'], 'Failed while paused'),
+
+  /*
+   * The reclaim path, and nothing else.
+   *
+   * A worker that crashed holds its task in whichever state it had reached, and until these
+   * existed the only state the control plane could release was `claimed` — so a task that got as
+   * far as `preparing` or `running` on a machine that then died could never go back to the queue,
+   * only to `failed`. That is the wrong ending for work whose branch is intact and whose only
+   * problem was the laptop it was running on.
+   *
+   * Restricted to `system`, because this is not a move anybody chooses. A worker cannot release
+   * its own task this way — it would be claiming its work never happened — and an owner asking
+   * for the same thing is stopping or cancelling, which have their own transitions and their own
+   * meanings. `TaskWorkerService.reclaimAbandoned` is the only caller, it fires only once the
+   * worker is genuinely gone and the task genuinely stale, and `reclaimCount` bounds how often.
+   */
+  T('preparing', 'ready', ['system'], 'Taken back from a worker that stopped reporting'),
+  T('running', 'ready', ['system'], 'Taken back from a worker that stopped reporting'),
+  T(
+    'waiting_for_permission',
+    'ready',
+    ['system'],
+    'Taken back from a worker that stopped reporting',
+  ),
+  T('waiting_for_input', 'ready', ['system'], 'Taken back from a worker that stopped reporting'),
+  T('pausing', 'ready', ['system'], 'Taken back from a worker that stopped reporting'),
+  T('verifying', 'ready', ['system'], 'Taken back from a worker that stopped reporting'),
+  T('integrating', 'ready', ['system'], 'Taken back from a worker that stopped reporting'),
 
   T('verifying', 'awaiting_review', ['worker', 'system'], 'Verification finished'),
   T('verifying', 'repair_required', ['system'], 'Verification failed; repair available'),

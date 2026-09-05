@@ -89,6 +89,7 @@ export function toMissionTask(
     activeRunId: row.activeRunId,
     attempt: row.attempt,
     maxAttempts: row.maxAttempts,
+    reclaimCount: row.reclaimCount,
     maxTurns: row.maxTurns,
     timeLimitMs: row.timeLimitMs,
     maxOutputTokens: row.maxOutputTokens,

@@ -62,6 +62,14 @@ export interface TaskRunnerDeps {
  */
 const CHECK_IN_MS = 30_000;
 
+/**
+ * How often the watchdog asks whether a silent session has run past its ceiling.
+ *
+ * Five seconds. Frequent enough that an overrun is noticed rather than discovered, cheap enough to
+ * be irrelevant — it reads two numbers and compares them.
+ */
+const WATCHDOG_MS = 5_000;
+
 export class TaskRunner {
   private seq = 0;
   private session: AgentSession | null = null;
@@ -275,7 +283,7 @@ export class TaskRunner {
      * spaces and stops at 500 entries. None of that matters for a summary; all of it matters for
      * a boundary.
      */
-    const changedForScope = await changedFilesForScope(gitOptions);
+    const changedForScope = await changedFilesForScope(gitOptions, workspace.baseSha);
     const outside = filesOutsideWriteSet(this.assignment.declaredWriteSet, changedForScope);
     if (outside.length > 0) {
       await this.emit(
@@ -889,8 +897,64 @@ export class TaskRunner {
     this.turns = 0;
     this.breach = null;
 
+    /*
+     * The watchdog, for the session that goes quiet.
+     *
+     * Everything below is checked *between* events, which is the safe place to check it — and is
+     * no help at all if no event ever arrives. A model call that hangs, a tool that never returns,
+     * a network that stops answering: the loop simply waits, and the time ceiling, the owner's
+     * Stop and the task's check-in all wait with it. That is the one shape of overrun a
+     * between-events check cannot see, so it is watched from outside.
+     *
+     * It only ever calls `interrupt`, which is the same graceful request the loop makes; it never
+     * kills the process, and it deliberately checks only the ceilings, which are the questions
+     * that can be answered without the session's cooperation.
+     */
+    const watchdog = setInterval(() => {
+      void this.watchCeilings();
+    }, WATCHDOG_MS);
+    watchdog.unref();
+
+    try {
+      return await this.consumeEvents(options.onMessage);
+    } finally {
+      clearInterval(watchdog);
+    }
+  }
+
+  /**
+   * Fired from a timer, so it must be able to run at any moment and change nothing that matters.
+   *
+   * It records the breach and asks the session to stop. The event loop then ends because the
+   * stream closes, and `consumeEvents` returns `limited` because `this.breach` is set — so the
+   * decision about what to do with the half-finished work is still made on the main path, at a
+   * point where nothing is in flight, exactly as it is for a breach seen between two events.
+   */
+  private async watchCeilings(): Promise<void> {
+    if (this.breach || !this.session) return;
+    const breach = ceilingBreach(this.ceilings(), this.consumption());
+    if (!breach) return;
+    this.breach = breach;
+    try {
+      await this.emit(
+        'warning',
+        breach.reason,
+        { limit: breach.limit, basis: breach.basis },
+        'warning',
+      );
+      await this.session.interrupt();
+    } catch {
+      /* The session is already gone, which is the outcome this wanted. */
+    }
+  }
+
+  private async consumeEvents(
+    onMessage: (text: string) => void,
+  ): Promise<'done' | 'failed' | 'stopped' | 'limited'> {
+    if (!this.session) throw new Error('The agent session was not started.');
     for await (const event of this.session.events) {
-      const outcome = await this.handleAgentEvent(event, options.onMessage);
+      if (this.breach) return 'limited';
+      const outcome = await this.handleAgentEvent(event, onMessage);
       if (outcome === 'failed') return 'failed';
       if (outcome === 'done') return 'done';
       if (this.stopRequested) {
@@ -947,7 +1011,7 @@ export class TaskRunner {
         return 'limited';
       }
     }
-    return 'done';
+    return this.breach ? 'limited' : 'done';
   }
 
   /** What this session is allowed, from the assignment and the role profile, whichever is tighter. */

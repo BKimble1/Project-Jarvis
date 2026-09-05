@@ -15,6 +15,42 @@ import {
   type TaskState,
 } from '@/domain/mission-task';
 import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
+import { deriveWorkerHealth } from '@/domain/worker';
+
+/**
+ * How long a task may sit with a silent worker before Jarvis takes it back.
+ *
+ * Several multiples of `WORKER_DISCONNECT_SECONDS`, which is the point at which a worker stops
+ * being *described* as connected — right for a status light, far too eager for taking work away.
+ * A running task checks in every thirty seconds, so a worker that is genuinely alive keeps its
+ * work with a wide margin, and only one that has really gone loses it.
+ */
+export const ABANDONED_AFTER_MS = 10 * 60_000;
+
+/**
+ * How many times one task may be taken back before Jarvis stops trying.
+ *
+ * One. A crash is bad luck and deserves another go; two crashes on the same task is a pattern —
+ * the workspace, the repository or the task itself — and handing it out a third time spends real
+ * money discovering that again. The owner sees a `worker_lost` failure and can decide.
+ */
+export const RECLAIM_GRACE = 1;
+
+/**
+ * What one reclaim pass took back.
+ *
+ * Counted rather than listed because the caller is a loop that writes one summary line. The
+ * per-task detail is recorded where the person who cares about it will look — a warning on the
+ * timeline of the mission whose task it was, and, through `EventRepository.recent`, on Operations.
+ */
+export interface ReclaimSummary {
+  /** Tasks that went back to `ready` and can be claimed again. */
+  readonly reclaimed: number;
+  /** Tasks that had no attempts left and ended as `failed`. */
+  readonly failed: number;
+  /** Write leases handed back, which is what unblocks everything queued behind them. */
+  readonly leasesReleased: number;
+}
 import type { UsageRepository } from '@/server/repositories/accounting-types';
 import type { CommandRepository } from '@/server/repositories/mission-types';
 import { usageOutcomeFor, usageRowForRun } from './usage-ledger';
@@ -457,6 +493,158 @@ export class TaskWorkerService {
    * worker, and it is still the task's active run. A worker whose task was reassigned gets a
    * conflict rather than the ability to write over whoever holds it now.
    */
+  /**
+   * Give back the work a departed worker was holding.
+   *
+   * ## The hole this closes
+   *
+   * There was no reclaim path for a task at all. `reconcileLostWorkers` handles *missions*, and
+   * handles only the one case where an owner had already decided the ending — a mission whose
+   * worker went silent is deliberately left alone, because the work on disk is very likely fine
+   * and the worker very likely comes back. That reasoning is right for a mission and leaves a
+   * task stranded: a worker that crashed after claiming holds its task in `claimed` or `running`
+   * for ever, holds a write lease over its files for ever, and therefore holds a concurrency slot
+   * and blocks every future writer on that mission. One crash and that part of the factory is shut
+   * until somebody notices.
+   *
+   * ## Why a longer threshold than "disconnected"
+   *
+   * `WORKER_DISCONNECT_SECONDS` is the point at which Jarvis stops *describing* a worker as
+   * connected, which is the right answer for a status light and much too eager for taking work
+   * away from it. A restart, a laptop lid, a flaky home connection all cross that line routinely,
+   * and a reclaim that fired on one of them would run the same task twice. `ABANDONED_AFTER_MS` is
+   * deliberately several multiples of it, and a running task now checks in every thirty seconds —
+   * so a worker that is genuinely alive keeps its work with a wide margin.
+   *
+   * ## What fences the old worker out
+   *
+   * The task's `activeRunId`. Reclaiming clears it and a re-claim sets a new one, and every
+   * report a worker makes goes through `authoriseTask`, which refuses a run that is no longer the
+   * task's active run. So a worker that wakes up after a reclaim and reports its results gets a
+   * conflict rather than the ability to write over whoever holds the task now. The generation is
+   * the run id: it is already unique per attempt, already carried in every request, and already
+   * checked — it did not need inventing, it needed a reclaim path to make it mean something.
+   */
+  async reclaimAbandoned(): Promise<ReclaimSummary> {
+    const now = this.clock();
+    const workers = await this.deps.workers.list();
+    const health = new Map(
+      workers.map((worker) => [worker.id, deriveWorkerHealth(worker, now)] as const),
+    );
+
+    /*
+     * `registered` counts as gone. It means "enrolled but never seen", and a worker that has never
+     * once heartbeated cannot be the one keeping a ten-minute-old task alive — either it claimed
+     * and died before its first beat, or the row was left behind by something worse. `unhealthy`
+     * does not count: that is a late heartbeat, which is the exact case the margin exists for.
+     */
+    const gone = (workerId: string | null): boolean => {
+      if (!workerId) return true;
+      const status = health.get(workerId)?.effectiveStatus;
+      return (
+        status === undefined ||
+        status === 'registered' ||
+        status === 'disconnected' ||
+        status === 'revoked'
+      );
+    };
+
+    const stale = (task: MissionTask): boolean => {
+      const last = task.lastActivityAt ? Date.parse(task.lastActivityAt) : null;
+      if (last === null || Number.isNaN(last)) return true;
+      return now.getTime() - last >= ABANDONED_AFTER_MS;
+    };
+
+    let reclaimed = 0;
+    let failed = 0;
+    let leasesReleased = 0;
+
+    for (const task of await this.deps.tasks.listActive()) {
+      if (!gone(task.assignedWorkerId) || !stale(task)) continue;
+
+      /*
+       * The lease first. A task returning to `ready` that still holds a lease over its own files
+       * would block its own next attempt — the acquire path hands a task back its existing lease,
+       * but only after the overlap check has already refused every *other* writer in the meantime.
+       *
+       * Looked up before releasing so the count is the truth. `release` is a no-op update when
+       * nothing is held, and a read-only task never holds one, so counting the call rather than
+       * the lease would report a number of rescued leases that was really a number of attempts.
+       */
+      if (await this.deps.leases.findForTask(task.id)) {
+        await this.deps.leases.release(
+          task.id,
+          'The worker holding this task stopped reporting, so Jarvis took the work back.',
+        );
+        leasesReleased += 1;
+      }
+
+      if (task.activeRunId) {
+        await this.deps.runs.patch(task.activeRunId, {
+          state: 'failed',
+          finishedAt: now,
+          failureCode: 'worker_lost',
+          failureMessage:
+            'The worker holding this task stopped reporting. Its results can no longer be accepted.',
+        });
+      }
+
+      /*
+       * Back to `ready` while the grace remains, `failed` when it does not.
+       *
+       * The bound is `reclaimCount`, not `attempt`. Every built-in playbook allows a single
+       * attempt, deliberately — agent work is expensive and non-deterministic, and silently
+       * running it twice is not a favour. But a worker crash is not the task failing, and charging
+       * it to that budget would mean one unstable machine could permanently kill any task it
+       * touched. So the reclaim hands back the attempt the crash consumed, raising `maxAttempts`
+       * by exactly one so `claimNext` will look at the row again, and records the reclaim in a
+       * counter of its own. `attempt` therefore stays truthful about how many times the task was
+       * handed out, and `RECLAIM_GRACE` stops this from repeating.
+       *
+       * A retry is a fresh run rather than a continuation, which is what makes this idempotent: if
+       * the old worker was in fact still alive and finishes later, its report is refused and its
+       * work is confined to its own workspace, while the new attempt starts from the branch as it
+       * was last committed.
+       */
+      const canRetry = task.reclaimCount < RECLAIM_GRACE;
+      const moved = await this.deps.tasks.transition(
+        task.id,
+        canRetry ? 'ready' : 'failed',
+        {
+          assignedWorkerId: null,
+          activeRunId: null,
+          lastActivityAt: now,
+          reclaimCount: task.reclaimCount + 1,
+          ...(canRetry
+            ? { maxAttempts: task.maxAttempts + 1 }
+            : {
+                failureCode: 'worker_lost' as const,
+                failureMessage:
+                  'The worker holding this task stopped reporting, and it had already been taken back once.',
+              }),
+        },
+        task.state,
+      );
+      /* `null` means somebody else moved it first, which is the compare-and-set doing its job. */
+      if (!moved) continue;
+
+      if (canRetry) reclaimed += 1;
+      else failed += 1;
+
+      await this.deps.events.record(task.missionId, {
+        type: 'warning',
+        actor: 'system',
+        level: 'warning',
+        summary: canRetry
+          ? `${task.key} was taken back from a worker that stopped reporting, and can be claimed again.`
+          : `${task.key} was taken back from a worker that stopped reporting for the second time, so Jarvis stopped it.`,
+        detail: { taskKey: task.key, previousRunId: task.activeRunId },
+      });
+    }
+
+    return { reclaimed, failed, leasesReleased };
+  }
+
   /**
    * Has the owner asked the mission this task belongs to to stop?
    *

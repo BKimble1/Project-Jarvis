@@ -85,6 +85,14 @@ export interface TaskPatch {
   readonly assignedWorkerId?: string | null;
   readonly activeRunId?: string | null;
   readonly attempt?: number;
+  /**
+   * Raised only by the reclaim path, and only together with `reclaimCount`.
+   *
+   * A reclaim gives back the one attempt the crash consumed, so a playbook that allows a single
+   * attempt still gets its single attempt. `reclaimCount` is what stops that from repeating.
+   */
+  readonly maxAttempts?: number;
+  readonly reclaimCount?: number;
   readonly branchName?: string | null;
   readonly baseSha?: string | null;
   readonly headSha?: string | null;

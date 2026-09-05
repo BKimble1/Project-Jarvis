@@ -559,6 +559,8 @@ function buildTaskPatch(patch: TaskPatch): Record<string, unknown> {
   assign('assignedWorkerId', 'assignedWorkerId');
   assign('activeRunId', 'activeRunId');
   assign('attempt', 'attempt');
+  assign('maxAttempts', 'maxAttempts');
+  assign('reclaimCount', 'reclaimCount');
   assign('branchName', 'branchName');
   assign('baseSha', 'baseSha');
   assign('headSha', 'headSha');

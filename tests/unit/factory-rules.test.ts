@@ -573,6 +573,7 @@ const storedTask = (
   activeRunId: null,
   attempt: 0,
   maxAttempts: 1,
+  reclaimCount: 0,
   maxTurns: null,
   timeLimitMs: null,
   maxOutputTokens: null,

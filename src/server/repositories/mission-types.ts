@@ -11,6 +11,8 @@ import type {
   ArtifactInput,
   CommandKind,
   CommandState,
+  EventActor,
+  EventLevel,
   MissionArtifact,
   MissionCommand,
   MissionEvent,
@@ -268,6 +270,19 @@ export interface EventRepository {
     options?: { afterSeq?: number; limit?: number },
   ): Promise<readonly MissionEvent[]>;
   listForRun(runId: string, afterSeq?: number, limit?: number): Promise<readonly MissionEvent[]>;
+  /**
+   * The newest events across every mission, for the questions no single timeline can answer.
+   *
+   * Operations asks "did anything happen to the factory as a whole?", and the events that answer
+   * it are recorded against whichever mission happened to own the task — which is the one place
+   * the person looking at Operations is not. Filtered rather than paged: this exists to surface a
+   * short list of things Jarvis did on its own, not to be a general event browser.
+   */
+  recent(options?: {
+    readonly limit?: number;
+    readonly actors?: readonly EventActor[];
+    readonly levels?: readonly EventLevel[];
+  }): Promise<readonly MissionEvent[]>;
   latestSeq(runId: string): Promise<number>;
 }
 

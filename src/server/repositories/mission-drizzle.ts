@@ -15,6 +15,8 @@ import type { MissionApproval, MissionPlan } from '@/domain/mission-plan';
 import type {
   CommandKind,
   CommandState,
+  EventActor,
+  EventLevel,
   MissionArtifact,
   MissionCommand,
   MissionEvent,
@@ -781,6 +783,36 @@ export class DrizzleEventRepository implements EventRepository {
       .where(and(eq(missionEvents.runId, runId), sql`${missionEvents.seq} > ${afterSeq}`))
       .orderBy(asc(missionEvents.seq), asc(missionEvents.id))
       .limit(limit);
+    return rows.map(toMissionEvent);
+  }
+
+  /**
+   * Newest first, and deliberately capped low.
+   *
+   * The default of twenty is a screenful, not a page: every caller of this is a summary panel, and
+   * a query that could return ten thousand rows to a dashboard is a query that eventually does.
+   */
+  async recent(
+    options: {
+      readonly limit?: number;
+      readonly actors?: readonly EventActor[];
+      readonly levels?: readonly EventLevel[];
+    } = {},
+  ): Promise<readonly MissionEvent[]> {
+    const filters = [
+      ...(options.actors && options.actors.length > 0
+        ? [inArray(missionEvents.actor, [...options.actors])]
+        : []),
+      ...(options.levels && options.levels.length > 0
+        ? [inArray(missionEvents.level, [...options.levels])]
+        : []),
+    ];
+    const rows = await this.db
+      .select()
+      .from(missionEvents)
+      .where(filters.length > 0 ? and(...filters) : undefined)
+      .orderBy(desc(missionEvents.createdAt), desc(missionEvents.id))
+      .limit(Math.min(options.limit ?? 20, 200));
     return rows.map(toMissionEvent);
   }
 

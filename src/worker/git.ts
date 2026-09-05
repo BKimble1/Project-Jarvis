@@ -194,7 +194,10 @@ export async function changedFiles(options: GitOptions): Promise<readonly string
  * **No truncation.** The friendly version stops at 500 entries, which is fine for a summary and
  * wrong for a boundary: a task that changed 600 files would have the last 100 unchecked.
  */
-export async function changedFilesForScope(options: GitOptions): Promise<readonly string[]> {
+export async function changedFilesForScope(
+  options: GitOptions,
+  baseSha?: string | null,
+): Promise<readonly string[]> {
   const result = await git(['status', '--porcelain', '-z'], options);
   const fields = result.stdout.split('\0');
   const paths: string[] = [];
@@ -219,7 +222,32 @@ export async function changedFilesForScope(options: GitOptions): Promise<readonl
     }
   }
 
-  return paths;
+  /*
+   * Everything already committed on this branch, as well.
+   *
+   * `git status` sees the working tree and the index and nothing else, so a check built on it
+   * alone asks "what has the agent not got round to committing?" — and the agent is allowed to
+   * run `git commit`, deliberately, because refusing it would break ordinary work. An agent that
+   * committed its changes would therefore have presented a clean tree and walked straight through
+   * the boundary. Comparing against the sha the workspace started from closes that: it is the
+   * same question the integrator asks before it merges, asked one stage earlier, where the
+   * workspace is still preserved and the task can be failed with the evidence intact.
+   *
+   * `--no-renames` on purpose. A rename reported as one entry passes containment whenever the
+   * *old* path is inside the set, which would let a task move a file anywhere it liked; asking
+   * git not to detect renames makes it a delete and an add, and both paths get checked.
+   */
+  if (baseSha) {
+    const committed = await git(
+      ['diff', '--name-only', '-z', '--no-renames', `${baseSha}..HEAD`],
+      options,
+    );
+    for (const path of committed.stdout.split('\0')) {
+      if (path.length > 0) paths.push(path);
+    }
+  }
+
+  return [...new Set(paths)];
 }
 
 export async function remoteUrl(options: GitOptions): Promise<string | null> {

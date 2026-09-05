@@ -36,17 +36,33 @@ export default async function OperationsPage() {
   await requireOwnerPage('/operations');
   const services = await getServices();
 
-  const [posture, limits, activeTasks, missions, workers, qualification, ingestion, claude] =
-    await Promise.all([
-      services.orchestrator.posture(),
-      services.orchestrator.limits(),
-      services.tasks.listActive(),
-      services.missionRepo.listOpen(),
-      services.workerRepo.list(),
-      services.qualificationService.status(),
-      services.revisions.jobSummary(),
-      buildCapacityView(services),
-    ]);
+  const [
+    posture,
+    limits,
+    activeTasks,
+    missions,
+    workers,
+    qualification,
+    ingestion,
+    claude,
+    intervened,
+  ] = await Promise.all([
+    services.orchestrator.posture(),
+    services.orchestrator.limits(),
+    services.tasks.listActive(),
+    services.missionRepo.listOpen(),
+    services.workerRepo.list(),
+    services.qualificationService.status(),
+    services.revisions.jobSummary(),
+    buildCapacityView(services),
+    /*
+     * What Jarvis did on its own that an owner would want to know about — today, reclaiming a task
+     * from a worker that stopped reporting. Read across every mission, because the event is
+     * recorded on whichever mission owned the task and that is precisely the timeline nobody
+     * looking at Operations is reading.
+     */
+    services.missionEvents.recent({ limit: 6, actors: ['system'], levels: ['warning'] }),
+  ]);
 
   /*
    * Index health, computed from the same scope filter retrieval would use rather than from a
@@ -186,6 +202,32 @@ export default async function OperationsPage() {
                 missionTitle={missionsById.get(task.missionId)?.title}
                 stalled
               />
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {intervened.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Jarvis stepped in</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 pt-0">
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Recovery Jarvis carried out without being asked. Nothing here needs an answer from
+              you; it is recorded so the factory never quietly repairs itself.
+            </p>
+            {intervened.map((event) => (
+              <div
+                key={event.id}
+                className="flex flex-col gap-0.5 rounded-[var(--radius-card)] border border-[var(--color-border)] px-3 py-2"
+              >
+                <p className="text-sm">{event.summary}</p>
+                <p className="text-xs text-[var(--color-text-muted)]">
+                  {missionsById.get(event.missionId)?.title ?? 'A mission that has since closed'} ·{' '}
+                  <RelativeTime iso={event.occurredAt} />
+                </p>
+              </div>
             ))}
           </CardContent>
         </Card>

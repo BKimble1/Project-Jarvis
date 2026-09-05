@@ -753,6 +753,12 @@ export function buildServices(
     permissions,
     clarifications,
     events: missionEvents,
+    /*
+     * The loop is the reclaim's caller because it is the only thing that runs on a timer, holds a
+     * single-instance lease and is not itself a worker. A crashed worker cannot give its own lease
+     * back, and a healthy one must not be allowed to take somebody else's.
+     */
+    reclaimAbandonedTasks: () => taskWorkerService.reclaimAbandoned(),
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

@@ -32,6 +32,7 @@ import { buildBranchName } from '@/domain/workspace-safety';
 import { redactSecrets } from '@/domain/redaction';
 import { resolveMissionRepository } from '@/server/missions/repository-resolution';
 import type { MissionService } from '@/server/missions/mission-service';
+import type { ReclaimSummary } from '@/server/missions/task-worker-service';
 import type {
   ClarificationRepository,
   EventRepository,
@@ -80,6 +81,25 @@ import type { CharterService } from './charter-service';
  * **Two of it must not run at once.** The lease is not an optimisation. Without it a slow tick and
  * the next scheduled one overlap, both see the same opportunity, and both act on it.
  */
+
+const NO_RECLAIM: ReclaimSummary = { reclaimed: 0, failed: 0, leasesReleased: 0 };
+
+/**
+ * One plain sentence about what was taken back, or nothing at all on a healthy pass.
+ *
+ * Appended to the tick summary rather than given a field of its own, because the summary is what
+ * an owner reads and a zero on a dashboard tile teaches people to stop looking. Silence when
+ * nothing happened is the whole point: the sentence only ever appears when it means something.
+ */
+function reclaimSentence(reclaim: ReclaimSummary): string | null {
+  const total = reclaim.reclaimed + reclaim.failed;
+  if (total === 0) return null;
+  const parts = [
+    reclaim.reclaimed > 0 ? `${reclaim.reclaimed} can be picked up again` : null,
+    reclaim.failed > 0 ? `${reclaim.failed} had no attempts left` : null,
+  ].filter((part): part is string => part !== null);
+  return `Took back ${total} task${total === 1 ? '' : 's'} from workers that stopped reporting — ${parts.join(', ')}.`;
+}
 
 export const OPERATOR_LEASE_SCOPE = 'operator';
 export const OPERATOR_TICK_KEY = 'tick';
@@ -152,6 +172,15 @@ export interface OperatorServiceDeps {
   readonly permissions: PermissionRepository;
   readonly clarifications: ClarificationRepository;
   readonly events: EventRepository;
+  /**
+   * Take back the work of workers that stopped reporting.
+   *
+   * The loop is the only thing in the system that runs on a timer, reaches the database and is not
+   * itself a worker — which makes it the only honest place to ask "is anybody still holding
+   * something they abandoned?". A crashed worker cannot reclaim its own lease, and a healthy one
+   * has no business reclaiming someone else's.
+   */
+  readonly reclaimAbandonedTasks: () => Promise<ReclaimSummary>;
   readonly clock?: () => Date;
 }
 
@@ -169,6 +198,8 @@ export interface TickResult {
   readonly capacity: CapacityDecision | null;
   /** What the supervisor made of each mission that is currently running. */
   readonly supervision: readonly SupervisionReport[];
+  /** Work taken back from workers that stopped reporting. Zeroes on a healthy pass. */
+  readonly reclaim: ReclaimSummary;
 }
 
 export const START_OUTCOMES = [
@@ -248,6 +279,7 @@ export class OperatorService {
         started: [],
         capacity: null,
         supervision: [],
+        reclaim: NO_RECLAIM,
       };
     }
 
@@ -353,13 +385,37 @@ export class OperatorService {
     const authority = await this.deps.charter.authority();
     const tick = await this.deps.ticks.start({ mode: authority.mode, now });
 
+    /* ----------------------------------------------------------- reclaim */
+
+    /*
+     * Before anything else, and before the mode gate.
+     *
+     * Reclaiming is recovery, not initiative: it does not start work, it hands back work that a
+     * departed worker is holding hostage. Putting it behind `modeObserves` would mean an owner who
+     * turned Jarvis off to think about something came back to a factory still jammed by a crash
+     * from an hour earlier, which is the opposite of what "off" is supposed to buy them.
+     *
+     * A failure here is swallowed for the same reason the supervisor's is: this pass has other
+     * work to do, and a reclaim that could take the loop down would be a worse fault than the one
+     * it exists to repair.
+     */
+    let reclaim = NO_RECLAIM;
+    try {
+      reclaim = await this.deps.reclaimAbandonedTasks();
+    } catch {
+      reclaim = NO_RECLAIM;
+    }
+
     const finish = async (
-      result: Omit<TickResult, 'tickId'> & { readonly projectsObserved?: number },
+      result: Omit<TickResult, 'tickId' | 'reclaim'> & { readonly projectsObserved?: number },
     ): Promise<TickResult> => {
+      const summary = reclaimSentence(reclaim)
+        ? `${result.summary} ${reclaimSentence(reclaim)}`
+        : result.summary;
       await this.deps.ticks.finish({
         id: tick.id,
         outcome: result.outcome,
-        summary: result.summary,
+        summary,
         projectsObserved: result.projectsObserved ?? result.coverage.length,
         opportunitiesFound: result.backlog.length,
         missionsStarted: result.started.length,
@@ -375,7 +431,7 @@ export class OperatorService {
           : null,
         now: this.clock(),
       });
-      return { ...result, tickId: tick.id };
+      return { ...result, summary, tickId: tick.id, reclaim };
     };
 
     /* Off means off. Not even looking. */

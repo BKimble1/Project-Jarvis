@@ -1374,6 +1374,15 @@ export const missionTasks = pgTable(
     activeRunId: uuid('active_run_id'),
     attempt: integer('attempt').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(1),
+    /*
+     * How many times this task has been taken back from a worker that stopped reporting.
+     *
+     * Separate from `attempt` on purpose. An attempt is a go at doing the work; a reclaim is the
+     * work never happening because the machine holding it went away, and charging that to the
+     * attempt budget would mean a playbook that says "one attempt" could be defeated for ever by
+     * one unstable laptop. This bounds the reclaim loop in its own right — see `RECLAIM_GRACE`.
+     */
+    reclaimCount: integer('reclaim_count').notNull().default(0),
     maxTurns: integer('max_turns'),
     timeLimitMs: bigint('time_limit_ms', { mode: 'number' }),
     maxOutputTokens: bigint('max_output_tokens', { mode: 'number' }),
