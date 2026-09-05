@@ -3261,6 +3261,17 @@ export const operatorState = pgTable('operator_state', {
    * a Jarvis that quietly stopped working.
    */
   until: timestamp('until', { withTimezone: true }),
+  /**
+   * The mode a pause was entered from, so resuming can return to exactly it.
+   *
+   * Without this a master pause is a one-way door: `paused → operator` is a widening move and the
+   * route asks for a typed confirmation before it, which is right for granting standing authority
+   * and wrong for lifting a pause the same owner set five minutes earlier. Recording where the
+   * pause came from is what lets those two be told apart.
+   *
+   * Null in every mode that is not `paused`, and cleared on the way out.
+   */
+  pausedFrom: text('paused_from').$type<OperatingMode>(),
 });
 
 /**

@@ -155,6 +155,7 @@ function toState(row: typeof operatorState.$inferSelect): OperatorStateRecord {
     changedAt: isoRequired(row.changedAt),
     reason: row.reason,
     until: iso(row.until),
+    pausedFrom: row.pausedFrom,
   };
 }
 
@@ -205,6 +206,7 @@ export class DrizzleOperatorStateRepository implements OperatorStateRepository {
     changedBy: string;
     reason?: string | null;
     until?: Date | null;
+    pausedFrom?: OperatingMode | null;
     now: Date;
   }): Promise<OperatorStateRecord> {
     await this.get();
@@ -217,6 +219,7 @@ export class DrizzleOperatorStateRepository implements OperatorStateRepository {
         changedAt: input.now,
         reason: input.reason ?? null,
         until: input.until ?? null,
+        pausedFrom: input.pausedFrom ?? null,
       })
       .where(eq(operatorState.id, OPERATOR_STATE_ID))
       .returning();

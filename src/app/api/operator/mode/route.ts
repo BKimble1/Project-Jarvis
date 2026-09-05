@@ -30,7 +30,19 @@ const modeSchema = z.object({
 export const POST = ownerRoute(async ({ services, session, request }) => {
   const input = await parseBody(request, modeSchema);
 
-  if (input.mode === 'operator' && input.confirmation === undefined) {
+  /*
+   * Lifting a pause is not granting authority.
+   *
+   * The confirmation gate below exists for the move that stops a person approving each mission.
+   * Returning to the mode a pause was entered from is not that move — the charter has not changed
+   * and neither has the owner's decision — and asking for a typed sentence every time somebody
+   * unpauses is how a master pause becomes a control nobody uses.
+   */
+  const current = await services.charterService.state();
+  const liftingOwnPause =
+    current.mode === 'paused' && current.pausedFrom === input.mode && input.mode === 'operator';
+
+  if (input.mode === 'operator' && input.confirmation === undefined && !liftingOwnPause) {
     return json(
       {
         error: {

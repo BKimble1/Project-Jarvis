@@ -264,6 +264,16 @@ export class CharterService {
       changedBy: input.changedBy,
       reason: input.reason ?? transition.summary,
       until: input.until ?? null,
+      /*
+       * Remember where a pause came from, and forget it on the way out.
+       *
+       * Pausing is the one narrowing move an owner expects to undo in a minute, and `paused →
+       * operator` is a widening move that asks for a typed confirmation. That confirmation exists
+       * so nobody grants standing authority by mis-clicking on a page they were skimming — not so
+       * that lifting a pause you set yourself costs you a sentence every time. Recording the
+       * origin is what lets the route tell those two apart.
+       */
+      pausedFrom: input.to === 'paused' ? current.mode : null,
       now,
     });
 

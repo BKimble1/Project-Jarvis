@@ -1,0 +1,65 @@
+# Run Jarvis as a service that survives a reboot.
+#
+# This is a template, not a drop-in: the three paths and the user below are yours, and systemd will
+# not guess them. Install it with
+#
+#     sudo cp deploy/jarvis.service /etc/systemd/system/jarvis.service
+#     sudo $EDITOR /etc/systemd/system/jarvis.service      # fix User, WorkingDirectory, paths
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now jarvis
+#
+# and read it with
+#
+#     systemctl status jarvis
+#     journalctl -u jarvis -f
+#
+# WHICH USER. It must be the same account that ran `claude login`, because a subscription worker
+# authenticates from that account's own Claude credentials — running the service as root or as a
+# dedicated `jarvis` user means the worker starts, finds no credential and refuses every mission.
+# There is no supported way to copy those credentials to another user.
+#
+# WHAT THIS DOES NOT DO. It does not expose Jarvis to the internet, and it does not run a tunnel.
+# The control plane listens where Next listens; reaching it from a phone on the same network is a
+# firewall question, and reaching it from outside is a decision with consequences that should not
+# arrive as a side effect of enabling a service.
+
+[Unit]
+Description=Jarvis — control plane and worker
+Documentation=https://github.com/BKimble1/Project-Jarvis/blob/main/docs/OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# The account that ran `claude login`. See the note above; this is the setting people get wrong.
+User=CHANGE_ME
+WorkingDirectory=/home/CHANGE_ME/Project-Jarvis
+
+# `npm run jarvis:live`, spelled out so systemd does not need a login shell to find npm.
+# `which node` on the target machine gives the right prefix if this path is wrong.
+ExecStart=/usr/bin/env npm run jarvis:live
+
+# The launcher already stops the worker first and gives it time to finish what it is doing.
+# The timeout here has to be longer than its own drain, or systemd kills the drain it is waiting on.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+# Restart the whole launcher if it exits, but not faster than it can be diagnosed. The launcher
+# has its own bounded restart policy for the two processes inside it; this is the outer backstop
+# for the launcher itself.
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Jarvis reads .env.local itself. This line is here for a deployment that would rather keep its
+# configuration outside the checkout; leave it commented out otherwise.
+# EnvironmentFile=/etc/jarvis.env
+
+# Logs go to the journal as well as to .jarvis-live/jarvis.log, which is already redacted.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

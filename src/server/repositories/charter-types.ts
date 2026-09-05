@@ -47,6 +47,14 @@ export interface OperatorStateRecord {
   readonly changedAt: string;
   readonly reason: string | null;
   readonly until: string | null;
+  /**
+   * Where a pause came from, so lifting it can return to exactly that mode.
+   *
+   * Null in every mode that is not `paused`. See the column's own note: without it a master pause
+   * is a one-way door, because coming back out of it is a widening move that asks for a typed
+   * confirmation intended for a quite different decision.
+   */
+  readonly pausedFrom: OperatingMode | null;
 }
 
 export interface OperatorStateRepository {
@@ -63,6 +71,7 @@ export interface OperatorStateRepository {
     changedBy: string;
     reason?: string | null;
     until?: Date | null;
+    pausedFrom?: OperatingMode | null;
     now: Date;
   }): Promise<OperatorStateRecord>;
 }

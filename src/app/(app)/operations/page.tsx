@@ -13,6 +13,8 @@ import { CapacityControls } from '@/components/operations/capacity-controls';
 import { ClaudeCapacity } from '@/components/operations/claude-capacity';
 import { buildCapacityView } from '@/server/operator/capacity-view';
 import { ReadinessPanel } from '@/components/operations/readiness-panel';
+import { SupervisorPanel } from '@/components/operations/supervisor-panel';
+import { supervisorHealth } from '@/domain/supervisor-health';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { RelativeTime } from '@/components/relative-time';
@@ -46,6 +48,8 @@ export default async function OperationsPage() {
     ingestion,
     claude,
     intervened,
+    ticks,
+    operatorState,
   ] = await Promise.all([
     services.orchestrator.posture(),
     services.orchestrator.limits(),
@@ -62,6 +66,9 @@ export default async function OperationsPage() {
      * looking at Operations is reading.
      */
     services.missionEvents.recent({ limit: 6, actors: ['system'], levels: ['warning'] }),
+    /* Twelve passes is enough to measure a cadence and cheap enough to read on every visit. */
+    services.operatorTicks.recent(12),
+    services.charterService.state(),
   ]);
 
   /*
@@ -78,7 +85,9 @@ export default async function OperationsPage() {
       })
     : null;
 
-  const nowIso = new Date().toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const loop = supervisorHealth(ticks, now);
   const stalled = staleTasks(activeTasks, nowIso);
   const stalledIds = new Set(stalled.map((task) => task.id));
   const missionsById = new Map(missions.map((mission) => [mission.id, mission]));
@@ -124,6 +133,25 @@ export default async function OperationsPage() {
         </span>
         <span className="ml-auto text-xs text-[var(--color-accent-text)]">See what was proved</span>
       </Link>
+
+      {/*
+       * Above readiness, because it answers a different and more urgent question. Readiness says
+       * whether Jarvis *could* work; this says whether it *is*, and a deployment can pass every
+       * readiness check while the loop that decides to do anything has not run since Tuesday.
+       */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Jarvis</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <SupervisorPanel
+            health={loop}
+            mode={operatorState.mode}
+            pausedFrom={operatorState.pausedFrom}
+            changedAt={operatorState.changedAt}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

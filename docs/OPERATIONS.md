@@ -123,3 +123,63 @@ Actions secrets that only the workflow can read. An app profile stores the _name
 refuses at its schema to store anything that looks like a value. A workflow starting is not the
 same as a build reaching testers, and the receipt says so: the App Store Connect processing stage
 is reported as `unknown`, because Jarvis cannot see it.
+
+## Keeping it running
+
+`npm run jarvis:live` is the only start command. It starts the control plane, waits until the
+database answers, starts the worker, and stops both together on Ctrl-C — the worker first, with
+time to finish the mission in its hands.
+
+**One at a time.** The launcher takes a lock in `.jarvis-live/live.lock` and refuses to start if
+another one already holds it. Two launchers is not a redundant pair: it is two control planes on
+one port, two workers claiming with the same token, and two writers on a local database that
+permits one. If the machine lost power and the lock was left behind, the next start notices the
+process is gone and cleans it up on its own.
+
+**One process dying is not the end.** Either half is restarted, with a growing wait between
+attempts — two seconds, then four, then eight. After five restarts in ten minutes the launcher
+stops trying and shuts the rest down, because something is wrong that restarting will not fix and
+an owner needs to be able to read the error rather than watch it scroll past.
+
+**The log.** Everything both processes print goes to `.jarvis-live/jarvis.log` as well as to the
+terminal, with secrets removed on the way. It rolls at 8MB and keeps five generations, so a chatty
+worker cannot fill a Raspberry Pi's card. The redaction is deliberate: a terminal belongs to the
+person looking at it, and a file gets copied into bug reports.
+
+**Is it actually working?** Operations answers this at the top of the page, above readiness:
+
+- **Mode** — what Jarvis is currently allowed to do, and when that last changed.
+- **Last pass / next pass due** — the operating loop's real cadence, measured from the passes
+  themselves rather than read from a setting. The control plane cannot know the interval: the loop
+  is driven by the worker, on the worker's timer, from the worker's configuration.
+- **Last error** — the most recent pass that failed, however long ago, kept visible after a good
+  pass so a transient failure is not erased by the next success.
+- **Pause Jarvis** — the master switch. Work already running finishes or stops safely; nothing new
+  begins; you can still ask it things. Resuming returns to exactly the mode you paused from, and
+  does not ask you to re-type the standing-authority confirmation to undo your own pause.
+
+`npm run doctor` prints the same readiness report the page renders, now including **Operating
+loop** (is anything driving it) and **Connected data** (what Jarvis can see, and — more usefully —
+what it cannot: no calendar, mail, analytics or finance connector exists yet, and Jarvis says so
+rather than estimating).
+
+## Surviving a reboot
+
+`deploy/jarvis.service` is a systemd template. Copy it, change the three paths and the user, then:
+
+```sh
+sudo cp deploy/jarvis.service /etc/systemd/system/jarvis.service
+sudo $EDITOR /etc/systemd/system/jarvis.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now jarvis
+journalctl -u jarvis -f
+```
+
+The user matters more than anything else in that file. A subscription worker authenticates from the
+Claude credentials of the account that ran `claude login`, so the service has to run as that same
+account. Running it as `root` or as a dedicated `jarvis` user gives you a worker that starts, finds
+no credential, and refuses every mission.
+
+Nothing here exposes Jarvis to the internet. The control plane listens where Next listens; reaching
+it from a phone on the same network is a firewall question, and reaching it from outside is a
+decision that should not arrive as a side effect of enabling a service.

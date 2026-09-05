@@ -289,6 +289,37 @@ describe('standing authority', () => {
       ).rejects.toThrow(/Only you can grant Jarvis more autonomy/);
     });
 
+    it('remembers where a pause came from, and forgets it on the way out', async () => {
+      /*
+       * The master pause has to be undoable. `paused → operator` is a widening move, and the mode
+       * route asks for a typed confirmation before those — which is right for granting standing
+       * authority and wrong for lifting a pause the same owner set a minute ago. The origin is
+       * what lets the route tell the two apart, so it has to be recorded and it has to be cleared.
+       */
+      const { charterService } = harness.services;
+      const version = await charterService.draft({ content: charter(), authoredBy: 'owner' });
+      await charterService.activate(version.id, 'owner');
+      await charterService.setMode({ to: 'supervised', actor: 'owner', changedBy: 'owner' });
+      await charterService.setMode({ to: 'operator', actor: 'owner', changedBy: 'owner' });
+      expect((await charterService.state()).pausedFrom).toBeNull();
+
+      const paused = await charterService.setMode({
+        to: 'paused',
+        actor: 'owner',
+        changedBy: 'owner',
+      });
+      expect(paused.pausedFrom).toBe('operator');
+
+      const resumed = await charterService.setMode({
+        to: 'operator',
+        actor: 'owner',
+        changedBy: 'owner',
+      });
+      expect(resumed.mode).toBe('operator');
+      /* Cleared, so a later pause from a narrower mode cannot resume into a wider one. */
+      expect(resumed.pausedFrom).toBeNull();
+    });
+
     it('explains why standing authority is unavailable, in a sentence', async () => {
       const { charterService } = harness.services;
       const authority = await charterService.authority();

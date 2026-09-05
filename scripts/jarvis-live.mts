@@ -27,10 +27,21 @@
  * consequences that nobody should arrive at by running a start script.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
+import { redactSecrets } from '@/domain/redaction';
+import { decideRestart, LOG_KEEP, rolledLogName, shouldRotate } from '@/domain/process-supervision';
 
 /*
  * Both env files, in the order that makes the more specific one win.
@@ -52,8 +63,147 @@ const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.JARVIS_LIVE_HOST ?? '0.0.0.0';
 const LOCAL = `http://127.0.0.1:${PORT}`;
 
-const children: { readonly name: string; readonly child: ChildProcess }[] = [];
+/** Everything this launcher writes: the instance lock and the logs. Never anything else. */
+const STATE_DIR = path.resolve(process.cwd(), '.jarvis-live');
+const LOCK_FILE = path.join(STATE_DIR, 'live.lock');
+const LOG_FILE = path.join(STATE_DIR, 'jarvis.log');
+
+interface Supervised {
+  readonly name: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  child: ChildProcess;
+  /** Epoch milliseconds of every restart attempted for this process. */
+  restarts: number[];
+}
+
+const children: Supervised[] = [];
 let shuttingDown = false;
+
+/* --------------------------------------------------------------------- logs */
+
+/**
+ * Everything both processes print, on the terminal and in a file, with secrets removed.
+ *
+ * ## Why a file at all
+ *
+ * Because the interesting output is always the output from the night before. A launcher whose only
+ * record is the terminal it was started in gives an owner exactly one chance to read why something
+ * failed, and they are usually asleep for it.
+ *
+ * ## Why redacted, when the terminal is not
+ *
+ * A terminal is ephemeral and belongs to the person looking at it. A file is neither: it is copied
+ * into a bug report, opened over somebody's shoulder, and synced to wherever the checkout is
+ * synced. The child processes are careful about what they print, but "careful" is a property of
+ * the code as it is today, and this is the last place a stray token can be caught.
+ */
+function log(line: string): void {
+  const clean = redactSecrets(line);
+  process.stdout.write(clean.endsWith('\n') ? clean : `${clean}\n`);
+  appendToLogFile(clean.endsWith('\n') ? clean : `${clean}\n`);
+}
+
+function appendToLogFile(text: string): void {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    rotateIfNeeded();
+    appendFileSync(LOG_FILE, text);
+  } catch {
+    /* A launcher that cannot write its log must still start Jarvis. */
+  }
+}
+
+function rotateIfNeeded(): void {
+  let size = 0;
+  try {
+    size = statSync(LOG_FILE).size;
+  } catch {
+    return;
+  }
+  if (!shouldRotate(size)) return;
+  try {
+    for (let generation = LOG_KEEP - 1; generation >= 0; generation -= 1) {
+      const from = path.join(STATE_DIR, rolledLogName('jarvis.log', generation));
+      const to = path.join(STATE_DIR, rolledLogName('jarvis.log', generation + 1));
+      if (!existsSync(from)) continue;
+      if (generation + 1 >= LOG_KEEP) rmSync(from, { force: true });
+      else renameSync(from, to);
+    }
+  } catch {
+    /* Rotation is best effort; losing the roll is better than refusing to log. */
+  }
+}
+
+/* ---------------------------------------------------------- instance lock */
+
+/**
+ * One Jarvis per checkout.
+ *
+ * Two launchers is not a redundant pair, it is two control planes on the same port — one of which
+ * fails to bind and dies — plus two workers claiming from the same queue with the same token, plus
+ * two PGlite writers on a store that permits one. Every symptom of that is confusing and none of
+ * them says "you started it twice".
+ *
+ * The lock is a pid file, checked with signal 0 rather than trusted: a launcher that was killed
+ * with SIGKILL leaves its file behind, and refusing to start because of a stale file would be a
+ * worse failure than the one being prevented.
+ */
+function claimInstanceLock(): void {
+  mkdirSync(STATE_DIR, { recursive: true });
+
+  if (existsSync(LOCK_FILE)) {
+    const holder = readLock();
+    if (holder !== null && holder.pid !== process.pid && isAlive(holder.pid)) {
+      console.error(
+        `[jarvis] Jarvis is already running here (pid ${holder.pid}, started ${holder.startedAt}).\n` +
+          '         Stop it first, or remove .jarvis-live/live.lock if you are sure it is gone.',
+      );
+      process.exit(1);
+    }
+    if (holder !== null) {
+      log(`[jarvis] Cleaning up a lock left behind by pid ${holder.pid}.`);
+    }
+  }
+
+  writeFileSync(
+    LOCK_FILE,
+    `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+  );
+}
+
+function readLock(): { pid: number; startedAt: string } | null {
+  try {
+    const parsed = JSON.parse(readFileSync(LOCK_FILE, 'utf8')) as {
+      pid?: unknown;
+      startedAt?: unknown;
+    };
+    if (typeof parsed.pid !== 'number') return null;
+    return { pid: parsed.pid, startedAt: String(parsed.startedAt ?? 'at an unknown time') };
+  } catch {
+    return null;
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    /* Signal 0 delivers nothing and throws only if the process is gone or not ours. */
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseInstanceLock(): void {
+  const holder = readLock();
+  if (holder?.pid !== process.pid) return;
+  try {
+    rmSync(LOCK_FILE, { force: true });
+  } catch {
+    /* Nothing to do; the next start treats it as stale. */
+  }
+}
 
 /**
  * Start a child in its own process group, so stopping it stops everything it started.
@@ -66,21 +216,81 @@ let shuttingDown = false;
  *
  * `detached` makes each child a group leader, and `process.kill(-pid)` signals the whole group.
  */
-function start(name: string, command: string, args: string[]): ChildProcess {
-  const child = spawn(command, args, { env: process.env, stdio: 'inherit', detached: true });
-  children.push({ name, child });
-  child.on('exit', (code, signal) => {
-    if (shuttingDown) return;
+function start(name: string, command: string, args: readonly string[]): Supervised {
+  const entry: Supervised = {
+    name,
+    command,
+    args,
+    child: spawnChild(name, command, args),
+    restarts: [],
+  };
+  children.push(entry);
+  supervise(entry);
+  return entry;
+}
+
+function spawnChild(name: string, command: string, args: readonly string[]): ChildProcess {
+  const child = spawn(command, [...args], {
+    env: process.env,
     /*
-     * One process dying takes the other down with it, on purpose. A control plane with no worker
-     * accepts missions nothing will ever run; a worker with no control plane logs a poll failure
-     * every few seconds for ever. Both halves silently half-working is the state this launcher
-     * exists to prevent, so it is not a state it is allowed to leave behind.
+     * Piped rather than inherited, so every line can be redacted and written to the log before it
+     * reaches the terminal. Stdin stays inherited: `next dev` reads keystrokes.
      */
-    console.error(`\n[jarvis] ${name} exited (${signal ?? code}). Stopping the rest.`);
-    void shutdown(typeof code === 'number' && code !== 0 ? code : 1);
+    stdio: ['inherit', 'pipe', 'pipe'],
+    detached: true,
   });
+  for (const stream of [child.stdout, child.stderr]) {
+    stream?.setEncoding('utf8');
+    stream?.on('data', (chunk: string) => {
+      for (const line of chunk.split('\n')) {
+        if (line.length > 0) log(`[${name}] ${line}`);
+      }
+    });
+  }
   return child;
+}
+
+/**
+ * Restart a process that dies, a bounded number of times, and give up loudly.
+ *
+ * Previously any exit took the whole launcher down. That is the right instinct — a control plane
+ * with no worker accepts missions nothing will run, and a worker with no control plane logs a poll
+ * failure every few seconds for ever — and it is the wrong response to the most common cause,
+ * which is a process that fell over once and would have been fine. Restarting is the difference
+ * between "Jarvis was down all night" and "Jarvis blipped at 3am".
+ *
+ * What has not changed is the ending. When the restart budget is spent, everything still stops:
+ * half of Jarvis running is the state this launcher exists to prevent, and a supervisor that
+ * retried for ever would leave an owner watching the same stack trace scroll past instead of
+ * reading it.
+ */
+function supervise(entry: Supervised): void {
+  entry.child.on('exit', (code, signal) => {
+    if (shuttingDown) return;
+    const now = Date.now();
+    log(`\n[jarvis] ${entry.name} exited (${signal ?? code}).`);
+
+    const decision = decideRestart({
+      restarts: entry.restarts,
+      now,
+      cleanExit: code === 0,
+      shuttingDown,
+      name: entry.name,
+    });
+    log(`[jarvis] ${decision.reason}`);
+
+    if (!decision.restart) {
+      void shutdown(typeof code === 'number' && code !== 0 ? code : 1);
+      return;
+    }
+
+    entry.restarts.push(now);
+    setTimeout(() => {
+      if (shuttingDown) return;
+      entry.child = spawnChild(entry.name, entry.command, entry.args);
+      supervise(entry);
+    }, decision.delayMs).unref();
+  });
 }
 
 /**
@@ -176,6 +386,7 @@ async function shutdown(code: number): Promise<void> {
     if (entry.child.exitCode === null) signalGroup(entry.child, 'SIGKILL');
   }
 
+  releaseInstanceLock();
   process.exit(code);
 }
 
@@ -238,13 +449,15 @@ function preflight(): {
 }
 
 async function main(): Promise<void> {
+  claimInstanceLock();
   const { blocking, notices } = preflight();
   if (blocking.length > 0) {
     console.error('[jarvis] Cannot start:\n');
     for (const problem of blocking) console.error(`  · ${problem}\n`);
+    releaseInstanceLock();
     process.exit(1);
   }
-  for (const notice of notices) console.log(`[jarvis] Note: ${notice}\n`);
+  for (const notice of notices) log(`[jarvis] Note: ${notice}\n`);
 
   /*
    * Only for a hosted database. The local PGlite driver runs its own migrations when the control
@@ -253,20 +466,20 @@ async function main(): Promise<void> {
    */
   const driver = process.env.JARVIS_DB_DRIVER ?? (process.env.DATABASE_URL ? 'neon' : 'pglite');
   if (driver !== 'pglite') {
-    console.log('[jarvis] Applying migrations…');
+    log('[jarvis] Applying migrations…');
     await runOnce('npx', ['tsx', 'scripts/migrate.ts']);
   }
 
-  console.log('[jarvis] Starting the control plane…');
+  log('[jarvis] Starting the control plane…');
   start('control plane', 'npx', ['next', 'dev', '--hostname', HOST, '--port', String(PORT)]);
 
   await waitForHealth(180_000);
 
-  console.log('[jarvis] Control plane is answering. Starting the worker…');
+  log('[jarvis] Control plane is answering. Starting the worker…');
   start('worker', 'npx', ['tsx', 'scripts/worker.ts']);
 
   const lan = lanUrls();
-  console.log(
+  log(
     [
       '',
       '  Jarvis is running.',
@@ -279,6 +492,7 @@ async function main(): Promise<void> {
       '',
       '    Health      npm run doctor',
       '    Worker      npm run worker:health',
+      `    Log         ${path.relative(process.cwd(), LOG_FILE)}   (redacted, rolled at 8MB)`,
       '    Stop        Ctrl-C, or send SIGTERM to this process',
       '',
     ].join('\n'),
@@ -287,12 +501,18 @@ async function main(): Promise<void> {
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
-    console.log('\n[jarvis] Stopping. The worker will finish what it is doing first.');
+    log('\n[jarvis] Stopping. The worker will finish what it is doing first.');
     void shutdown(0);
   });
 }
 
+/*
+ * A crash in the launcher itself must not leave the lock behind, or the next start refuses over a
+ * process that is not there. `shutdown` releases it on every ordinary path; these cover the rest.
+ */
+process.on('exit', releaseInstanceLock);
+
 main().catch((error: unknown) => {
-  console.error(`[jarvis] ${error instanceof Error ? error.message : String(error)}`);
+  log(`[jarvis] ${error instanceof Error ? error.message : String(error)}`);
   void shutdown(1);
 });

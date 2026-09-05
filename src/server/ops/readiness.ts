@@ -14,6 +14,8 @@ import {
   type QualificationCheckResult,
 } from '@/domain/qualification';
 import { deriveWorkerHealth } from '@/domain/worker';
+import { summariseConnectors, type ConnectorStatus } from '@/domain/connectors';
+import { supervisorHealth, type SupervisorHealth } from '@/domain/supervisor-health';
 import type { AppConfig } from '@/server/config/env';
 import type { Database } from '@/server/db/client';
 import type { Services } from '@/server/container';
@@ -45,7 +47,10 @@ import type { Services } from '@/server/container';
 export interface ReadinessInput {
   readonly config: AppConfig;
   readonly db: Database;
-  readonly services: Pick<Services, 'qualificationService' | 'workerRepo' | 'answerProvider'>;
+  readonly services: Pick<
+    Services,
+    'qualificationService' | 'workerRepo' | 'answerProvider' | 'operatorTicks' | 'sources'
+  >;
   readonly now?: Date;
 }
 
@@ -82,6 +87,8 @@ export async function assembleReadiness(input: ReadinessInput): Promise<Readines
 
   checks.push(...translateLadder(ladder));
   checks.push(await workerFleetCheck(input, now));
+  checks.push(await supervisorCheck(input, now));
+  checks.push(await connectorsCheck(input));
   checks.push(await activationCheck(input));
 
   return summariseReadiness(checks, now.toISOString());
@@ -471,6 +478,120 @@ async function workerFleetCheck(input: ReadinessInput, now: Date): Promise<Readi
 }
 
 /* -------------------------------------------------------------------- shared */
+
+/* ---------------------------------------------------------------- supervisor */
+
+/**
+ * Is anything actually driving the operating loop?
+ *
+ * This is the check that most needed to exist. Everything else on this page asks whether Jarvis
+ * *could* work; nothing asked whether it *is*. A deployment can pass every other check — database
+ * reachable, worker connected, model available — while the loop that decides to do anything has
+ * not run since Tuesday, and until now the only symptom was an owner noticing that nothing had
+ * happened.
+ *
+ * Not blocking, deliberately. A stopped loop does not stop the owner from working: missions they
+ * start by hand still run. It stops Jarvis from starting anything itself, which is a different and
+ * quieter failure, and one that deserves to be said out loud rather than to end the report.
+ */
+async function supervisorCheck(input: ReadinessInput, now: Date): Promise<ReadinessCheck> {
+  let health: SupervisorHealth;
+  try {
+    health = supervisorHealth(await input.services.operatorTicks.recent(12), now);
+  } catch (error) {
+    return {
+      id: 'operating_loop',
+      area: 'supervisor',
+      title: 'Something is driving the operating loop',
+      state: 'failed',
+      detail: describeError(error),
+      nextAction: 'Fix the database error above, then run this again.',
+      blocking: false,
+    };
+  }
+
+  const state: ReadinessState =
+    health.state === 'healthy'
+      ? 'verified'
+      : health.state === 'never_run'
+        ? 'missing'
+        : health.state === 'late'
+          ? 'configured'
+          : 'failed';
+
+  return {
+    id: 'operating_loop',
+    area: 'supervisor',
+    title: 'Something is driving the operating loop',
+    state,
+    detail: health.explanation,
+    nextAction:
+      state === 'verified'
+        ? null
+        : health.state === 'failing'
+          ? 'Read the failure above. The pass is recorded in full under Operations.'
+          : 'The loop is driven by the worker on its own timer. Start one with `npm run jarvis:live`, and check JARVIS_WORKER_OPERATOR_TICK_SECONDS is not zero.',
+    blocking: false,
+  };
+}
+
+/* ---------------------------------------------------------------- connectors */
+
+/**
+ * What Jarvis can see, and what it cannot.
+ *
+ * Never `failed` and never blocking: an absent calendar is not a fault, it is a fact, and the
+ * whole point of enumerating it is so that every surface which might otherwise have guessed can
+ * say "not connected" in the same words. See `domain/connectors`.
+ */
+async function connectorsCheck(input: ReadinessInput): Promise<ReadinessCheck> {
+  let statuses: readonly ConnectorStatus[];
+  try {
+    const sources = await input.services.sources.listAllGithubSources();
+    statuses = summariseConnectors({
+      repositories: {
+        configured: sources.length,
+        synced: sources.filter((source) => source.syncStatus === 'ok').length,
+      },
+      /*
+       * Hard false until the outbound call bridge has a provider to configure. Reported rather
+       * than omitted, because "Jarvis will never place a call" is exactly the sort of thing an
+       * owner should be able to read off a page rather than infer from the absence of a row.
+       */
+      telephonyConfigured: false,
+    });
+  } catch (error) {
+    return {
+      id: 'connected_data',
+      area: 'connectors',
+      title: 'What Jarvis can see',
+      state: 'failed',
+      detail: describeError(error),
+      nextAction: 'Fix the database error above, then run this again.',
+      blocking: false,
+    };
+  }
+
+  const connected = statuses.filter((status) => status.state === 'connected');
+  const absent = statuses.filter(
+    (status) => status.state === 'planned' || status.state === 'not_connected',
+  );
+
+  return {
+    id: 'connected_data',
+    area: 'connectors',
+    title: 'What Jarvis can see',
+    state: connected.length > 0 ? 'verified' : 'configured',
+    detail:
+      `${connected.length} of ${statuses.length} connections are live. ` +
+      `Not connected: ${absent.map((status) => status.label.toLowerCase()).join(', ') || 'nothing'}.`,
+    nextAction:
+      absent.length === 0
+        ? null
+        : 'Nothing here is a fault. Jarvis says "not connected" rather than estimating, and will keep doing so until one of these exists.',
+    blocking: false,
+  };
+}
 
 /* ---------------------------------------------------------------- activation */
 
