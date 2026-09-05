@@ -99,6 +99,7 @@ export function DisplayBoard() {
                 }`}
             {payload.health.posture !== 'open' ? ` · ${payload.health.posture}` : ''}
           </span>
+          <ClaudeLeft claude={payload.health.claude} />
           <span
             className={cn(
               stale ? 'text-[var(--color-critical-text)]' : 'text-[var(--color-text-subtle)]',
@@ -386,5 +387,41 @@ function PairScreen({ onPaired }: { onPaired: () => void }) {
         </form>
       </div>
     </Screen>
+  );
+}
+
+/**
+ * How much Claude is left, at a glance from across a room.
+ *
+ * Shows what is *left* rather than what is used, because the wall is read in passing and "18%" has
+ * to mean the same thing to somebody who is not thinking about it. A window Jarvis could not read
+ * says so in words: on a board that is glanced at, a bar sitting at zero and a bar that is missing
+ * look identical, and only one of them means you are out of capacity.
+ *
+ * A reading that has gone stale is marked. The wallboard is the surface most likely to be believed
+ * without being checked, so it is the one where an old number most needs to say that it is old.
+ */
+function ClaudeLeft({
+  claude,
+}: {
+  claude: {
+    applicable: boolean;
+    fiveHourPercentLeft: number | null;
+    sevenDayPercentLeft: number | null;
+    quality: string;
+  };
+}) {
+  if (!claude.applicable) return null;
+
+  const parts: string[] = [];
+  if (claude.fiveHourPercentLeft !== null) parts.push(`${claude.fiveHourPercentLeft}% 5h`);
+  if (claude.sevenDayPercentLeft !== null) parts.push(`${claude.sevenDayPercentLeft}% week`);
+
+  return (
+    <span className="text-[var(--color-text-muted)]">
+      {parts.length === 0
+        ? 'Claude capacity unreadable'
+        : `Claude ${parts.join(' · ')} left${claude.quality === 'stale' ? ' (last known)' : ''}`}
+    </span>
   );
 }

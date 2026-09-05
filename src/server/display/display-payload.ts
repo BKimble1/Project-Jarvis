@@ -17,6 +17,31 @@ import {
 } from '@/domain/mission-task';
 import { boundText, redactSecrets } from '@/domain/redaction';
 import type { Services } from '../container';
+import { buildCapacityView } from '@/server/operator/capacity-view';
+import type { CapacityView, RateWindow } from '@/domain/claude-capacity';
+
+/**
+ * How sure the two figures on the wall are.
+ *
+ * Stale wins over measured, because the point of the marker is to warn — a pair where one number
+ * is fresh and the other is an hour old is not a fresh pair.
+ */
+function shownQuality(view: CapacityView): string {
+  const shown = view.windows.filter(
+    (entry) =>
+      (entry.window === 'fiveHour' || entry.window === 'sevenDay') && entry.percentUsed !== null,
+  );
+  if (shown.length === 0) return 'unknown';
+  return shown.some((entry) => entry.quality === 'stale') ? 'stale' : 'measured';
+}
+
+/** One window's remaining percentage, rounded once, or null when it could not be read. */
+function windowLeft(view: CapacityView, window: RateWindow): number | null {
+  const found = view.windows.find((entry) => entry.window === window);
+  return found?.remainingPercent === null || found?.remainingPercent === undefined
+    ? null
+    : Math.round(found.remainingPercent);
+}
 
 /**
  * What a wallboard is allowed to know.
@@ -45,10 +70,16 @@ export async function buildDisplayPayload(
   const scopes = new Set<DisplayScope>(device.scopes);
   const nowMs = now.getTime();
 
-  const [posture, workers, openMissions] = await Promise.all([
+  const [posture, workers, openMissions, claude] = await Promise.all([
     services.orchestrator.posture(),
     services.workerRepo.list(),
     services.missionRepo.listOpen(),
+    /*
+     * The same assembly the operations page uses, rather than a second one. Two readers of the
+     * same account would eventually round differently or age against a different clock, and the
+     * wall and the dashboard would quietly disagree — with the wall being the one nobody checks.
+     */
+    buildCapacityView(services, now),
   ]);
 
   const liveWorkers = workers.filter((worker) => worker.revokedAt === null);
@@ -132,6 +163,23 @@ export async function buildDisplayPayload(
         stale: liveWorkers.length - healthyWorkers.length,
       },
       posture,
+      claude: {
+        applicable: claude.applicable,
+        /*
+         * Named for what is *left*, because that is the number somebody glances at from across a
+         * room. Null stays null the whole way to the screen: a window Jarvis could not read must
+         * not become a bar at zero, which reads as "you are out".
+         */
+        fiveHourPercentLeft: windowLeft(claude, 'fiveHour'),
+        sevenDayPercentLeft: windowLeft(claude, 'sevenDay'),
+        /*
+         * How sure the *shown* figures are, not how sure the governor's decision is. The two
+         * differ: an unreadable Opus window makes the decision cautious while the five-hour and
+         * weekly figures beside it are freshly measured, and marking those as doubtful because of
+         * a third window nobody is looking at would teach an owner to ignore the marker.
+         */
+        quality: shownQuality(claude),
+      },
     },
     portfolio,
     missions: scopes.has('missions') ? cards : [],

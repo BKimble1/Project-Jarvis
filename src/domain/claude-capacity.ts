@@ -600,3 +600,38 @@ export function routeModel(input: {
       }
     : { weight, model: models.balanced, reason: 'Ordinary work.' };
 }
+
+/* -------------------------------------------------------------- the view */
+
+export interface CapacityWindowView {
+  readonly window: RateWindow;
+  readonly label: string;
+  /** Null means unknown. Never rendered as zero. */
+  readonly percentUsed: number | null;
+  readonly remainingPercent: number | null;
+  readonly resetsAt: string | null;
+  readonly quality: ObservationQuality;
+  readonly qualityLabel: string;
+}
+
+export interface CapacityView {
+  /** True when this account has the shared windows at all. False for an API key or a 3P provider. */
+  readonly applicable: boolean;
+  readonly authModeLabel: string;
+  readonly subscriptionType: string | null;
+  readonly windows: readonly CapacityWindowView[];
+  readonly decision: CapacityDecision;
+  /** How many workers contributed. Named so "42%, from where?" has an answer. */
+  readonly reportingWorkers: number;
+  /**
+   * What the governor said on the last completed pass of the operating loop.
+   *
+   * Distinct from `decision`, which is what it would say right now. On a quiet day this is the
+   * sentence that explains why nothing started, and it is the one an owner actually wants.
+   */
+  readonly lastPass: {
+    readonly verdict: string;
+    readonly reason: string;
+    readonly at: string;
+  } | null;
+}

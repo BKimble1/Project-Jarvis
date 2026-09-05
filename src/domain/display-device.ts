@@ -145,6 +145,25 @@ export interface DisplayPayload {
     readonly controlPlane: 'ok' | 'degraded';
     readonly workers: { readonly total: number; readonly healthy: number; readonly stale: number };
     readonly posture: string;
+    /**
+     * How much Claude the account has left, as percentages.
+     *
+     * Lives under `health` rather than behind a scope of its own, so that a wallboard already
+     * hanging on a wall gains it without anybody editing a device. It is a fact about the
+     * deployment rather than about a project: it names no repository, no branch and no file, and a
+     * percentage on a kitchen wall gives away far less than the mission titles beside it.
+     *
+     * Null percentages mean unknown and are rendered as such. There is no token figure here for
+     * the same reason there is none anywhere else — Anthropic does not publish one.
+     */
+    readonly claude: {
+      /** False for an API key or a cloud provider, which have no shared window to report. */
+      readonly applicable: boolean;
+      readonly fiveHourPercentLeft: number | null;
+      readonly sevenDayPercentLeft: number | null;
+      /** measured | estimated | stale | unknown, so the wall cannot look more certain than it is. */
+      readonly quality: string;
+    };
   };
   readonly portfolio: {
     readonly projects: number;

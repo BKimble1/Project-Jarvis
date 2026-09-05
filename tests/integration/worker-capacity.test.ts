@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { WORKER_VERSION, type WorkerCapacityInput } from '@/domain/worker-protocol';
 import { mergeAccountLimits, decideCapacity } from '@/domain/claude-capacity';
+import {
+  DEFAULT_DISPLAY_SCOPES,
+  findForbiddenDisplayKeys,
+  type DisplayDevice,
+} from '@/domain/display-device';
 import { createHarness, type TestHarness } from '../helpers/services';
 
 /**
@@ -366,5 +371,84 @@ describe('the operating loop’s caller', () => {
     expect(anonymous.status).toBe(401);
     /* And no second tick row: an unauthenticated request is refused before anything runs. */
     expect(await harness.services.operatorService.recentTicks()).toHaveLength(1);
+  });
+});
+
+/** A device with every scope, built rather than enrolled: only the payload is under test here. */
+function wallboard(): DisplayDevice {
+  return {
+    id: '00000000-0000-4000-8000-000000000001',
+    name: 'Kitchen',
+    tokenPrefix: 'jdsp_test',
+    location: null,
+    createdAt: new Date().toISOString(),
+    lastSeenAt: null,
+    lastSeenUserAgent: null,
+    revokedAt: null,
+    revokedReason: null,
+    expiresAt: null,
+    scopes: [...DEFAULT_DISPLAY_SCOPES],
+    rotationSeconds: 20,
+  };
+}
+
+describe('what the wallboard is told about capacity', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it('shows what is left, keeps the provenance, and carries nothing forbidden', async () => {
+    const { workerService } = harness.services;
+    const { worker } = await workerService.enrol('wall-worker', 1);
+    await workerService.poll(worker.id, {
+      heartbeat: {
+        ...HEARTBEAT,
+        capacity: reading({
+          observedAt: new Date().toISOString(),
+          windows: {
+            fiveHour: { utilisationPercent: 30, resetsAt: null },
+            sevenDay: { utilisationPercent: 10, resetsAt: null },
+            /* Left unread on purpose: it must survive as null all the way to the screen. */
+            sevenDayOpus: null,
+          },
+        }),
+      },
+      acknowledgedCommandIds: [],
+      wantsWork: true,
+    });
+
+    const { buildDisplayPayload } = await import('@/server/display/display-payload');
+    const payload = await buildDisplayPayload(harness.services, wallboard());
+
+    expect(payload.health.claude.applicable).toBe(true);
+    /* What is *left*, not what is used: the wall is read in passing. */
+    expect(payload.health.claude.fiveHourPercentLeft).toBe(70);
+    expect(payload.health.claude.sevenDayPercentLeft).toBe(90);
+    expect(payload.health.claude.quality).toBe('measured');
+
+    /*
+     * And the display's own rule still holds. A capacity block is exactly the sort of addition
+     * that arrives carrying a field named `apiKey` because it seemed harmless in context.
+     */
+    expect(findForbiddenDisplayKeys(payload)).toEqual([]);
+  });
+
+  it('sends null rather than zero for a window it could not read', async () => {
+    /*
+     * On a board glanced at from across a room, a bar sitting at zero and a bar that is missing
+     * look identical — and only one of them means the account is out of capacity.
+     */
+    const { buildDisplayPayload } = await import('@/server/display/display-payload');
+    const payload = await buildDisplayPayload(harness.services, wallboard());
+    expect(payload.health.claude.fiveHourPercentLeft).toBeNull();
+    expect(payload.health.claude.sevenDayPercentLeft).toBeNull();
+    /* With no worker reporting, the auth mode is unknown, so no subscription window is claimed. */
+    expect(payload.health.claude.applicable).toBe(false);
   });
 });

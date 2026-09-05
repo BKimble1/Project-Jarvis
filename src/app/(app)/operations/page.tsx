@@ -10,6 +10,8 @@ import { RANKING_VERSION, buildScopeFilter } from '@/domain/retrieval';
 import { requireOwnerPage } from '@/server/auth/guard';
 import { getServices } from '@/server/container';
 import { CapacityControls } from '@/components/operations/capacity-controls';
+import { ClaudeCapacity } from '@/components/operations/claude-capacity';
+import { buildCapacityView } from '@/server/operator/capacity-view';
 import { ReadinessPanel } from '@/components/operations/readiness-panel';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -34,7 +36,7 @@ export default async function OperationsPage() {
   await requireOwnerPage('/operations');
   const services = await getServices();
 
-  const [posture, limits, activeTasks, missions, workers, qualification, ingestion] =
+  const [posture, limits, activeTasks, missions, workers, qualification, ingestion, claude] =
     await Promise.all([
       services.orchestrator.posture(),
       services.orchestrator.limits(),
@@ -43,6 +45,7 @@ export default async function OperationsPage() {
       services.workerRepo.list(),
       services.qualificationService.status(),
       services.revisions.jobSummary(),
+      buildCapacityView(services),
     ]);
 
   /*
@@ -308,6 +311,8 @@ export default async function OperationsPage() {
           ) : null}
         </CardContent>
       </Card>
+
+      <ClaudeCapacity view={claude} />
 
       <Card>
         <CardHeader>
