@@ -18,6 +18,8 @@ import { MissionStrip } from '@/components/mission/mission-strip';
 import { TERMINAL_MISSION_STATES, type MissionSummary } from '@/domain/mission';
 import { countMissions } from '@/server/status/missions';
 import { quickReadiness } from '@/server/ops/readiness';
+import { buildOperatingPicture } from '@/server/ops/operating-picture';
+import { NowPanel } from '@/components/home/now-panel';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Dashboard' };
@@ -30,9 +32,14 @@ const one = (value: string | string[] | undefined): string | undefined =>
 export default async function DashboardPage({ searchParams }: { searchParams: Promise<Search> }) {
   const params = await searchParams;
   const services = await getServices();
-  const [history, readiness] = await Promise.all([
+  const [history, readiness, picture] = await Promise.all([
     services.queryHistory.recent(6),
     quickReadiness({ services }),
+    /*
+     * The same assembly the answer pipeline and the briefing use. One picture, so the screen, the
+     * answer and the morning summary cannot disagree about what Jarvis is doing.
+     */
+    buildOperatingPicture(services),
   ]);
 
   return (
@@ -67,6 +74,24 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
        * report, which walks the ladder and reaches GitHub.
        */}
       <ReadinessStrip readiness={readiness} />
+
+      {/*
+       * Above the command bar, because it is the answer to the question somebody opened this page
+       * to ask. The bar is for typing a new thing; this is for the things that already exist.
+       */}
+      <NowPanel
+        headline={picture.headline}
+        modeLabel={picture.modeLabel}
+        loopExplanation={picture.loop.explanation}
+        capacity={picture.capacity ? picture.capacity.reason : null}
+        running={picture.running.map((entry) => ({
+          missionId: entry.missionId,
+          title: entry.title,
+          state: entry.state,
+        }))}
+        actions={picture.actions}
+        standingAuthority={picture.standingAuthority}
+      />
 
       <CommandBar initialHistory={history.map((entry) => entry.queryText)} />
 

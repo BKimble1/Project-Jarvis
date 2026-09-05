@@ -182,6 +182,7 @@ import type {
   WorkerRepository,
 } from '@/server/repositories/mission-types';
 import { MissionService } from '@/server/missions/mission-service';
+import { buildOperatingPicture, type OperatingPicture } from '@/server/ops/operating-picture';
 import { WorkerService } from '@/server/missions/worker-service';
 
 /**
@@ -596,6 +597,17 @@ export function buildServices(
   });
 
   /* ------------------------------------------------------ Prompt 4C */
+  /*
+   * Late-bound on purpose.
+   *
+   * Ask is assembled before the operator's repositories exist, and reordering the container to fix
+   * that would trade a two-line indirection for a long chain of construction-order constraints
+   * nobody can see. The closure is called per question, which is also what it has to be: a picture
+   * captured when the process started is a picture of whenever the process started, and the whole
+   * question this answers is "what is happening right now?".
+   */
+  let operatingPicture: (() => Promise<OperatingPicture | null>) | null = null;
+
   const gatherer = new EvidenceGatherer({
     projects,
     briefings,
@@ -603,6 +615,7 @@ export function buildServices(
     missions: missionRepo,
     retrieval,
     conflicts,
+    operating: () => (operatingPicture ? operatingPicture() : Promise.resolve(null)),
   });
 
   /*
@@ -761,6 +774,21 @@ export function buildServices(
     reclaimAbandonedTasks: () => taskWorkerService.reclaimAbandoned(),
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
+
+  /* The deferred picture from above, now that everything it reads exists. */
+  operatingPicture = () =>
+    buildOperatingPicture({
+      charterService,
+      operatorTicks,
+      workerRepo,
+      missionRepo,
+      clarifications,
+      permissions,
+      graphs,
+      tasks,
+      opportunities,
+      projects,
+    });
 
   const router = new StatusQueryRouter({
     projects,

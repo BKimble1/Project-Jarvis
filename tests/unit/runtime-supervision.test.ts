@@ -14,7 +14,7 @@ import {
   supervisorHealth,
   type SupervisorTick,
 } from '@/domain/supervisor-health';
-import { absenceSentence, summariseConnectors } from '@/domain/connectors';
+import { absenceSentence, summariseConnectors } from '@/domain/data-connections';
 
 /**
  * The three rules that decide whether an owner wakes up to a Jarvis that is running.

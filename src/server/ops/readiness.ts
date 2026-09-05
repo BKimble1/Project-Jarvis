@@ -14,7 +14,7 @@ import {
   type QualificationCheckResult,
 } from '@/domain/qualification';
 import { deriveWorkerHealth } from '@/domain/worker';
-import { summariseConnectors, type ConnectorStatus } from '@/domain/connectors';
+import { summariseConnectors, type ConnectorStatus } from '@/domain/data-connections';
 import { supervisorHealth, type SupervisorHealth } from '@/domain/supervisor-health';
 import type { AppConfig } from '@/server/config/env';
 import type { Database } from '@/server/db/client';

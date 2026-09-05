@@ -80,6 +80,15 @@ export const CITATION_KINDS = [
   'source',
   'receipt',
   'usage',
+  /**
+   * Jarvis's own operating state: its mode, its loop, its capacity, what it is running.
+   *
+   * A separate kind rather than folded into `usage`, because it is the one class of evidence that
+   * a document must never be able to contradict. An answer that cites `operating:mode` is quoting
+   * the control plane; an answer that cites a document about how Jarvis is configured is quoting
+   * somebody's note, and the two must not look alike in a citation list.
+   */
+  'operating',
 ] as const;
 export type CitationKind = (typeof CITATION_KINDS)[number];
 
@@ -123,6 +132,7 @@ export function citationHref(input: {
     case 'source':
       return `/knowledge?focus=${input.id}`;
     case 'usage':
+    case 'operating':
       return '/operations';
   }
 }

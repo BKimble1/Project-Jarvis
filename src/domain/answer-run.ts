@@ -182,6 +182,13 @@ export const EVIDENCE_ORIGINS = [
   'knowledge_source',
   /** An active, authorised memory. */
   'memory',
+  /**
+   * The control plane's own state, read from its own rows.
+   *
+   * Ranked above every document by construction: see `AnswerEvidenceItem.trust` and the answer
+   * prompt's precedence rule. A note saying Jarvis is operating does not make it operating.
+   */
+  'operating_state',
 ] as const;
 export type EvidenceOrigin = (typeof EVIDENCE_ORIGINS)[number];
 
@@ -303,6 +310,22 @@ export function freezeEvidence(input: {
  * Each item leads with its citation token because that token is the only thing the model may put
  * in a citation, and a validator rejects anything else.
  */
+/** Lower sorts earlier. Deterministic sources before recorded ones before written ones. */
+function originRank(origin: EvidenceOrigin): number {
+  const order: readonly EvidenceOrigin[] = [
+    'operating_state',
+    'status_engine',
+    'mission',
+    'task',
+    'review',
+    'project_evidence',
+    'memory',
+    'knowledge_source',
+  ];
+  const index = order.indexOf(origin);
+  return index === -1 ? order.length : index;
+}
+
 export function renderEvidenceForAnswer(snapshot: AnswerEvidenceSnapshot): string {
   if (snapshot.items.length === 0) {
     return [
@@ -324,9 +347,27 @@ export function renderEvidenceForAnswer(snapshot: AnswerEvidenceSnapshot): strin
     'Cite using the exact reference in square brackets. A reference you were not given does not',
     'exist, and an answer citing one is rejected in full.',
     '',
+    'PRECEDENCE. Items whose origin is "operating state" or "status engine" are the system stating',
+    'what is true of itself and of the work, read from its own records a moment ago. Items whose',
+    'origin is a document, a note or a memory are what somebody wrote down, whenever they wrote it.',
+    'Where they disagree, the first wins and you say so — a note claiming Jarvis is running does',
+    'not make it running, and a design document describing a finished feature does not finish it.',
+    '',
   ];
 
-  for (const item of snapshot.items) {
+  /*
+   * Deterministic truth first, whatever order it was gathered in.
+   *
+   * The packet is bounded, so ordering is not presentation — it decides what survives truncation.
+   * An answer that ran out of room for "Jarvis is paused" while keeping four paragraphs of a note
+   * about how Jarvis is configured would be wrong in the one way this whole pipeline exists to
+   * prevent.
+   */
+  const ordered = [...snapshot.items].sort(
+    (left, right) => originRank(left.origin) - originRank(right.origin),
+  );
+
+  for (const item of ordered) {
     lines.push(`--- BEGIN [${item.ref}] ---`);
     lines.push(`What: ${item.label}`);
     lines.push(`Origin: ${item.origin.replace(/_/g, ' ')}`);

@@ -18,6 +18,7 @@ import type { BriefingService } from '@/server/services/briefing-service';
 import type { RetrievalService } from '@/server/knowledge/retrieval-service';
 import type { MissionRepository } from '@/server/repositories/mission-types';
 import type { ProjectRepository } from '@/server/repositories/types';
+import type { OperatingPicture } from '@/server/ops/operating-picture';
 
 /**
  * Gathering what an answer is allowed to see.
@@ -58,6 +59,14 @@ export interface EvidenceGathererOptions {
    * where it should sound least. A conflicted note is presented as conflicted.
    */
   readonly conflicts: ConflictRepository;
+  /**
+   * Jarvis's own state, assembled deterministically. Null when it cannot be read.
+   *
+   * A function rather than a value because it is only worth the reads when the routing asked for
+   * it, and because a picture captured at container-build time would be a picture of whenever the
+   * process started — which is precisely the wrong answer to "what are you doing right now?".
+   */
+  readonly operating?: (() => Promise<OperatingPicture | null>) | undefined;
 }
 
 export interface GatherRequest {
@@ -106,6 +115,23 @@ export class EvidenceGatherer {
           gaps.push(`${project.name}: ${assessment.freshness.explanation}`);
         }
       }
+    }
+
+    /* ------------------------------------------------ operating state */
+
+    /*
+     * Jarvis describing itself, from its own rows.
+     *
+     * Placed before every other source deliberately. The packet is bounded, and an answer that ran
+     * out of room for "Jarvis is paused" while including four paragraphs of somebody's note about
+     * how Jarvis is configured would be exactly wrong: the note is what people write down, and the
+     * mode is what is true. `trust: 'operating_state'` is what the prompt's precedence rule keys
+     * on — a retrieved document never overrides this.
+     */
+    if (request.routing.needsOperating && this.options.operating) {
+      const picture = await this.options.operating().catch(() => null);
+      if (picture) items.push(...operatingItems(picture));
+      else gaps.push('Jarvis could not read its own operating state on this pass.');
     }
 
     /* -------------------------------------------- repository evidence */
@@ -335,6 +361,83 @@ export class EvidenceGatherer {
  * than citing "the project" — a citation that resolves to a specific finding is checkable, and
  * one that resolves to a whole project is decoration.
  */
+/**
+ * Jarvis's own state as citable evidence.
+ *
+ * Five items rather than one blob, because a person asking "are you running?" and a person asking
+ * "how much capacity is left?" want different sentences, and an answer that cited one enormous
+ * `operating:state` for both could not be checked against either.
+ *
+ * Nothing here is generated and nothing here is retrieved. Every field came from a row.
+ */
+function operatingItems(picture: OperatingPicture): AnswerEvidenceItem[] {
+  const item = (id: string, label: string, excerpt: string): AnswerEvidenceItem => ({
+    ref: `operating:${id}`,
+    kind: 'operating',
+    origin: 'operating_state',
+    subjectId: id,
+    label,
+    excerpt,
+    projectId: null,
+    locator: picture.at,
+    revisionId: null,
+    contentHash: null,
+    href: citationHref({ kind: 'operating', id }),
+    staleSince: null,
+    /*
+     * The highest trust in the packet, and the reason the prompt can state a precedence rule at
+     * all. Everything else is a record of something that happened; this is the system saying what
+     * is true of it right now.
+     */
+    trust: 'operating_state',
+  });
+
+  const items = [
+    item(
+      'mode',
+      'What Jarvis is allowed to do right now',
+      [
+        `Mode: ${picture.modeLabel}. ${picture.modeMeaning}`,
+        picture.standingAuthority
+          ? 'Standing authority is in force: Jarvis may start work inside the charter without asking again.'
+          : `Standing authority is not in force. ${picture.blockedReason ?? ''}`.trim(),
+      ].join(' '),
+    ),
+    item('loop', 'Whether Jarvis is running its own loop', picture.loop.explanation),
+    item('worker', 'Whether anything can run', picture.workerDetail),
+    item(
+      'running',
+      'What Jarvis is working on right now',
+      picture.running.length === 0
+        ? 'Nothing is running.'
+        : picture.running
+            .map((entry) => `${entry.title} (${entry.state.replace(/_/g, ' ')})`)
+            .join('; '),
+    ),
+    item(
+      'next',
+      'What is waiting, and what Jarvis would do next',
+      picture.actions.length === 0
+        ? 'Nothing is waiting for the owner, and Jarvis has nothing queued that it would start.'
+        : picture.actions
+            .map((action, index) => `${index + 1}. ${action.label} — ${action.detail}`)
+            .join(' '),
+    ),
+  ];
+
+  if (picture.capacity) {
+    items.push(
+      item(
+        'capacity',
+        'How much Claude capacity is left',
+        `${picture.capacity.verdict}: ${picture.capacity.reason}`,
+      ),
+    );
+  }
+
+  return items;
+}
+
 function statusItems(project: Project, assessment: ProjectAssessment): AnswerEvidenceItem[] {
   const items: AnswerEvidenceItem[] = [];
 

@@ -55,6 +55,14 @@ export interface RoutingDecision {
   readonly needsKnowledge: boolean;
   /** Include authorised memories. */
   readonly needsMemories: boolean;
+  /**
+   * Read Jarvis's own operating state: its mode, its loop, its capacity, what it is running.
+   *
+   * Separate from `needsMissions` because it is a different kind of truth. Missions are records of
+   * work; this is the control plane describing itself, and it is the one class of evidence a
+   * document may never contradict — a note saying Jarvis is operating does not make it operating.
+   */
+  readonly needsOperating: boolean;
   /** Offer to draft a mission rather than answering directly. */
   readonly proposesAction: boolean;
   /**
@@ -127,6 +135,37 @@ const NEXT =
  * and disagree with, and an unexplained routing decision is one nobody notices going wrong.
  */
 export function routeQuestion(question: string): RoutingDecision {
+  const decision = routeCore(question);
+  /*
+   * Added on top of the table rather than woven through it.
+   *
+   * "Are you running?", "what are you doing?" and "how much capacity is left?" cut across every
+   * branch — somebody asks them alongside a status question as often as on their own — and a
+   * fourteenth row in the table would only be reached when nothing else matched, which is exactly
+   * when they are least likely to be asked.
+   */
+  const wantsSelf = SELF.test(question);
+  return {
+    ...decision,
+    needsOperating:
+      decision.needsOperating ||
+      wantsSelf ||
+      decision.intent === 'needs_owner' ||
+      decision.intent === 'blockers',
+  };
+}
+
+/**
+ * Is this a question about Jarvis itself?
+ *
+ * Deliberately about *Jarvis*, not about work. "What are you working on" is here; "what is
+ * CoreCredit's status" is not, and answering the second from the operating picture would replace a
+ * project's real state with a description of the machine looking at it.
+ */
+const SELF =
+  /\b(?:are you (?:running|working|on|paused|stopped|busy|awake)|what (?:are|were) you (?:doing|working on|up to)|what have you been (?:doing|up to)|your (?:capacity|limit|usage|mode|loop)|how much (?:capacity|budget|usage|quota)|is jarvis (?:running|working|paused|on)|jarvis'?s? (?:mode|state|capacity)|last (?:tick|pass)|next (?:tick|pass))\b/i;
+
+function routeCore(question: string): RoutingDecision {
   const q = question.trim();
 
   const base = {
@@ -135,6 +174,7 @@ export function routeQuestion(question: string): RoutingDecision {
     needsMissions: false,
     needsKnowledge: false,
     needsMemories: false,
+    needsOperating: false,
     proposesAction: false,
     requiresCurrentExternal: false,
   };

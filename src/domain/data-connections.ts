@@ -1,6 +1,11 @@
 /**
  * What Jarvis is actually connected to, and — more importantly — what it is not.
  *
+ * Not to be confused with `domain/connector`, which is the manifest framework governing *how* a
+ * source may be reached and what it may do. This is the coarser question a person asks: what kinds
+ * of information does Jarvis have at all? A connector manifest can exist for something nobody has
+ * configured, and a category can be missing because no manifest has ever been written for it.
+ *
  * ## Why an explicit list of things that do not exist
  *
  * A briefing that says "you have three meetings today" when no calendar is connected is worse than
