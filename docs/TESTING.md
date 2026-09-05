@@ -19,6 +19,7 @@ Nothing is skipped or weakened to make the gate pass. If a check fails, the phas
 | Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                                 | `tests/unit/`        | 555   |
 | Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL, plus the real worker against a local git sandbox | `tests/integration/` | 114   |
 | End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport                 | `tests/e2e/`         | 44    |
+| Live        | Vitest (`live` project)        | A real Claude session on the owner's own subscription. **Opt-in, and it spends real capacity**                          | `tests/live/`        | 5     |
 
 Individually:
 
@@ -26,8 +27,30 @@ Individually:
 npm run test:unit
 npm run test:integration
 npm run test:e2e          # first time: npm run test:e2e:install
+npm run test:live         # needs a Claude Code login; see below
 npx vitest                # watch mode
 ```
+
+## The live layer
+
+Everything in the first three layers is deterministic and free. The live layer is
+neither: it needs a Claude Code login on the machine running it, and it runs a real
+model session that consumes a small amount of the owner's subscription.
+
+That is why it is opt-in rather than merely slow. A suite that sometimes costs money
+and sometimes fails because somebody's login expired is a suite people stop running
+— and they stop running the cheap deterministic tests along with it. So the `live`
+project's `include` is empty unless `JARVIS_LIVE_TESTS=true`, which means `npm test`
+and `npm run verify` cannot pick it up by accident.
+
+Nothing in `tests/live/` falls back to a stub when the login is missing. A green
+"live" tick that never reached Anthropic is worse than a red one, so an absent
+credential fails the test rather than quietly passing against a mock.
+
+What it is for: every other test proves Jarvis handles a _shape_ of data correctly.
+These prove the shape is the real one. A mocked usage response that matches a mapper
+written from the same mistaken reading of the SDK will pass for ever and be wrong the
+whole time — asking the real interface is the only way to find that out.
 
 ## What integration tests run against
 

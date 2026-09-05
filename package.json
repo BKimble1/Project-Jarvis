@@ -22,6 +22,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
+    "test:live": "JARVIS_LIVE_TESTS=true vitest run --project live",
     "test:watch": "vitest",
     "test:e2e": "playwright test --project=desktop && playwright test --project=iphone",
     "test:e2e:one": "playwright test",
