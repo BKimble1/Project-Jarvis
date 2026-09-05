@@ -89,9 +89,18 @@ describe('merging what several workers saw', () => {
   it('never adds one worker’s utilisation to another’s', () => {
     const merged = mergeAccountLimits(
       [
-        observation({ workerId: 'a', windows: { fiveHour: window(42), sevenDay: window(20), sevenDayOpus: window(10) } }),
-        observation({ workerId: 'b', windows: { fiveHour: window(42), sevenDay: window(20), sevenDayOpus: window(10) } }),
-        observation({ workerId: 'c', windows: { fiveHour: window(42), sevenDay: window(20), sevenDayOpus: window(10) } }),
+        observation({
+          workerId: 'a',
+          windows: { fiveHour: window(42), sevenDay: window(20), sevenDayOpus: window(10) },
+        }),
+        observation({
+          workerId: 'b',
+          windows: { fiveHour: window(42), sevenDay: window(20), sevenDayOpus: window(10) },
+        }),
+        observation({
+          workerId: 'c',
+          windows: { fiveHour: window(42), sevenDay: window(20), sevenDayOpus: window(10) },
+        }),
       ],
       NOW,
     );
@@ -105,7 +114,11 @@ describe('merging what several workers saw', () => {
         observation({
           workerId: 'stale-but-alarming',
           observedAt: LONG_AGO.toISOString(),
-          windows: { fiveHour: window(95, LONG_AGO), sevenDay: window(20, LONG_AGO), sevenDayOpus: window(10, LONG_AGO) },
+          windows: {
+            fiveHour: window(95, LONG_AGO),
+            sevenDay: window(20, LONG_AGO),
+            sevenDayOpus: window(10, LONG_AGO),
+          },
         }),
         observation({
           workerId: 'current',
@@ -129,7 +142,11 @@ describe('merging what several workers saw', () => {
         observation({
           workerId: 'earlier',
           observedAt: EARLIER.toISOString(),
-          windows: { fiveHour: window(33, EARLIER), sevenDay: window(20, EARLIER), sevenDayOpus: window(10, EARLIER) },
+          windows: {
+            fiveHour: window(33, EARLIER),
+            sevenDay: window(20, EARLIER),
+            sevenDayOpus: window(10, EARLIER),
+          },
         }),
       ],
       NOW,
@@ -202,16 +219,89 @@ describe('whether there is room', () => {
   });
 
   /*
-   * Unknown holds rather than proceeding or stopping. Proceeding is how an operator gets
-   * rate-limited halfway through a mission it cannot resume; stopping is how a missing telemetry
-   * field switches Jarvis off for a day. Holding is wrong in the recoverable direction.
+   * An unreadable window narrows the loop; it does not stop it.
+   *
+   * This assertion used to be `mayStartNewWork: false`, on the reasoning that holding is wrong in
+   * the recoverable direction. That reasoning only holds if the unknown is *transient*, and the
+   * commonest cause is not: an older Claude Code with no usage interface never starts reporting
+   * utilisation, so a deployment on one would have sat there doing nothing for ever, explaining
+   * each time that it was holding rather than guessing. That is precisely the "a missing telemetry
+   * field switches Jarvis off for a day" failure the rule was written to avoid, arrived at from
+   * the other side.
+   *
+   * A gap in what Jarvis can see is a capability gap, not a capacity signal. So it works — one
+   * thing at a time, under the spending limits that are enforced against a ledger regardless —
+   * and says plainly that the figure is missing.
    */
-  it('holds when it cannot read a window, and says that is what it is doing', () => {
+  it('works one thing at a time when it cannot read a window, rather than stopping for ever', () => {
     const decision = decideCapacity(subscription({ sevenDayOpus: unknownWindow() }), RESERVE);
     expect(decision.verdict).toBe('unknown');
-    expect(decision.mayStartNewWork).toBe(false);
+    expect(decision.mayStartNewWork).toBe(true);
+    expect(decision.maxNewWork).toBe(1);
     expect(decision.quality).toBe('unknown');
     expect(decision.reason).toMatch(/cannot read/);
+    expect(decision.reason).toMatch(/Spending limits still apply/);
+  });
+
+  it('narrows to one thing at a time as a window tightens, before it reserves', () => {
+    /*
+     * The step the boolean could not express. Between "plenty" and "inside the reserve" there is a
+     * band where there is room for something but not for everything, and filling every slot there
+     * is how the rest of a window gets spent in a single pass.
+     */
+    const decision = decideCapacity(subscription({ fiveHour: window(65) }), RESERVE);
+    expect(decision.verdict).toBe('clear');
+    expect(decision.maxNewWork).toBe(1);
+    expect(decision.reason).toMatch(/one thing at a time/);
+  });
+
+  it('leaves concurrency alone when capacity is not the constraint', () => {
+    const decision = decideCapacity(subscription({}), RESERVE);
+    expect(decision.verdict).toBe('clear');
+    /* Null, not a big number: the operator's own limit stays the ceiling. */
+    expect(decision.maxNewWork).toBeNull();
+  });
+
+  it('will not call a window clear again until it is properly clear', () => {
+    /*
+     * Anti-flap. A window resting on the reserve boundary would otherwise alternate between
+     * `reserved` and `clear` every tick, and an operator that starts a mission, defers, starts and
+     * defers produces half-finished work and a log nobody can read.
+     */
+    const justOutside = subscription({ fiveHour: window(100 - RESERVE.fiveHourPercent - 2) });
+
+    const fromClear = decideCapacity(justOutside, RESERVE, { previous: 'clear' });
+    expect(fromClear.mayStartNewWork).toBe(true);
+
+    const fromReserved = decideCapacity(justOutside, RESERVE, { previous: 'reserved' });
+    expect(fromReserved.verdict).toBe('reserved');
+    expect(fromReserved.reason).toMatch(/a little more room/);
+  });
+
+  it('does not trust a reading that has stopped being current with a clear run', () => {
+    /*
+     * Stale is the third silence, and the only one where holding back is genuinely right: a real
+     * measurement was taken, so the number is probably still in the right region — but "probably
+     * still" is not a basis for filling every slot.
+     */
+    const old = mergeAccountLimits(
+      [
+        observation({
+          observedAt: LONG_AGO.toISOString(),
+          windows: {
+            fiveHour: window(10, LONG_AGO),
+            sevenDay: window(5, LONG_AGO),
+            sevenDayOpus: window(5, LONG_AGO),
+          },
+        }),
+      ],
+      NOW,
+    );
+    const decision = decideCapacity(old, RESERVE);
+    expect(decision.verdict).toBe('clear');
+    expect(decision.maxNewWork).toBe(1);
+    expect(decision.quality).toBe('stale');
+    expect(decision.reason).toMatch(/no longer current/);
   });
 
   it('does not apply a subscription reserve to a worker that has no subscription', () => {

@@ -5,6 +5,7 @@ import type {
   PriorityBand,
   PriorityFactor,
 } from '@/domain/opportunity';
+import type { CapacityVerdict } from '@/domain/claude-capacity';
 
 /**
  * The persistence boundary for the operating loop.
@@ -144,6 +145,9 @@ export interface OperatorTickRecord {
   readonly opportunitiesFound: number;
   readonly missionsStarted: number;
   readonly coverage: readonly ObservationCoverage[];
+  /** What the capacity governor decided, or null on a pass that never reached it. */
+  readonly capacityVerdict: CapacityVerdict | null;
+  readonly capacityReason: string | null;
 }
 
 export interface OperatorTickRepository {
@@ -156,6 +160,8 @@ export interface OperatorTickRepository {
     readonly opportunitiesFound: number;
     readonly missionsStarted: number;
     readonly coverage: readonly ObservationCoverage[];
+    /** Null when this pass never reached the governor. Null is "not decided", never "clear". */
+    readonly capacity: { readonly verdict: CapacityVerdict; readonly reason: string } | null;
     readonly now: Date;
   }): Promise<OperatorTickRecord>;
   recent(limit?: number): Promise<readonly OperatorTickRecord[]>;

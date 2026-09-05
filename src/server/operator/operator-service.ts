@@ -77,11 +77,12 @@ export const OPERATOR_TICK_KEY = 'tick';
 /** Long enough for a slow tick, short enough that a dead one does not wedge the loop for long. */
 export const TICK_LEASE_SECONDS = 120;
 
-
 export interface OperatorServiceDeps {
   readonly charter: CharterService;
   readonly projects: ProjectRepository;
-  readonly assess: (projectIds: readonly string[]) => Promise<ReadonlyMap<string, ProjectAssessment>>;
+  readonly assess: (
+    projectIds: readonly string[],
+  ) => Promise<ReadonlyMap<string, ProjectAssessment>>;
   readonly opportunities: OpportunityRepository;
   readonly leases: OperatorLeaseRepository;
   readonly ticks: OperatorTickRepository;
@@ -232,6 +233,15 @@ export class OperatorService {
         opportunitiesFound: result.backlog.length,
         missionsStarted: result.started.length,
         coverage: result.coverage,
+        /*
+         * Recorded on every pass that reached the governor, including the ones that then found
+         * nothing to do. An owner looking at a quiet day needs to be able to tell "there was
+         * nothing worth starting" from "Jarvis was keeping your capacity back for you", and the
+         * summary alone does not always say which.
+         */
+        capacity: result.capacity
+          ? { verdict: result.capacity.verdict, reason: result.capacity.reason }
+          : null,
         now: this.clock(),
       });
       return { ...result, tickId: tick.id };
@@ -257,12 +267,20 @@ export class OperatorService {
      * because its five-hour window was tight would go blind exactly when it most needs to keep a
      * record. What capacity gates is *starting* something.
      */
+    /*
+     * The previous pass's verdict, so a window resting on the reserve boundary cannot make the
+     * loop flap. Read from the last finished tick rather than held in memory: the tick is driven
+     * from more than one place and may not be the same process twice.
+     */
+    const previous = (await this.deps.ticks.lastFinished())?.capacityVerdict ?? null;
+
     const capacity = decideCapacity(
       mergeAccountLimits(await this.deps.capacityObservations(), now),
       {
         fiveHourPercent: authority.charter?.content.limits.reserveFiveHourPercent ?? 25,
         sevenDayPercent: authority.charter?.content.limits.reserveSevenDayPercent ?? 20,
       },
+      { previous },
     );
 
     /* ---------------------------------------------------------- observe */
@@ -372,7 +390,15 @@ export class OperatorService {
     /* ------------------------------------------------------------ decide */
 
     const { limit, active } = await this.deps.room();
-    const room = capacity.mayStartNewWork ? Math.max(0, limit - active) : 0;
+    /*
+     * Two ceilings, and the tighter one wins. `limit - active` is the deployment's own concurrency
+     * budget; `maxNewWork` is what the account's remaining Claude allows. The governor narrows —
+     * it never widens — so a null from it leaves the deployment's limit exactly as it was.
+     */
+    const room = Math.max(
+      0,
+      Math.min(limit - active, capacity.maxNewWork ?? Number.POSITIVE_INFINITY),
+    );
     /*
      * `taken` is excluded here and only here. It stays in the backlog because an owner should see
      * what is being worked on, and it must never be selected again because a mission already

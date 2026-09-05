@@ -130,9 +130,7 @@ export class DrizzleOpportunityRepository implements OpportunityRepository {
     }
   }
 
-  async listByState(
-    states: readonly OpportunityState[],
-  ): Promise<readonly OpportunityRecord[]> {
+  async listByState(states: readonly OpportunityState[]): Promise<readonly OpportunityRecord[]> {
     if (states.length === 0) return [];
     const rows = await this.db
       .select()
@@ -167,11 +165,7 @@ export class DrizzleOpportunityRepository implements OpportunityRepository {
    * same opportunity cannot both create a mission for it, because the second update matches
    * nothing and gets null back.
    */
-  async take(
-    key: string,
-    missionId: string | null,
-    now: Date,
-  ): Promise<OpportunityRecord | null> {
+  async take(key: string, missionId: string | null, now: Date): Promise<OpportunityRecord | null> {
     /*
      * `state = 'open'` on the first call is the concurrency control; `taken` on the second is how
      * the same holder comes back to attach the mission it has since created. Allowing both means
@@ -356,6 +350,8 @@ function toTick(row: typeof operatorTicks.$inferSelect): OperatorTickRecord {
     opportunitiesFound: row.opportunitiesFound,
     missionsStarted: row.missionsStarted,
     coverage: (row.coverage ?? []) as readonly ObservationCoverage[],
+    capacityVerdict: row.capacityVerdict ?? null,
+    capacityReason: row.capacityReason,
   };
 }
 
@@ -371,16 +367,9 @@ export class DrizzleOperatorTickRepository implements OperatorTickRepository {
     return toTick(row);
   }
 
-  async finish(input: {
-    readonly id: string;
-    readonly outcome: OperatorTickRecord['outcome'];
-    readonly summary: string;
-    readonly projectsObserved: number;
-    readonly opportunitiesFound: number;
-    readonly missionsStarted: number;
-    readonly coverage: readonly ObservationCoverage[];
-    readonly now: Date;
-  }): Promise<OperatorTickRecord> {
+  async finish(
+    input: Parameters<OperatorTickRepository['finish']>[0],
+  ): Promise<OperatorTickRecord> {
     const [row] = await this.db
       .update(operatorTicks)
       .set({
@@ -391,6 +380,12 @@ export class DrizzleOperatorTickRepository implements OperatorTickRepository {
         opportunitiesFound: input.opportunitiesFound,
         missionsStarted: input.missionsStarted,
         coverage: [...input.coverage],
+        /*
+         * Written as a pair or not at all. A verdict with no sentence beside it is a word an owner
+         * cannot act on, and a sentence with no verdict cannot be read by the next pass.
+         */
+        capacityVerdict: input.capacity?.verdict ?? null,
+        capacityReason: input.capacity?.reason ?? null,
       })
       .where(eq(operatorTicks.id, input.id))
       .returning();

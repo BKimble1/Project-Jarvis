@@ -87,7 +87,7 @@ import type {
   PriorityBand,
   PriorityFactor,
 } from '@/domain/opportunity';
-import type { AuthMode } from '@/domain/claude-capacity';
+import type { AuthMode, CapacityVerdict } from '@/domain/claude-capacity';
 import type { WorkerStatus } from '@/domain/worker';
 import type { AgentRole } from '@/domain/agent-role';
 import type {
@@ -3369,6 +3369,20 @@ export const operatorTicks = pgTable(
       .$type<ObservationCoverage[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
+    /*
+     * What the capacity governor decided on this pass, and the sentence it gave for it.
+     *
+     * Recorded for two reasons that happen to want the same column. An owner looking at a quiet
+     * day needs to know whether nothing happened because there was nothing to do or because Jarvis
+     * was keeping capacity back for them, and the summary alone does not always say. And the
+     * verdict is what the *next* pass reads to avoid flapping: a window resting on the reserve
+     * boundary would otherwise alternate between holding and starting on every tick.
+     *
+     * Null on a pass that never reached the governor — a tick skipped because the mode is off, or
+     * one that failed early. Null means "not decided", not "clear".
+     */
+    capacityVerdict: text('capacity_verdict').$type<CapacityVerdict>(),
+    capacityReason: text('capacity_reason'),
   },
   (table) => [index('operator_ticks_started_idx').on(table.startedAt)],
 );

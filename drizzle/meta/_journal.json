@@ -78,6 +78,13 @@
       "when": 1788581751448,
       "tag": "0010_worker_capacity",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788583065292,
+      "tag": "0011_operator_tick_capacity",
+      "breakpoints": true
     }
   ]
 }

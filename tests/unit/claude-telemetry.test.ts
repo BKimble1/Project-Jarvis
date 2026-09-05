@@ -267,3 +267,79 @@ describe('reading Claude capacity from the SDK', () => {
     expect(authModeFromProvider({ apiProvider: 'firstParty' }, 'api_key')).toBe('api_key');
   });
 });
+
+describe('what a subscription run reports as cost', () => {
+  it('is nothing, because a subscription mission costs nothing at the margin', async () => {
+    /*
+     * Claude Code reports `total_cost_usd` on a subscription session too, and there it is not a
+     * bill — it is what those tokens would have cost at API rates. An owner on a flat subscription
+     * reading "$0.4213" beside their mission has been told something untrue about their own money,
+     * and a day of missions adds up to a figure they might act on.
+     *
+     * Driven through the real runtime with a stub SDK, so this asserts the shipping translation
+     * rather than a copy of it.
+     */
+    const { ClaudeAgentRuntime } = await import('@/worker/runtime/claude-agent-sdk');
+
+    const runFor = async (authMode: 'subscription' | 'api_key') => {
+      const runtime = new ClaudeAgentRuntime({
+        apiKey: authMode === 'api_key' ? 'sk-ant-api03-0123456789abcdefghij' : null,
+        oauthToken: null,
+        authMode,
+        apiKeyPresent: authMode === 'api_key',
+        model: null,
+        observeAuth: async () => ({
+          loggedIn: true,
+          authMethod: 'oauth_token',
+          apiProvider: 'firstParty',
+          observedAt: NOW.toISOString(),
+          source: 'claude auth status --json',
+        }),
+        load: async () => ({
+          query: () => ({
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: 'result',
+                result: 'Done.',
+                total_cost_usd: 0.4213,
+                num_turns: 3,
+                usage: { input_tokens: 100, output_tokens: 50 },
+              };
+            },
+            interrupt: async () => undefined,
+          }),
+        }),
+      });
+
+      /* The verdict is what decides billing, and it is established by the availability check. */
+      await runtime.availability();
+
+      const session = await runtime.start({
+        prompt: 'anything',
+        systemPrompt: 'anything',
+        workspaceRoot: '/tmp',
+        maxTurns: 1,
+        model: null,
+        readOnly: true,
+        resumeSessionId: null,
+        signal: new AbortController().signal,
+        decide: async () => ({ verdict: 'allow' as const, reason: 'allowed' }),
+      });
+
+      for await (const event of session.events) {
+        if (event.type === 'done') return event.usage;
+      }
+      return null;
+    };
+
+    const subscription = await runFor('subscription');
+    expect(subscription?.totalCostUsd).toBeNull();
+    /* Tokens and turns still travel: they are what actually describes how much work was done. */
+    expect(subscription?.inputTokens).toBe(100);
+    expect(subscription?.turns).toBe(3);
+
+    /* And a worker the owner deliberately put on key billing still reports the money it spent. */
+    const apiKey = await runFor('api_key');
+    expect(apiKey?.totalCostUsd).toBe(0.4213);
+  });
+});

@@ -127,8 +127,7 @@ export interface MissionServiceDeps {
  * decision is re-read rather than trusted — an id is a string until somebody looks it up.
  */
 export type ApprovalAuthority =
-  | { readonly kind: 'owner' }
-  | { readonly kind: 'charter'; readonly decisionId: string };
+  { readonly kind: 'owner' } | { readonly kind: 'charter'; readonly decisionId: string };
 
 export interface MissionDetail {
   readonly mission: Mission;

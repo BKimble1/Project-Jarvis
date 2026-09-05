@@ -241,6 +241,19 @@ export type CapacityVerdict = (typeof CAPACITY_VERDICTS)[number];
 export interface CapacityDecision {
   readonly verdict: CapacityVerdict;
   readonly mayStartNewWork: boolean;
+  /**
+   * How many new things may start on this pass, or null for "capacity is not the constraint".
+   *
+   * A boolean was not enough, and that was the governor's real structural gap: every ceiling
+   * downstream of it is a number, enforced inside a SQL claim, so a governor that could only say
+   * yes or no could only ever be off or wide open. With a number it can also say "one at a time" —
+   * which is what a tightening window actually calls for, and what keeps Jarvis working slowly
+   * instead of stopping dead the first time a figure gets uncomfortable.
+   *
+   * Null rather than Infinity so the operator's own concurrency limit stays the ceiling in the
+   * ordinary case, and this only ever narrows it.
+   */
+  readonly maxNewWork: number | null;
   /** The sentence an owner reads. Never a bare percentage. */
   readonly reason: string;
   readonly window: RateWindow | null;
@@ -248,26 +261,74 @@ export interface CapacityDecision {
 }
 
 /**
- * Whether there is room to start something new.
+ * How much clear air a window needs before Jarvis calls it clear again.
  *
- * Unknown capacity is treated as `reserved` — finish what is running, start nothing new — rather
- * than as either "go ahead" or "stop everything". Going ahead is how an operator gets rate-limited
- * halfway through a mission it cannot resume; stopping everything is how a missing telemetry field
- * silently switches Jarvis off for a day. Holding is the only reading that is wrong in a
- * recoverable direction, and it is reported as a guess rather than as a measurement.
+ * Without this, a window sitting on the reserve boundary flips between `reserved` and `clear` on
+ * alternating ticks, and an autonomous loop that starts a mission, defers, starts, defers is worse
+ * than one that simply waits: it produces half-finished work and a log nobody can read. Coming out
+ * of a reserve therefore needs more headroom than going into it did.
+ */
+export const CAPACITY_HYSTERESIS_PERCENT = 5;
+
+/**
+ * Headroom below which Jarvis stops filling every slot, as a multiple of the reserve.
  *
- * An auth mode with no windows is `clear` here and constrained by money instead. That is not a
- * loophole: the charter's spend limits are enforced separately, against a ledger, and pretending
- * an API key has a five-hour window would just be a second wrong answer.
+ * Above it, capacity is not the binding constraint and the operator's own concurrency limit
+ * decides. Below it — but still outside the reserve — there is room for something, and starting
+ * three things at once is how that room gets spent in one pass.
+ */
+const NARROW_HEADROOM_MULTIPLE = 2;
+
+/**
+ * Whether there is room to start something new, and how much.
+ *
+ * ## Three different silences, and why they are not the same
+ *
+ * The hard part of this function is not arithmetic, it is telling apart three situations that all
+ * look like "no number".
+ *
+ * **This account has no such window.** An API key, Bedrock, Vertex. There is nothing to reserve
+ * and no percentage that would mean anything, so capacity is `clear` and money is the constraint
+ * instead — which the charter's spend limits already enforce, against a ledger. Inventing a
+ * five-hour window here would just be a second wrong answer.
+ *
+ * **Jarvis has never managed to read this window.** An older Claude Code without the usage
+ * interface, a worker that has not run a mission yet, a call that keeps failing. This used to stop
+ * all work, and that was a serious mistake: it is a *capability* gap, not a capacity signal, and it
+ * does not go away by waiting. A deployment on a Claude Code that cannot report utilisation would
+ * have sat there doing nothing, indefinitely, with a message about holding rather than guessing —
+ * the exact "a missing telemetry field silently switches Jarvis off for a day" failure this
+ * function's own comment warned about. So it no longer stops: it narrows to one thing at a time
+ * and says plainly that it is working blind.
+ *
+ * **Jarvis read it, and the reading has gone old.** A real measurement that has stopped being
+ * current. Here holding back genuinely is right, because something was there and the number is
+ * probably still in the right region — so the value is still used, but it can no longer earn a
+ * clear run, only a narrowed one.
+ *
+ * ## Why the answer is a number
+ *
+ * `mayStartNewWork` alone could only turn Jarvis off or leave it wide open. `maxNewWork` lets a
+ * tightening window slow the loop down instead of stopping it, which is what an owner actually
+ * wants from a governor: fewer things at once as the window fills, nothing new once it is inside
+ * the reserve, and the ordinary concurrency limit back again when there is room.
+ *
+ * ## Why coming back out is harder than going in
+ *
+ * A window resting on the reserve boundary would otherwise flip every tick, and an operator that
+ * alternates between starting and deferring produces half-finished work. `previous` lets the
+ * decision require a margin of clear air before it calls things clear again.
  */
 export function decideCapacity(
   capacity: AccountCapacity,
   reserve: { readonly fiveHourPercent: number; readonly sevenDayPercent: number },
+  options: { readonly previous?: CapacityVerdict | null } = {},
 ): CapacityDecision {
   if (!hasSubscriptionWindows(capacity.authMode)) {
     return {
       verdict: 'clear',
       mayStartNewWork: true,
+      maxNewWork: null,
       reason:
         capacity.authMode === 'unknown'
           ? 'Jarvis has not established how this worker authenticates, so it is not applying subscription limits it may not have. Spending limits still apply.'
@@ -283,55 +344,123 @@ export function decideCapacity(
     { window: 'sevenDayOpus', reservePercent: reserve.sevenDayPercent },
   ];
 
-  let sawUnknown: RateWindow | null = null;
-  let worst: CapacityDecision | null = null;
+  /*
+   * Coming out of a hold needs more room than going into one did. `previous` is the last verdict
+   * this deployment recorded, so the margin only applies to a genuine recovery and not to the very
+   * first decision after a restart.
+   */
+  const recovering = options.previous === 'reserved' || options.previous === 'exhausted';
+  const margin = recovering ? CAPACITY_HYSTERESIS_PERCENT : 0;
+
+  let unreadable: RateWindow | null = null;
+  let stale: RateWindow | null = null;
+  let narrow: CapacityDecision | null = null;
+  let held: CapacityDecision | null = null;
 
   for (const check of checks) {
     const observation = capacity.windows[check.window].utilisationPercent;
     if (observation.value === null) {
-      sawUnknown ??= check.window;
+      unreadable ??= check.window;
       continue;
     }
+    if (observation.quality === 'stale') stale ??= check.window;
+
     const remaining = 100 - observation.value;
+
     if (remaining <= 0) {
+      /*
+       * Returned immediately rather than collected. A window that is used up is not a matter of
+       * degree and nothing further down can soften it.
+       */
       return {
         verdict: 'exhausted',
         mayStartNewWork: false,
-        reason: `${RATE_WINDOW_LABELS[check.window]} is used up. Jarvis will start nothing until it resets.`,
+        maxNewWork: 0,
+        reason: `${RATE_WINDOW_LABELS[check.window]} is used up. Jarvis will start nothing until it resets${describeReset(capacity.windows[check.window].resetsAt)}.`,
         window: check.window,
         quality: observation.quality,
       };
     }
-    if (remaining <= check.reservePercent && (worst === null || worst.verdict !== 'reserved')) {
-      worst = {
+
+    if (remaining <= check.reservePercent + margin && held === null) {
+      held = {
         verdict: 'reserved',
         mayStartNewWork: false,
-        reason: `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left, inside the ${check.reservePercent}% you asked Jarvis to keep for you. It will finish what is running and start nothing new.`,
+        maxNewWork: 0,
+        reason:
+          remaining <= check.reservePercent
+            ? `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left, inside the ${check.reservePercent}% you asked Jarvis to keep for you. It will finish what is running and start nothing new.`
+            : `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left, only just clear of the ${check.reservePercent}% reserve. Jarvis is waiting for a little more room before it starts anything, rather than starting and deferring on alternate passes.`,
+        window: check.window,
+        quality: observation.quality,
+      };
+      continue;
+    }
+
+    if (remaining <= check.reservePercent * NARROW_HEADROOM_MULTIPLE && narrow === null) {
+      narrow = {
+        verdict: 'clear',
+        mayStartNewWork: true,
+        maxNewWork: 1,
+        reason: `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left. Jarvis will start one thing at a time rather than filling every slot.`,
         window: check.window,
         quality: observation.quality,
       };
     }
   }
 
-  if (worst) return worst;
+  if (held) return held;
 
-  if (sawUnknown) {
+  if (unreadable) {
+    /*
+     * Not a stop. See the header: an unreadable window is a gap in what Jarvis can see, and a gap
+     * that may never close. It narrows the loop and is stated plainly, so an owner reading the
+     * operations page learns that the figure is missing rather than that Jarvis has decided to
+     * wait for something that is not coming.
+     */
     return {
       verdict: 'unknown',
-      mayStartNewWork: false,
-      reason: `Jarvis cannot read the ${RATE_WINDOW_LABELS[sawUnknown].toLowerCase()}, so it is holding rather than guessing. It will finish what is running.`,
-      window: sawUnknown,
+      mayStartNewWork: true,
+      maxNewWork: 1,
+      reason: `Jarvis cannot read the ${RATE_WINDOW_LABELS[unreadable].toLowerCase()}, so it is working one thing at a time rather than guessing how much room there is. Spending limits still apply.`,
+      window: unreadable,
       quality: 'unknown',
     };
   }
 
+  if (stale) {
+    /*
+     * A real measurement that has stopped being current. Its value is still the best evidence
+     * there is — which is why it was used in the checks above — but it cannot earn a clear run.
+     */
+    return {
+      verdict: 'clear',
+      mayStartNewWork: true,
+      maxNewWork: 1,
+      reason: `Jarvis is working from a ${RATE_WINDOW_LABELS[stale].toLowerCase()} reading that is no longer current, so it is starting one thing at a time until a worker reports a fresh one.`,
+      window: stale,
+      quality: 'stale',
+    };
+  }
+
+  if (narrow) return narrow;
+
   return {
     verdict: 'clear',
     mayStartNewWork: true,
+    maxNewWork: null,
     reason: 'There is room in every window Jarvis can see.',
     window: null,
     quality: 'measured',
   };
+}
+
+/** " — it resets at 15:00" or nothing, so a reset time never becomes a bare timestamp. */
+function describeReset(resetsAt: Observed<string>): string {
+  if (resetsAt.value === null) return '';
+  const parsed = new Date(resetsAt.value);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return `, which it does at ${parsed.toISOString().slice(11, 16)} UTC`;
 }
 
 /* ------------------------------------------------------------ context health */
@@ -464,6 +593,10 @@ export function routeModel(input: {
   }
 
   return constrained
-    ? { weight, model: models.fast, reason: 'Capacity is tight, so ordinary work uses the fast model.' }
+    ? {
+        weight,
+        model: models.fast,
+        reason: 'Capacity is tight, so ordinary work uses the fast model.',
+      }
     : { weight, model: models.balanced, reason: 'Ordinary work.' };
 }

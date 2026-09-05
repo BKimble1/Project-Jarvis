@@ -296,6 +296,18 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     if (report) this.lastCapacity = report;
   }
 
+  /**
+   * Who pays for this session's tokens, as far as this worker can tell.
+   *
+   * The verdict is the better answer because it reflects what is actually in force rather than
+   * what was asked for, but it only exists once availability has been checked. Falling back to the
+   * configured mode is safe: subscription is the default, and treating work as subscription-funded
+   * when it might be is the direction that withholds a dollar figure rather than inventing one.
+   */
+  private billing(): 'subscription' | 'api' | 'unknown' {
+    return this.lastAuth?.bills ?? (this.options.authMode === 'api_key' ? 'api' : 'subscription');
+  }
+
   private async observeAuth(): Promise<ClaudeAuthObservation | null> {
     if (this.options.observeAuth) return this.options.observeAuth();
     return observeClaudeAuth();
@@ -392,7 +404,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           }
           if (message.rate_limit_info) observed.rateLimit = message.rate_limit_info;
           if (message.context_usage) observed.context = message.context_usage;
-          for (const event of translate(message)) queue.push(event);
+          for (const event of translate(message, this.billing())) queue.push(event);
         }
       } catch (error) {
         queue.push({
@@ -439,7 +451,10 @@ export class ClaudeAgentRuntime implements AgentRuntime {
 }
 
 /** SDK message → Jarvis event. Anything Jarvis has no use for is simply dropped. */
-function translate(message: SdkMessage): readonly AgentEvent[] {
+function translate(
+  message: SdkMessage,
+  billing: 'subscription' | 'api' | 'unknown',
+): readonly AgentEvent[] {
   const events: AgentEvent[] = [];
 
   if (message.type === 'assistant') {
@@ -483,7 +498,7 @@ function translate(message: SdkMessage): readonly AgentEvent[] {
   }
 
   if (message.type === 'result') {
-    const usage = extractUsage(message);
+    const usage = extractUsage(message, billing);
     if (message.is_error) {
       events.push({
         type: 'error',
@@ -502,13 +517,30 @@ function translate(message: SdkMessage): readonly AgentEvent[] {
   return events;
 }
 
-function extractUsage(message: SdkMessage): RunUsage | null {
+/**
+ * Tokens, turns, duration — and money only when money was actually spent.
+ *
+ * Claude Code reports `total_cost_usd` on a subscription session too, and on a subscription it is
+ * not a bill. It is what those tokens would have cost at API rates: a counterfactual, printed to
+ * four decimal places, next to the word "cost". An owner who has paid a flat subscription fee and
+ * reads "$0.4213" beside their mission has been told something untrue about their own money, and
+ * a day of missions would add up to a figure they might reasonably act on.
+ *
+ * So subscription work reports no cost at all, which is the accurate number: the marginal cost of
+ * a subscription mission is nothing. Tokens and turns still travel, and they are what actually
+ * describes how much work was done. The charter's spend limits are about money and are unaffected
+ * — subscription work spends none, and the capacity governor is what bounds it instead.
+ */
+function extractUsage(
+  message: SdkMessage,
+  billing: 'subscription' | 'api' | 'unknown',
+): RunUsage | null {
   if (!message.usage && message.total_cost_usd === undefined) return null;
   return {
     inputTokens: message.usage?.input_tokens ?? null,
     outputTokens: message.usage?.output_tokens ?? null,
     cacheReadTokens: message.usage?.cache_read_input_tokens ?? null,
-    totalCostUsd: message.total_cost_usd ?? null,
+    totalCostUsd: billing === 'subscription' ? null : (message.total_cost_usd ?? null),
     turns: message.num_turns ?? null,
     durationMs: message.duration_ms ?? null,
   };

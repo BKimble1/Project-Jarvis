@@ -4,11 +4,7 @@ import type { CharterContent, OperatingCharterVersion } from '@/domain/charter';
 import type { AuthorizationDecision, CapabilityRequest } from '@/domain/authorization';
 import { ConflictError, NotFoundError } from '@/domain/errors';
 import type { OperatingMode } from '@/domain/operating-mode';
-import {
-  authorizationDecisions,
-  operatingCharters,
-  operatorState,
-} from '@/server/db/schema';
+import { authorizationDecisions, operatingCharters, operatorState } from '@/server/db/schema';
 import type { Database } from '@/server/db/client';
 import type {
   AuthorizationDecisionRepository,
@@ -89,11 +85,7 @@ export class DrizzleCharterRepository implements CharterRepository {
    * is a thing an owner does when they are not sure the first click registered, and the safe
    * reading of it is "yes, that one".
    */
-  async activate(
-    id: string,
-    activatedBy: string,
-    now: Date,
-  ): Promise<OperatingCharterVersion> {
+  async activate(id: string, activatedBy: string, now: Date): Promise<OperatingCharterVersion> {
     return this.db.transaction(async (tx) => {
       const [candidate] = await tx
         .select()
@@ -112,10 +104,7 @@ export class DrizzleCharterRepository implements CharterRepository {
         .update(operatingCharters)
         .set({ supersededAt: now })
         .where(
-          and(
-            isNull(operatingCharters.supersededAt),
-            isNotNull(operatingCharters.activatedAt),
-          ),
+          and(isNull(operatingCharters.supersededAt), isNotNull(operatingCharters.activatedAt)),
         );
 
       const [activated] = await tx
@@ -141,9 +130,7 @@ export class DrizzleCharterRepository implements CharterRepository {
     const [row] = await this.db
       .select()
       .from(operatingCharters)
-      .where(
-        and(isNull(operatingCharters.supersededAt), isNotNull(operatingCharters.activatedAt)),
-      )
+      .where(and(isNull(operatingCharters.supersededAt), isNotNull(operatingCharters.activatedAt)))
       .limit(1);
     return row ? toCharter(row) : null;
   }
@@ -240,9 +227,7 @@ export class DrizzleOperatorStateRepository implements OperatorStateRepository {
 
 /* -------------------------------------------------------------- decisions */
 
-function toDecision(
-  row: typeof authorizationDecisions.$inferSelect,
-): StoredAuthorizationDecision {
+function toDecision(row: typeof authorizationDecisions.$inferSelect): StoredAuthorizationDecision {
   return {
     id: row.id,
     missionId: row.missionId,

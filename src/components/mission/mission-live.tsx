@@ -233,7 +233,7 @@ export function MissionLive({ initial }: { initial: MissionLiveData }) {
               <Fact
                 label="Estimated cost"
                 value={`$${activeRun.usage.totalCostUsd.toFixed(4)}`}
-                hint="Reported by the runtime. An estimate, not a bill."
+                hint="Reported by the runtime for API-billed work. An estimate, not a bill."
               />
             ) : null}
           </dl>

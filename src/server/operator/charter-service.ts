@@ -399,10 +399,7 @@ export class CharterService {
    * the decision exists, it came out `authorized`, it was made for *this* mission, and the charter
    * it cites is still the one in force with the same digest.
    */
-  async confirmDecision(
-    decisionId: string,
-    missionId: string,
-  ): Promise<ConfirmedAuthorization> {
+  async confirmDecision(decisionId: string, missionId: string): Promise<ConfirmedAuthorization> {
     const stored = await this.deps.decisions.findById(decisionId);
     if (!stored) throw new NotFoundError('Authorisation decision');
     if (stored.outcome !== 'authorized') {

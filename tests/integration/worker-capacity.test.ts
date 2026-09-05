@@ -219,4 +219,92 @@ describe('Claude capacity through the heartbeat', () => {
     });
     expect(decision.mayStartNewWork).toBe(true);
   });
+
+  it('records what the governor decided, and narrows the loop when a window tightens', async () => {
+    /*
+     * The governor was written, tested and connected to nothing: with no observations it resolved
+     * to "clear" on every pass, so it was a governor that always said yes. This drives the real
+     * operator against a real worker reading and asserts that the decision both reaches the loop
+     * and is written down where an owner can read it.
+     */
+    const { charterService, operatorService, workerService, workerRepo } = harness.services;
+    await charterService.setMode({ to: 'observer', actor: 'owner', changedBy: 'owner' });
+
+    const { worker } = await workerService.enrol('tight-worker', 1);
+    await workerService.poll(worker.id, {
+      heartbeat: {
+        ...HEARTBEAT,
+        capacity: reading({
+          windows: {
+            /* Well inside the default 25% reserve. */
+            fiveHour: { utilisationPercent: 92, resetsAt: '2026-03-01T15:00:00.000Z' },
+            sevenDay: { utilisationPercent: 10, resetsAt: null },
+            sevenDayOpus: { utilisationPercent: 10, resetsAt: null },
+          },
+        }),
+      },
+      acknowledgedCommandIds: [],
+      wantsWork: true,
+    });
+
+    expect(await workerRepo.capacityObservations()).toHaveLength(1);
+
+    const result = await operatorService.tick();
+    expect(result.capacity?.verdict).toBe('reserved');
+    expect(result.capacity?.maxNewWork).toBe(0);
+    expect(result.capacity?.reason).toMatch(/keep for you/);
+
+    /*
+     * And written down. On a quiet day the tick row is the only place that distinguishes "there
+     * was nothing worth doing" from "Jarvis was keeping your capacity back for you".
+     */
+    const ticks = await operatorService.recentTicks();
+    expect(ticks[0]?.capacityVerdict).toBe('reserved');
+    expect(ticks[0]?.capacityReason).toMatch(/keep for you/);
+  });
+
+  it('does not flap when a window is resting on the reserve boundary', async () => {
+    /*
+     * Hysteresis, end to end. The previous verdict is read from the last finished tick rather than
+     * held in memory, because the loop is driven from more than one place and may not be the same
+     * process twice — so this only works if the verdict was genuinely persisted.
+     */
+    const { charterService, operatorService, workerService } = harness.services;
+    await charterService.setMode({ to: 'observer', actor: 'owner', changedBy: 'owner' });
+    const { worker } = await workerService.enrol('boundary-worker', 1);
+
+    const report = async (utilisation: number) => {
+      await workerService.poll(worker.id, {
+        heartbeat: {
+          ...HEARTBEAT,
+          capacity: reading({
+            observedAt: new Date().toISOString(),
+            windows: {
+              fiveHour: { utilisationPercent: utilisation, resetsAt: null },
+              sevenDay: { utilisationPercent: 5, resetsAt: null },
+              sevenDayOpus: { utilisationPercent: 5, resetsAt: null },
+            },
+          }),
+        },
+        acknowledgedCommandIds: [],
+        wantsWork: true,
+      });
+    };
+
+    /* Inside the reserve: hold. */
+    await report(80);
+    expect((await operatorService.tick()).capacity?.verdict).toBe('reserved');
+
+    /* Barely outside it. Without hysteresis this would immediately read as clear again. */
+    await report(73);
+    const recovering = await operatorService.tick();
+    expect(recovering.capacity?.verdict).toBe('reserved');
+    expect(recovering.capacity?.reason).toMatch(/a little more room/);
+
+    /* Properly clear: it starts again — narrowed, because the window is still not roomy. */
+    await report(40);
+    const resumed = await operatorService.tick();
+    expect(resumed.capacity?.verdict).toBe('clear');
+    expect(resumed.capacity?.mayStartNewWork).toBe(true);
+  });
 });
