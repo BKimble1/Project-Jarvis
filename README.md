@@ -120,31 +120,34 @@ Playwright step. Nothing is weakened to make the gate pass; see [docs/TESTING.md
 
 ## Documentation
 
-| Document                                                              | What it covers                                                         |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| [Architecture](docs/ARCHITECTURE.md)                                  | Layering, module boundaries, data flow, extension points for Prompt 2. |
-| [Status rules](docs/STATUS_RULES.md)                                  | Every deterministic rule, by id, with its provenance.                  |
-| [Security](docs/SECURITY.md)                                          | Single-owner auth, read-only GitHub, secret handling, threat notes.    |
-| [GitHub token](docs/GITHUB_TOKEN.md)                                  | Exactly which fine-grained read permissions to grant.                  |
-| [Authentication](docs/AUTHENTICATION.md)                              | OAuth app setup and session behaviour.                                 |
-| [Database](docs/DATABASE.md)                                          | Schema, migrations, drivers, indexes, retention.                       |
-| [Setting up V1](docs/SETUP_V1.md)                                     | The ordered path from nothing to a Jarvis that runs real missions.     |
-| [The V1 topology](docs/V1_TOPOLOGY.md)                                | The one supported arrangement, and where every credential lives.       |
-| [Backup and recovery](docs/RECOVERY.md)                               | What survives a restart, how to back up, and the restore drill.        |
-| [The wallboard](docs/WALLBOARD.md)                                    | Pairing a screen, an Android tablet, a Raspberry Pi kiosk, revocation. |
-| [Local setup](docs/SETUP_LOCAL.md) · [Windows](docs/SETUP_WINDOWS.md) | Development environments.                                              |
-| [Netlify deployment](docs/DEPLOY_NETLIFY.md)                          | Build, environment, scheduled synchronisation.                         |
-| [Testing](docs/TESTING.md)                                            | What is tested, and how to add to it.                                  |
-| [Mission Control](docs/MISSION_CONTROL.md)                            | Phase 2: the control plane / worker split, and why.                    |
-| [Mission rules](docs/MISSION_RULES.md)                                | Phase 2 rules, by id.                                                  |
-| [Worker](docs/WORKER.md)                                              | Running a worker, and what it may and may not do.                      |
-| [Multi-agent factory](docs/MULTI_AGENT_FACTORY.md)                    | Phase 3: task graphs, roles, isolation, review and repair.             |
-| [Multi-agent rules](docs/MULTI_AGENT_RULES.md)                        | Every Phase 3 rule, by id.                                             |
-| [Playbooks](docs/PLAYBOOKS.md)                                        | Reusable mission shapes, and how versioning protects a running one.    |
-| [Operations](docs/OPERATIONS.md)                                      | Watching the factory, slowing it down, and wall displays.              |
-| [Threat model](docs/THREAT_MODEL.md)                                  | What an agent could try, and what stops it.                            |
-| [Implementation plan](docs/IMPLEMENTATION_PLAN.md)                    | The plan this phase was built to.                                      |
-| [Roadmap](docs/ROADMAP.md)                                            | What comes next, and the seams already left for it.                    |
+| Document                                                              | What it covers                                                          |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [Tomorrow morning](docs/TOMORROW_MORNING.md)                          | One command, and the three things worth knowing on day one.             |
+| [Jarvis V1 launch](docs/JARVIS_V1_LAUNCH.md)                          | How to run it, what it refuses to do, and what is proved versus built.  |
+| [The call bridge](docs/CALL_BRIDGE.md)                                | Implemented, not live-tested: what it refuses, and the setup checklist. |
+| [Architecture](docs/ARCHITECTURE.md)                                  | Layering, module boundaries, data flow, extension points for Prompt 2.  |
+| [Status rules](docs/STATUS_RULES.md)                                  | Every deterministic rule, by id, with its provenance.                   |
+| [Security](docs/SECURITY.md)                                          | Single-owner auth, read-only GitHub, secret handling, threat notes.     |
+| [GitHub token](docs/GITHUB_TOKEN.md)                                  | Exactly which fine-grained read permissions to grant.                   |
+| [Authentication](docs/AUTHENTICATION.md)                              | OAuth app setup and session behaviour.                                  |
+| [Database](docs/DATABASE.md)                                          | Schema, migrations, drivers, indexes, retention.                        |
+| [Setting up V1](docs/SETUP_V1.md)                                     | The ordered path from nothing to a Jarvis that runs real missions.      |
+| [The V1 topology](docs/V1_TOPOLOGY.md)                                | The one supported arrangement, and where every credential lives.        |
+| [Backup and recovery](docs/RECOVERY.md)                               | What survives a restart, how to back up, and the restore drill.         |
+| [The wallboard](docs/WALLBOARD.md)                                    | Pairing a screen, an Android tablet, a Raspberry Pi kiosk, revocation.  |
+| [Local setup](docs/SETUP_LOCAL.md) · [Windows](docs/SETUP_WINDOWS.md) | Development environments.                                               |
+| [Netlify deployment](docs/DEPLOY_NETLIFY.md)                          | Build, environment, scheduled synchronisation.                          |
+| [Testing](docs/TESTING.md)                                            | What is tested, and how to add to it.                                   |
+| [Mission Control](docs/MISSION_CONTROL.md)                            | Phase 2: the control plane / worker split, and why.                     |
+| [Mission rules](docs/MISSION_RULES.md)                                | Phase 2 rules, by id.                                                   |
+| [Worker](docs/WORKER.md)                                              | Running a worker, and what it may and may not do.                       |
+| [Multi-agent factory](docs/MULTI_AGENT_FACTORY.md)                    | Phase 3: task graphs, roles, isolation, review and repair.              |
+| [Multi-agent rules](docs/MULTI_AGENT_RULES.md)                        | Every Phase 3 rule, by id.                                              |
+| [Playbooks](docs/PLAYBOOKS.md)                                        | Reusable mission shapes, and how versioning protects a running one.     |
+| [Operations](docs/OPERATIONS.md)                                      | Watching the factory, slowing it down, and wall displays.               |
+| [Threat model](docs/THREAT_MODEL.md)                                  | What an agent could try, and what stops it.                             |
+| [Implementation plan](docs/IMPLEMENTATION_PLAN.md)                    | The plan this phase was built to.                                       |
+| [Roadmap](docs/ROADMAP.md)                                            | What comes next, and the seams already left for it.                     |
 
 ---
 
