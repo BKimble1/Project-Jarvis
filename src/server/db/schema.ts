@@ -22,6 +22,7 @@ import {
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -72,13 +73,20 @@ import type {
   RunState,
   VerificationOutcome,
 } from '@/domain/mission-run';
-import type { CharterContent } from '@/domain/charter';
+import type { CapabilityClass, CharterContent } from '@/domain/charter';
 import type {
   AuthorizationOutcome,
   CapabilityRequest,
   CapabilityVerdict,
 } from '@/domain/authorization';
 import type { OperatingMode } from '@/domain/operating-mode';
+import type {
+  ObservationCoverage,
+  OpportunitySource,
+  OpportunityState,
+  PriorityBand,
+  PriorityFactor,
+} from '@/domain/opportunity';
 import type { WorkerStatus } from '@/domain/worker';
 import type { AgentRole } from '@/domain/agent-role';
 import type {
@@ -3207,6 +3215,123 @@ export const authorizationDecisions = pgTable(
   ],
 );
 
+/**
+ * The backlog: what Jarvis could usefully do, and what it decided about each.
+ *
+ * `key` is the deterministic identity from `opportunityKey`, so the same situation seen on twenty
+ * consecutive ticks is one row with a newer `last_seen_at` rather than twenty rows. That is the
+ * whole reason the column is unique: without it the backlog fills with copies of one problem and
+ * the operator works it over and over.
+ *
+ * `first_seen_at` is never updated. It is what the age factor reads, and it is the reason a
+ * problem nobody has dealt with eventually rises in the queue.
+ */
+export const operatorOpportunities = pgTable(
+  'operator_opportunities',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    key: text('key').notNull(),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    source: text('source').$type<OpportunitySource>().notNull(),
+    /** The deterministic rule that produced it. Every row has one; there is no other path in. */
+    rule: text('rule').notNull(),
+    title: text('title').notNull(),
+    detail: text('detail').notNull(),
+    severity: text('severity').notNull(),
+    provenance: text('provenance').$type<ProvenanceLevel>().notNull(),
+    evidenceIds: jsonb('evidence_ids')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    capabilities: jsonb('capabilities')
+      .$type<CapabilityClass[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** How Jarvis would know it was finished. Empty means it cannot say, so it will not run it. */
+    acceptanceCriteria: jsonb('acceptance_criteria')
+      .$type<string[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** What kind of mission this becomes. Null falls back to inferring it from the request. */
+    missionType: text('mission_type').$type<MissionType>(),
+    requiresOwner: boolean('requires_owner').notNull().default(false),
+
+    state: text('state').$type<OpportunityState>().notNull().default('open'),
+    band: text('band').$type<PriorityBand>().notNull().default('watch'),
+    /** An ordering device with no units. Never rendered as a percentage or a sum of money. */
+    score: integer('score').notNull().default(0),
+    factors: jsonb('factors')
+      .$type<PriorityFactor[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    closedReason: text('closed_reason'),
+  },
+  (table) => [
+    uniqueIndex('operator_opportunities_key_idx').on(table.key),
+    index('operator_opportunities_state_idx').on(table.state, table.band),
+    index('operator_opportunities_project_idx').on(table.projectId),
+    index('operator_opportunities_seen_idx').on(table.lastSeenAt),
+  ],
+);
+
+/**
+ * Leases, so two ticks cannot run at once.
+ *
+ * Keyed on `(scope, key)` rather than on a project, because the things the operator needs to hold
+ * one at a time are not all projects — the tick itself is one lease over the whole loop.
+ *
+ * Expired leases are stealable. A tick killed mid-flight (a container recycled, a function timed
+ * out) would otherwise wedge the loop until somebody deleted a row by hand, and an operator that
+ * stops permanently because one invocation died is not an operator.
+ */
+export const operatorLeases = pgTable(
+  'operator_leases',
+  {
+    scope: text('scope').notNull(),
+    key: text('key').notNull(),
+    holder: text('holder').notNull(),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.scope, table.key] }),
+    index('operator_leases_expires_idx').on(table.expiresAt),
+  ],
+);
+
+/**
+ * Every pass of the loop, including the ones where nothing happened.
+ *
+ * The quiet ticks are the valuable ones. "Why has Jarvis not done anything today?" is answered by
+ * reading `summary` on the last twenty rows, and a loop that only recorded the ticks where it
+ * acted could not answer it at all.
+ */
+export const operatorTicks = pgTable(
+  'operator_ticks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    mode: text('mode').notNull(),
+    outcome: text('outcome').notNull().default('observed'),
+    summary: text('summary').notNull().default(''),
+    projectsObserved: integer('projects_observed').notNull().default(0),
+    opportunitiesFound: integer('opportunities_found').notNull().default(0),
+    missionsStarted: integer('missions_started').notNull().default(0),
+    /** Per project: observed, stale, failed or unwatched. A silent project is not a healthy one. */
+    coverage: jsonb('coverage')
+      .$type<ObservationCoverage[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+  },
+  (table) => [index('operator_ticks_started_idx').on(table.startedAt)],
+);
+
 /* --------------------------------------------------------------- relations */
 
 export const missionRelations = relations(missions, ({ one, many }) => ({
@@ -3314,4 +3439,7 @@ export const schema = {
   operatingCharters,
   operatorState,
   authorizationDecisions,
+  operatorOpportunities,
+  operatorLeases,
+  operatorTicks,
 };

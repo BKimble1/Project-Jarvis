@@ -98,6 +98,17 @@ import type {
   OperatorStateRepository,
 } from './repositories/charter-types';
 import { CharterService } from './operator/charter-service';
+import { OperatorService } from './operator/operator-service';
+import {
+  DrizzleOperatorLeaseRepository,
+  DrizzleOperatorTickRepository,
+  DrizzleOpportunityRepository,
+} from './repositories/operator-drizzle';
+import type {
+  OperatorLeaseRepository,
+  OperatorTickRepository,
+  OpportunityRepository,
+} from './repositories/operator-types';
 import {
   DrizzleAuditRepository,
   DrizzleBudgetRepository,
@@ -277,6 +288,10 @@ export interface Services {
   readonly operatorState: OperatorStateRepository;
   readonly authorizationDecisions: AuthorizationDecisionRepository;
   readonly charterService: CharterService;
+  readonly opportunities: OpportunityRepository;
+  readonly operatorLeases: OperatorLeaseRepository;
+  readonly operatorTicks: OperatorTickRepository;
+  readonly operatorService: OperatorService;
 }
 
 export interface BuildServicesOverrides {
@@ -697,6 +712,38 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  const opportunities = new DrizzleOpportunityRepository(db);
+  const operatorLeases = new DrizzleOperatorLeaseRepository(db);
+  const operatorTicks = new DrizzleOperatorTickRepository(db);
+  const operatorService = new OperatorService({
+    charter: charterService,
+    projects,
+    assess: (projectIds) => briefings.assessMany(projectIds),
+    opportunities,
+    leases: operatorLeases,
+    ticks: operatorTicks,
+    audit,
+    /*
+     * The room to start work comes from the existing capacity ceiling rather than from a new one
+     * of the loop's own. Two limits on the same thing eventually disagree, and the one nobody is
+     * looking at is the one that wins.
+     */
+    missions,
+    plans,
+    sources,
+    room: async () => ({
+      limit: (await orchestrator.limits()).maxActiveMissions,
+      active: await tasks.countActiveMissions(),
+    }),
+    /*
+     * No worker reports its Claude capacity yet, so this is empty — which resolves honestly to
+     * "auth mode unknown, so no subscription window is assumed and money is the constraint"
+     * rather than to a confident number about a limit that may not exist.
+     */
+    capacityObservations: async () => [],
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
   const router = new StatusQueryRouter({
     projects,
     briefings,
@@ -792,6 +839,10 @@ export function buildServices(
     operatorState: operatorStateRepo,
     authorizationDecisions,
     charterService,
+    opportunities,
+    operatorLeases,
+    operatorTicks,
+    operatorService,
   };
 }
 

@@ -3,6 +3,7 @@ import {
   charterDigest,
   isCharterExpired,
   validateGrants,
+  type CapabilityClass,
   type CharterContent,
   type OperatingCharterVersion,
 } from '@/domain/charter';
@@ -79,6 +80,14 @@ export interface CharterServiceDeps {
 export interface ConfirmedAuthorization extends StoredAuthorizationDecision {
   readonly charterVersionId: string;
   readonly charterDigest: string;
+  /**
+   * The capabilities this decision actually *allowed*, not the ones it was asked about.
+   *
+   * A decision that refused half of what it was asked is still `authorized` only when nothing was
+   * refused — but reading the allowed verdicts rather than the request keeps that true by
+   * construction rather than by relying on the outcome having been computed correctly.
+   */
+  readonly capabilities: readonly CapabilityClass[];
 }
 
 export interface ActiveAuthority {
@@ -428,7 +437,14 @@ export class CharterService {
      * nullable — a refused decision may cite no charter at all — and callers past this point need
      * the values, not another `?? throw`.
      */
-    return { ...stored, charterVersionId: charter.id, charterDigest: charter.digest };
+    return {
+      ...stored,
+      charterVersionId: charter.id,
+      charterDigest: charter.digest,
+      capabilities: stored.verdicts
+        .filter((verdict) => verdict.allowed)
+        .map((verdict) => verdict.capability),
+    };
   }
 
   /**

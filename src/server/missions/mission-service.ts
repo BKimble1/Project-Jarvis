@@ -22,6 +22,8 @@ import { deriveMissionTitle } from '@/domain/mission-intake';
 import { assessProjectGate, buildClarificationQuestions } from '@/domain/mission-clarification';
 import type { MissionPlan, MissionPlanContent, PlanApprovalInput } from '@/domain/mission-plan';
 import { planFactsChanged } from '@/domain/mission-plan';
+import type { CapabilityClass } from '@/domain/charter';
+import { coversPlan } from '@/domain/mission-capabilities';
 import type {
   ArtifactInput,
   CommandKind,
@@ -105,6 +107,14 @@ export interface MissionServiceDeps {
     readonly id: string;
     readonly charterVersionId: string;
     readonly charterDigest: string;
+    /**
+     * The capabilities the decision was actually made about.
+     *
+     * Read from the recorded decision, never from the caller. A decision authorising a status
+     * update does not become an authorisation to change code because somebody passed its id to a
+     * mission that does — and comparing them is the only thing that stops it.
+     */
+    readonly capabilities: readonly CapabilityClass[];
   }>;
   readonly clock?: () => Date;
 }
@@ -165,7 +175,18 @@ export class MissionService {
   async create(
     input: MissionDraftInput,
     ownerLogin: string | null,
-    options: { projectHint?: string | null } = {},
+    options: {
+      projectHint?: string | null;
+      /**
+       * Who is creating it.
+       *
+       * Recorded on the `mission_created` event, so a mission the operating loop raised for itself
+       * reads differently in the timeline from one a person typed. Defaults to `owner` because
+       * that is every existing caller, and a mission whose origin is unclear should look like
+       * somebody's rather than like nobody's.
+       */
+      createdBy?: MissionActor;
+    } = {},
   ): Promise<MissionCreationResult> {
     const type = input.type ?? inferMissionType(input.rawRequest);
     const risk = classifyMissionRisk({
@@ -199,11 +220,15 @@ export class MissionService {
       state: 'draft',
     });
 
+    const createdBy: MissionActor = options.createdBy ?? 'owner';
     await this.deps.events.record(mission.id, {
       type: 'mission_created',
-      actor: 'owner',
+      actor: createdBy,
       level: 'notice',
-      summary: `Mission created: ${mission.title}`,
+      summary:
+        createdBy === 'charter'
+          ? `Jarvis raised this itself: ${mission.title}`
+          : `Mission created: ${mission.title}`,
       detail: { riskLevel: risk.level, riskRuleIds: risk.ruleIds, type },
     });
 
@@ -690,6 +715,31 @@ export class MissionService {
       authority.kind === 'charter'
         ? await this.deps.confirmStandingAuthority(authority.decisionId, missionId)
         : null;
+
+    /*
+     * And that the authorisation covers what this mission is actually going to do.
+     *
+     * The decision being valid, recent and for this mission is not the same as it being about this
+     * work. Without this comparison an operator could ask for permission to update a project's
+     * status, be granted it, and then run a mission that rewrites a repository — with every other
+     * check passing, because nothing had compared the two.
+     *
+     * The capability set is derived from the mission's type and its plan, not from anything the
+     * caller supplies, so it cannot be narrowed by asking for less.
+     */
+    if (confirmed) {
+      const gap = coversPlan({
+        authorised: confirmed.capabilities,
+        type: withOverride.type,
+        plan: plan.content,
+      });
+      if (gap) {
+        throw new ForbiddenError(gap.reason, {
+          decisionId: confirmed.id,
+          missing: gap.missing,
+        });
+      }
+    }
 
     /*
      * The recorded approver is derived, never passed through.
