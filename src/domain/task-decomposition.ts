@@ -4,7 +4,7 @@ import type { MissionPlanContent } from './mission-plan';
 import type { MissionType } from './mission';
 import { isReadOnlyMissionType } from './mission';
 import type { TaskProposal } from './mission-task';
-import { WHOLE_REPOSITORY, normaliseWriteSet } from './write-set';
+import { WHOLE_REPOSITORY, intersectWriteSet, normaliseWriteSet } from './write-set';
 
 /**
  * Turning an approved plan into a proposed task graph.
@@ -431,8 +431,15 @@ export function buildRepairTasks(input: {
   const files = input.findings
     .map((finding) => finding.file)
     .filter((file): file is string => Boolean(file));
-  /* Never wider than what the builder was allowed; the findings only narrow it. */
-  const writeSet = files.length > 0 ? normaliseWriteSet(files) : [...input.builderWriteSet];
+  /*
+   * Never wider than what the builder was allowed — and now actually so.
+   *
+   * `finding.file` is written by the reviewing *agent*, so this list is model-supplied. Taking it
+   * at face value meant one finding naming `.` (or `*`, or `/`, which all normalise to the whole
+   * repository) promoted the repairer from the builder's narrow scope to everything. The comment
+   * here claimed the narrowing was happening; the code did not do it.
+   */
+  const writeSet = intersectWriteSet(input.builderWriteSet, files);
 
   return [
     {

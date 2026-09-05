@@ -15,6 +15,7 @@ import {
   type TaskState,
 } from '@/domain/mission-task';
 import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
+import { autonomousWriteScopeVerdict, normaliseWriteSet } from '@/domain/write-set';
 import { boundText, redactSecrets } from '@/domain/redaction';
 import type { ReviewSubmissionInput } from '@/domain/mission-review';
 import type { MissionPlanContent } from '@/domain/mission-plan';
@@ -175,6 +176,53 @@ export class TaskWorkerService {
         });
         return null;
       }
+
+      /*
+       * The write-scope gate, and why it ends the task rather than releasing it.
+       *
+       * `deriveWriteSet` falls back to the whole repository when a plan named no path-like areas,
+       * and the deterministic planner's only `affectedAreas` entry is the sentence "To be confirmed
+       * by inspection before any change is made." That is not a path, so every deterministically
+       * planned write mission was granted the entire repository — which turned the write-set
+       * control off end to end for precisely the missions nobody was watching.
+       *
+       * The gate above releases back to `ready`, because reaching it is a bug and the row should
+       * be reconsidered. This one must not: the write set is fixed for the attempt, so releasing
+       * would re-claim and re-refuse for ever, burning a claim cycle every few seconds and never
+       * telling anybody. Failing it stops the loop and puts the reason where the owner reads it —
+       * and the mission's own repair and attempt rules then apply as they would to any failure.
+       */
+      const scope = autonomousWriteScopeVerdict({
+        writeSet: claimed.task.declaredWriteSet,
+        unattended: true,
+      });
+      if (!scope.allowed) {
+        await this.deps.runs.patch(claimed.runId, {
+          state: 'failed',
+          finishedAt: this.clock(),
+          failureCode: 'policy_violation',
+          failureMessage: scope.reason,
+        });
+        await this.deps.tasks.transition(
+          claimed.task.id,
+          'failed',
+          {
+            assignedWorkerId: null,
+            activeRunId: null,
+            lastActivityAt: this.clock(),
+            failureMessage: scope.reason,
+          },
+          'claimed',
+        );
+        await this.deps.events.record(claimed.task.missionId, {
+          type: 'policy_refusal',
+          actor: 'system',
+          level: 'warning',
+          summary: scope.reason,
+          detail: { taskKey: claimed.task.key, runId: claimed.runId, rule: scope.rule },
+        });
+        return null;
+      }
     }
 
     await this.deps.events.record(claimed.task.missionId, {
@@ -222,11 +270,19 @@ export class TaskWorkerService {
     const baseTaskBranch = repaired?.branchName ?? null;
 
     /* An integrator merges the finished write branches, in dependency order. */
-    const mergeBranches = siblings
+    const merging = siblings
       .filter((sibling) => sibling.state === 'succeeded' && sibling.branchName)
       .sort((left, right) => left.position - right.position)
-      .map((sibling) => sibling.branchName!)
-      .filter((branch) => branch !== integrationBranch);
+      .filter((sibling) => sibling.branchName !== integrationBranch);
+    const mergeBranches = merging.map((sibling) => sibling.branchName!);
+    /*
+     * What those branches were collectively approved to change. Assembled here from the stored
+     * write sets rather than reported by the worker, because a scope the worker supplies is a
+     * scope the worker can widen.
+     */
+    const mergeWriteSet = normaliseWriteSet(
+      merging.flatMap((sibling) => [...sibling.declaredWriteSet]),
+    );
 
     const review = isReviewRole(task.role)
       ? await this.buildReviewInputs(task, mission, plan?.content ?? null, artifacts)
@@ -267,6 +323,7 @@ export class TaskWorkerService {
       baseTaskBranch,
       integrationBranch,
       mergeBranches,
+      mergeWriteSet,
       repairRound: task.repairRound,
       maxTurns: task.maxTurns,
       timeLimitMs: task.timeLimitMs,

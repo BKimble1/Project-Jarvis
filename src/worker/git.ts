@@ -174,6 +174,54 @@ export async function changedFiles(options: GitOptions): Promise<readonly string
     .slice(0, 500);
 }
 
+/**
+ * Every path the working tree touched, for comparing against a write set.
+ *
+ * Separate from `changedFiles`, which exists to *describe* a run to a person and is allowed to be
+ * approximate. This one decides whether work is allowed to proceed, so the three places where the
+ * friendly version is approximate are exactly the three places this cannot be.
+ *
+ * **Renames report both sides.** `git status --porcelain` renders a rename as `old -> new` on one
+ * line, and `line.slice(3).trim()` turns that into the single string `"old -> new"` — which passes
+ * a containment check whenever the *old* path is inside the write set. So a task could move a file
+ * out of its scope into anywhere it liked and the check would agree. Here both paths are reported
+ * separately, because a rename writes in two places.
+ *
+ * **No quoting.** Without `-z`, git C-quotes any path containing a space or a non-ASCII character,
+ * so `my file.ts` arrives as `"my file.ts"` and fails containment against a set that legitimately
+ * covers it. `-z` is NUL-separated and never quotes.
+ *
+ * **No truncation.** The friendly version stops at 500 entries, which is fine for a summary and
+ * wrong for a boundary: a task that changed 600 files would have the last 100 unchecked.
+ */
+export async function changedFilesForScope(options: GitOptions): Promise<readonly string[]> {
+  const result = await git(['status', '--porcelain', '-z'], options);
+  const fields = result.stdout.split('\0');
+  const paths: string[] = [];
+
+  for (let index = 0; index < fields.length; index += 1) {
+    const entry = fields[index];
+    if (entry === undefined || entry.length === 0) continue;
+    /* `XY path`, where XY is the two-character status and a single space follows it. */
+    const status = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (path.length === 0) continue;
+    paths.push(path);
+    /*
+     * A rename or copy is followed by its source as a separate NUL-terminated field. Consuming it
+     * here is what keeps the loop aligned — and reporting it is what makes the check honest, since
+     * the source is a path the task also wrote to by emptying it.
+     */
+    if (status.startsWith('R') || status.startsWith('C')) {
+      index += 1;
+      const from = fields[index];
+      if (from !== undefined && from.length > 0) paths.push(from);
+    }
+  }
+
+  return paths;
+}
+
 export async function remoteUrl(options: GitOptions): Promise<string | null> {
   try {
     const result = await git(['remote', 'get-url', 'origin'], options);

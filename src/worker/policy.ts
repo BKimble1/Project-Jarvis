@@ -1,6 +1,6 @@
 import { assertInsideWorkspace, isInsideWorkspace } from '@/domain/workspace-safety';
 import { AGENT_ROLE_LABELS, type AgentRole, type PermissionProfile } from '@/domain/agent-role';
-import { filesOutsideWriteSet, describeWriteSet } from '@/domain/write-set';
+import { filesOutsideWriteSet, describeWriteSet, isWholeRepository } from '@/domain/write-set';
 
 /**
  * The worker's security policy.
@@ -288,6 +288,34 @@ export function evaluateCommand(command: string, context: PolicyContext): Policy
     }
   }
 
+  /*
+   * The write set applies to the shell too.
+   *
+   * `Write` and `Edit` were checked against the declared write set and `Bash` was not, so a
+   * builder that wanted to change a file outside its scope only had to reach for `sed -i` instead
+   * of `Edit`. Nothing in the model's situation makes that a deliberate evasion — it is simply a
+   * different tool for the same job — which is exactly why the boundary has to be the same for
+   * both.
+   *
+   * Only the unambiguous forms are checked here (see `writeTargetsInCommand`); the git diff taken
+   * before anything is committed catches everything else against the same set.
+   */
+  const declared = context.declaredWriteSet ?? [];
+  if (declared.length > 0 && !isWholeRepository(declared)) {
+    for (const target of writeTargetsInCommand(normalised)) {
+      const relative = target.startsWith(context.workspaceRoot)
+        ? target.slice(context.workspaceRoot.length).replace(/^\/+/, '')
+        : target;
+      if (relative.startsWith('/')) continue; /* Already refused above if outside. */
+      if (filesOutsideWriteSet(declared, [relative]).length > 0) {
+        return deny(
+          'P-SCOPE02',
+          `That command writes to ${relative}, which is outside this task's approved write set (${describeWriteSet(declared)}).`,
+        );
+      }
+    }
+  }
+
   return ALLOW;
 }
 
@@ -336,6 +364,56 @@ function checkDoNotTouch(input: Record<string, unknown>, context: PolicyContext)
 }
 
 /** Absolute-looking paths and `cd` targets in a shell command. */
+/**
+ * The repository-relative paths a shell command plainly writes to.
+ *
+ * ## Why this is deliberately narrow
+ *
+ * "Which files does this shell command write?" is undecidable in general, and a policy that
+ * guessed would fail in the expensive direction: `npm install` writes `node_modules` and a
+ * lockfile, `git commit` writes everything already staged, and refusing those because their
+ * targets cannot be named would stop ordinary work with a scope error nobody can act on.
+ *
+ * So this recognises only the forms whose destination is syntactically unmistakable — a redirect,
+ * an in-place edit, a copy, a move, a truncate. For everything else the write set is still
+ * enforced, twice: `Write`/`Edit` go through the exact check above, and the final git diff is
+ * compared against the same set before anything is committed. This closes the gap where a builder
+ * could reach for `sed -i` specifically to get around a tool it knew was checked.
+ */
+export function writeTargetsInCommand(command: string): readonly string[] {
+  const targets: string[] = [];
+  const push = (value: string | undefined): void => {
+    if (!value) return;
+    const cleaned = value.replace(/^['"]|['"]$/g, '');
+    /* A flag, a glob or a process substitution is not a path this check can reason about. */
+    if (cleaned.length === 0 || cleaned.startsWith('-') || /[*?<>|$`]/.test(cleaned)) return;
+    targets.push(cleaned);
+  };
+
+  /* `> file` and `>> file`, including `2>` and `&>`. */
+  for (const match of command.matchAll(/(?:^|\s)(?:\d|&)?>{1,2}\s*([^\s;|&]+)/g)) push(match[1]);
+
+  /* `sed -i … file`, `tee file`, `truncate … file`. The last token is the destination. */
+  for (const match of command.matchAll(
+    /\b(?:sed\s+(?:-[a-zA-Z]*i[a-zA-Z]*\S*\s+)(?:[^\s]+\s+)*|tee\s+(?:-a\s+)?|truncate\s+(?:-s\s*\S+\s+))([^\s;|&]+)/g,
+  )) {
+    push(match[1]);
+  }
+
+  /* `mv a b`, `cp a b`, `install a b` — both operands, because a move writes and unwrites. */
+  for (const match of command.matchAll(/\b(?:mv|cp)\s+((?:-\S+\s+)*)([^\s;|&]+)\s+([^\s;|&]+)/g)) {
+    push(match[2]);
+    push(match[3]);
+  }
+
+  /* `rm file`, `rmdir dir`, `touch file`, `mkdir dir` — every operand after the flags. */
+  for (const match of command.matchAll(/\b(?:rm|rmdir|touch|mkdir)\s+((?:-\S+\s+)*)([^;|&]+)/g)) {
+    for (const operand of (match[2] ?? '').split(/\s+/)) push(operand);
+  }
+
+  return targets;
+}
+
 function extractPathLikeTokens(command: string): readonly string[] {
   const tokens: string[] = [];
   for (const match of command.matchAll(/(?:^|\s)(?:cd\s+)?(\/[^\s;|&'"()]+)/g)) {

@@ -264,6 +264,17 @@ export interface TaskAssignment {
   readonly integrationBranch: string | null;
   /** Task branches this task must merge, in dependency order. Only for an integrator. */
   readonly mergeBranches: readonly string[];
+  /**
+   * The union of the write sets of the branches being merged. Only for an integrator.
+   *
+   * Carried so the merged result can be checked against what those tasks were actually approved to
+   * change, before anything is pushed. Each task already checks its own diff, but a task that
+   * somehow wrote outside its set — through a shell form the policy could not name, or through a
+   * merge that brought in more than its own branch — would otherwise reach the mission branch with
+   * nothing left to notice it. Computed by the control plane from the tasks' stored write sets, so
+   * a worker cannot widen it by claiming a larger one.
+   */
+  readonly mergeWriteSet: readonly string[];
   readonly repairRound: number;
   readonly maxTurns: number | null;
   readonly timeLimitMs: number | null;

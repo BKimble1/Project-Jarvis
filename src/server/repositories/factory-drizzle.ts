@@ -572,9 +572,6 @@ function buildTaskPatch(patch: TaskPatch): Record<string, unknown> {
   assign('lastActivityAt', 'lastActivityAt');
   if (patch.actualChangedFiles !== undefined)
     out.actualChangedFiles = [...patch.actualChangedFiles];
-  if (patch.declaredWriteSet !== undefined) {
-    out.declaredWriteSet = [...normaliseWriteSet(patch.declaredWriteSet)];
-  }
   if (patch.failureMessage !== undefined) {
     out.failureMessage =
       patch.failureMessage === null ? null : boundText(redactSecrets(patch.failureMessage), 2000);

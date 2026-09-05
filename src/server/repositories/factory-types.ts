@@ -91,7 +91,15 @@ export interface TaskPatch {
   readonly workspacePath?: string | null;
   readonly workspacePreserved?: boolean;
   readonly actualChangedFiles?: readonly string[];
-  readonly declaredWriteSet?: readonly string[];
+  /*
+   * `declaredWriteSet` is deliberately absent.
+   *
+   * It is set once, when the task is created from an approved graph, and it is the thing every
+   * scope check compares against — the tool boundary, the task's own diff, and the union the
+   * integrator is given. A patch field for it is a way for a later caller to widen a scope after
+   * the work has been approved, which is the one change that would make all three checks agree
+   * with each other and with nothing the owner said.
+   */
   readonly failureCode?: TaskFailureCode | null;
   readonly failureMessage?: string | null;
   readonly summary?: string | null;

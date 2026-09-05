@@ -7,7 +7,7 @@ import type { VerificationInput } from '@/domain/mission-run';
 import { ControlPlaneError, type ControlPlaneClient } from './client';
 import type { WorkerConfig } from './config';
 import { buildPullRequestBody, DeliveryError, type GitHubDelivery } from './delivery';
-import { changedFiles, git, headSha, pushMissionBranch } from './git';
+import { changedFiles, changedFilesForScope, git, headSha, pushMissionBranch } from './git';
 import { commitTaskWork, filesAgainstBase, integrateBranches, readBranchDiff } from './integration';
 import { buildPolicyPrompt, evaluateToolUse, type PolicyContext } from './policy';
 import type { AgentEvent, AgentRuntime, AgentSession } from './runtime/types';
@@ -203,8 +203,18 @@ export class TaskRunner {
     const gitOptions = { cwd: workspace.repoPath, credentialToken: null };
     const changed = await changedFiles(gitOptions);
 
-    /* The second write-set check: against what really changed, not what was requested. */
-    const outside = filesOutsideWriteSet(this.assignment.declaredWriteSet, changed);
+    /*
+     * The second write-set check: against what really changed, not what was requested.
+     *
+     * Read through `changedFilesForScope` rather than the friendly `changedFiles` above, because
+     * the friendly one renders a rename as the single string `old -> new` — which passes
+     * containment whenever the *old* path is inside the set, so a task could move a file out of
+     * its scope to anywhere it liked and the check would agree. It also quotes paths containing
+     * spaces and stops at 500 entries. None of that matters for a summary; all of it matters for
+     * a boundary.
+     */
+    const changedForScope = await changedFilesForScope(gitOptions);
+    const outside = filesOutsideWriteSet(this.assignment.declaredWriteSet, changedForScope);
     if (outside.length > 0) {
       await this.emit(
         'policy_refusal',
@@ -331,6 +341,34 @@ export class TaskRunner {
       await this.fail(
         'integration_conflict',
         `${result.conflict.detail} Both branches are preserved exactly as they were — nothing was discarded to make the merge succeed. Decide what the merged result should be, then either fix the branch or resolve it yourself.`,
+      );
+      return;
+    }
+
+    /*
+     * The last check before anything leaves this machine.
+     *
+     * Each task already compared its own diff against its own write set, so reaching here with a
+     * violation means one of those checks did not see something — a shell form the policy could
+     * not name, a merge that brought in more than the branch it named, a task whose set was
+     * changed underneath it. This is the point where that stops being recoverable: the next step
+     * pushes the branch, and after a push the mistake is on a remote somebody else can pull.
+     *
+     * The set is the union the control plane computed from the merged tasks' stored write sets. A
+     * worker cannot widen it, because a worker never supplied it.
+     */
+    const merged = filesOutsideWriteSet(this.assignment.mergeWriteSet, result.changedFiles);
+    if (merged.length > 0) {
+      await this.emit(
+        'policy_refusal',
+        `The merged result changes ${merged.length} file(s) that no task in it was approved to touch.`,
+        { files: merged.slice(0, 20) },
+        'error',
+      );
+      await this.fail(
+        'write_scope_violation',
+        `The integration branch would change ${merged.slice(0, 5).join(', ')}${merged.length > 5 ? ` and ${merged.length - 5} more` : ''}, which none of the merged tasks was approved to touch. Nothing was pushed, and every task branch is preserved exactly as it was.`,
+        { changedFiles: [...result.changedFiles] },
       );
       return;
     }
