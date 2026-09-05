@@ -8,6 +8,13 @@ import { ControlPlaneError, type ControlPlaneClient } from './client';
 import type { WorkerConfig } from './config';
 import { buildPullRequestBody, DeliveryError, type GitHubDelivery } from './delivery';
 import { changedFiles, changedFilesForScope, git, headSha, pushMissionBranch } from './git';
+import {
+  ceilingBreach,
+  monotonicNow,
+  type CeilingBreach,
+  type RunCeilings,
+  type RunConsumption,
+} from '@/domain/run-budget';
 import { commitTaskWork, filesAgainstBase, integrateBranches, readBranchDiff } from './integration';
 import { buildPolicyPrompt, evaluateToolUse, type PolicyContext } from './policy';
 import type { AgentEvent, AgentRuntime, AgentSession } from './runtime/types';
@@ -47,11 +54,32 @@ export interface TaskRunnerDeps {
   readonly clock?: () => Date;
 }
 
+/**
+ * How often a running task checks in with the control plane.
+ *
+ * Short enough that an owner pressing Stop sees it happen rather than wondering, long enough that
+ * a twenty-minute session costs forty requests rather than thousands.
+ */
+const CHECK_IN_MS = 30_000;
+
 export class TaskRunner {
   private seq = 0;
   private session: AgentSession | null = null;
   private workspace: WorkspaceHandle | null = null;
   private stopRequested = false;
+  /*
+   * What this session has spent, tracked as it runs.
+   *
+   * Reset per `driveAgent` call rather than per task, because a task's ceilings bound the agent
+   * session in front of it — a verifier that runs a check after its builder session is not still
+   * spending the builder's allowance.
+   */
+  private startedAtMs = 0;
+  private lastCheckInMs = 0;
+  private emittedCharacters = 0;
+  private reportedOutputTokens: number | null = null;
+  private turns = 0;
+  private breach: CeilingBreach | null = null;
   private readonly abort = new AbortController();
   private readonly verifications: VerificationInput[] = [];
 
@@ -126,8 +154,28 @@ export class TaskRunner {
     });
     if (outcome === 'failed') return;
     if (this.stopRequested) return this.confirmStopped();
+    if (outcome === 'limited') {
+      /*
+       * A read-only task has nothing on disk to preserve, so its partial findings *are* the work.
+       * They are stored as an artifact before the task ends, exactly as a finished one would —
+       * a run that spent an allowance and produced a half-written report has still produced
+       * something, and throwing it away means paying for the same reading twice.
+       */
+      await this.storeReadOnlyArtifact(messages);
+      await this.failLimited();
+      return;
+    }
 
     /* A read-only task's deliverable is its artifact, so it is stored before the task succeeds. */
+    await this.storeReadOnlyArtifact(messages);
+    await this.report('succeeded', {
+      currentAction: null,
+      completionSummary: boundText(messages.join('\n\n'), 3000),
+    });
+  }
+
+  /** A read-only task's findings, stored whether it finished or ran out of allowance. */
+  private async storeReadOnlyArtifact(messages: readonly string[]): Promise<void> {
     await this.deps.client.artifact(this.assignment.missionId, {
       runId: this.assignment.runId,
       kind: this.assignment.taskType === 'synthesis' ? 'summary' : 'research_report',
@@ -137,10 +185,24 @@ export class TaskRunner {
       sources: [],
     });
     await this.emit('artifact_created', `${this.assignment.taskKey} produced its findings.`);
-    await this.report('succeeded', {
-      currentAction: null,
-      completionSummary: boundText(messages.join('\n\n'), 3000),
-    });
+  }
+
+  /**
+   * End a task that reached a ceiling, after its work has been preserved.
+   *
+   * `limit_reached` rather than a generic failure, because the two call for different things from
+   * an owner: a task that broke needs diagnosing, and a task that ran out of allowance needs a
+   * decision about whether the allowance was right. The mission's own attempt and repair rules
+   * then apply exactly as they would to any other failure — a retry gets a fresh run, which is
+   * what makes resuming idempotent rather than additive.
+   */
+  private async failLimited(): Promise<void> {
+    const breach = this.breach;
+    await this.fail(
+      'limit_reached',
+      breach?.reason ?? 'This task reached a configured limit. Its work so far is preserved.',
+      { limit: breach?.limit ?? null, basis: breach?.basis ?? null },
+    );
   }
 
   /* --------------------------------------------------------------- write */
@@ -231,6 +293,8 @@ export class TaskRunner {
     }
 
     if (changed.length === 0) {
+      /* Nothing on disk, so nothing to checkpoint — a ceiling here just ends the task. */
+      if (outcome === 'limited') return this.failLimited();
       await this.emit('info', 'Nothing needed changing.');
       await this.report('succeeded', {
         currentAction: null,
@@ -238,6 +302,39 @@ export class TaskRunner {
         filesChanged: [],
       });
       return;
+    }
+
+    /*
+     * A task that ran out of allowance still committed what it wrote.
+     *
+     * This is the deterministic cleanup the ceiling is allowed to do: the agent has stopped, the
+     * working tree is whatever it left behind, and committing it onto the task's own branch is
+     * what turns "half a change on a disk somewhere" into something an owner can read, diff and
+     * decide about. Skipping it would mean the allowance was spent and nothing survived it — and
+     * the next attempt would pay for the same work again.
+     *
+     * The write-set check above has already passed at this point, so nothing outside the approved
+     * scope can be committed by this path.
+     */
+    if (outcome === 'limited') {
+      const checkpoint = await commitTaskWork({
+        repoPath: workspace.repoPath,
+        branch: workspace.branch!,
+        message: `${this.assignment.title} (checkpoint at limit)\n\n${boundText(redactSecrets(messages.join('\n\n')), 1500)}`,
+      });
+      if (checkpoint) {
+        await this.emit(
+          'commit_created',
+          `Committed ${checkpoint.files.length} file(s) before stopping at the limit.`,
+          { sha: checkpoint.sha },
+        );
+        await this.report(null, {
+          headSha: checkpoint.sha,
+          filesChanged: checkpoint.files,
+          branchName: workspace.branch,
+        });
+      }
+      return this.failLimited();
     }
 
     const commit = await commitTaskWork({
@@ -580,6 +677,18 @@ export class TaskRunner {
     });
     if (outcome === 'failed') return;
     if (this.stopRequested) return this.confirmStopped();
+    if (outcome === 'limited') {
+      /*
+       * A review that ran out of allowance must not submit a verdict.
+       *
+       * Its half-formed judgement would be indistinguishable from a considered one, and an
+       * `approved` from a reviewer that was cut off mid-sentence is the single most dangerous
+       * artefact this system could produce — it is what stands between a change and a pull
+       * request. Ending without a verdict leaves the mission waiting for a review it can retry.
+       */
+      await this.failLimited();
+      return;
+    }
 
     const parsed = parseReview(messages.join('\n\n'));
     await this.deps.client.submitReview({
@@ -741,7 +850,7 @@ export class TaskRunner {
     readOnly: boolean;
     prompt: string;
     onMessage: (text: string) => void;
-  }): Promise<'done' | 'failed' | 'stopped'> {
+  }): Promise<'done' | 'failed' | 'stopped' | 'limited'> {
     const workspace = this.workspace;
     if (!workspace) throw new Error('The workspace was not prepared.');
 
@@ -773,6 +882,13 @@ export class TaskRunner {
       decide: (request) => Promise.resolve(evaluateToolUse(request, policy)),
     });
 
+    this.startedAtMs = monotonicNow();
+    this.lastCheckInMs = monotonicNow();
+    this.emittedCharacters = 0;
+    this.reportedOutputTokens = null;
+    this.turns = 0;
+    this.breach = null;
+
     for await (const event of this.session.events) {
       const outcome = await this.handleAgentEvent(event, options.onMessage);
       if (outcome === 'failed') return 'failed';
@@ -781,8 +897,89 @@ export class TaskRunner {
         await this.session.interrupt();
         return 'stopped';
       }
+
+      /*
+       * Check in with the control plane, on a bounded interval.
+       *
+       * `stopRequested` arrives on a report's response, and during a long session nothing reports:
+       * tool calls and messages go to the events endpoint, which carries no such answer. So an
+       * owner's Stop reached the mission, the mission's runner honoured it, and a task running for
+       * twenty minutes never heard about it — the flag existed, was read, and could never become
+       * true in time to matter.
+       *
+       * This is also what keeps the task's `lastActivityAt` fresh, which is what tells a reclaim
+       * sweep the difference between a worker that is working and a worker that has died.
+       *
+       * Cheap: once every `CHECK_IN_MS` of session time, not once per event.
+       */
+      const sinceCheckIn = monotonicNow() - this.lastCheckInMs;
+      if (sinceCheckIn >= CHECK_IN_MS) {
+        this.lastCheckInMs = monotonicNow();
+        await this.report(null, {});
+        if (this.stopRequested) {
+          await this.session.interrupt();
+          return 'stopped';
+        }
+      }
+
+      /*
+       * The safe interruption point.
+       *
+       * Between two agent events is the one moment in a session where nothing is half-done: no
+       * tool call is in flight, no file is partly written, no git command is mid-operation. So the
+       * ceiling is checked here rather than on a timer that could fire anywhere — the brief's
+       * "do not terminate at an arbitrary moment" is not a nicety, it is the difference between
+       * stopping a run and corrupting a repository.
+       *
+       * `interrupt` rather than `abort`: it asks the session to stop and lets the runtime close it
+       * down, which leaves the workspace in a state the caller can still commit from.
+       */
+      const breach = ceilingBreach(this.ceilings(), this.consumption());
+      if (breach) {
+        this.breach = breach;
+        await this.emit(
+          'warning',
+          breach.reason,
+          { limit: breach.limit, basis: breach.basis },
+          'warning',
+        );
+        await this.session.interrupt();
+        return 'limited';
+      }
     }
     return 'done';
+  }
+
+  /** What this session is allowed, from the assignment and the role profile, whichever is tighter. */
+  private ceilings(): RunCeilings {
+    const profile = resolvePermissionProfile(this.assignment.permissionProfileId);
+    const tighter = (left: number | null, right: number | null): number | null => {
+      if (left === null) return right;
+      if (right === null) return left;
+      return Math.min(left, right);
+    };
+    return {
+      timeLimitMs: tighter(this.assignment.timeLimitMs, profile.usage.timeLimitMs ?? null),
+      maxOutputTokens: tighter(
+        this.assignment.maxOutputTokens,
+        profile.usage.maxOutputTokens ?? null,
+      ),
+      /*
+       * Turns are already capped by the runtime itself, which stops the session at `maxTurns`. This
+       * counts them anyway so the reason an owner reads names the turn limit rather than reporting
+       * an unexplained early finish.
+       */
+      maxTurns: tighter(this.assignment.maxTurns, profile.usage.maxTurns),
+    };
+  }
+
+  private consumption(): RunConsumption {
+    return {
+      elapsedMs: monotonicNow() - this.startedAtMs,
+      emittedCharacters: this.emittedCharacters,
+      reportedOutputTokens: this.reportedOutputTokens,
+      turns: this.turns,
+    };
   }
 
   private async handleAgentEvent(
@@ -794,10 +991,18 @@ export class TaskRunner {
         await this.report(null, { agentSessionId: event.sessionId });
         return null;
       case 'message':
+        /*
+         * Counted here because a real token figure does not exist yet: the SDK reports usage once,
+         * in its final `result` message, long after a token ceiling would need to have fired. See
+         * `run-budget.ts` for why the estimate is deliberately an over-count.
+         */
+        this.emittedCharacters += event.text.length;
+        this.turns += 1;
         onMessage(event.text);
         await this.emit('agent_message', event.text);
         return null;
       case 'summary':
+        this.emittedCharacters += event.text.length;
         await this.emit('agent_summary', event.text, {}, 'debug');
         return null;
       case 'tool_use':
@@ -823,6 +1028,10 @@ export class TaskRunner {
         await this.report(null, { usage: event.usage });
         return null;
       case 'done':
+        /* A real figure replaces the estimate outright, rather than being averaged with it. */
+        if (event.usage?.outputTokens !== null && event.usage?.outputTokens !== undefined) {
+          this.reportedOutputTokens = event.usage.outputTokens;
+        }
         if (event.usage) await this.report(null, { usage: event.usage });
         onMessage(event.result);
         return 'done';

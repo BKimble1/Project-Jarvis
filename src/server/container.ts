@@ -499,6 +499,7 @@ export function buildServices(
     tasks,
     leases,
     usage,
+    commands: missionCommands,
     reviews,
     runs: missionRuns,
     events: missionEvents,

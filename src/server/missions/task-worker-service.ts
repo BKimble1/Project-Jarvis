@@ -16,6 +16,7 @@ import {
 } from '@/domain/mission-task';
 import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
 import type { UsageRepository } from '@/server/repositories/accounting-types';
+import type { CommandRepository } from '@/server/repositories/mission-types';
 import { usageOutcomeFor, usageRowForRun } from './usage-ledger';
 import { autonomousWriteScopeVerdict, normaliseWriteSet } from '@/domain/write-set';
 import { boundText, redactSecrets } from '@/domain/redaction';
@@ -78,6 +79,8 @@ export interface TaskWorkerServiceDeps {
    * optional dependency is one a container eventually forgets to pass.
    */
   readonly usage: UsageRepository;
+  /** Mission commands, so a running task can be told the owner asked it to stop. */
+  readonly commands: CommandRepository;
   readonly limits: CapacityLimits;
   readonly allowWebResearch: boolean;
   /**
@@ -454,6 +457,18 @@ export class TaskWorkerService {
    * worker, and it is still the task's active run. A worker whose task was reassigned gets a
    * conflict rather than the ability to write over whoever holds it now.
    */
+  /**
+   * Has the owner asked the mission this task belongs to to stop?
+   *
+   * Read from the mission's pending commands rather than from a task-level flag, because Stop is
+   * a decision about the *mission* — an owner stopping a mission means stopping the work inside
+   * it, and a per-task stop switch would be a second thing to remember to press.
+   */
+  private async stopRequestedFor(missionId: string): Promise<boolean> {
+    const pending = await this.deps.commands.pendingFor(missionId);
+    return pending.some((command) => command.kind === 'stop');
+  }
+
   private async authoriseTask(
     workerId: string,
     taskId: string,
@@ -580,10 +595,21 @@ export class TaskWorkerService {
         : {}),
     };
 
+    /*
+     * Whether the owner has asked this task's mission to stop.
+     *
+     * This used to be the literal `false`, on both return paths — which meant the control plane
+     * had no way at all to tell a running task to stop. An owner's Stop reached the mission, the
+     * mission's runner honoured it, and every task in the factory carried on regardless. The
+     * mission protocol has always derived it from pending commands; this now does the same, so a
+     * stop reaches the work rather than only the record of it.
+     */
+    const stopRequested = await this.stopRequestedFor(task.missionId);
+
     /* No state named: metadata only, exactly as the mission protocol behaves. */
     if (!input.taskState) {
       const updated = await this.deps.tasks.patch(task.id, patch);
-      return { task: updated, stopRequested: false };
+      return { task: updated, stopRequested };
     }
 
     const next = input.taskState as TaskState;
@@ -620,7 +646,7 @@ export class TaskWorkerService {
       await this.deps.orchestrator.tick(task.missionId);
     }
 
-    return { task: moved, stopRequested: false };
+    return { task: moved, stopRequested };
   }
 
   /* ---------------------------------------------------------------- leases */
