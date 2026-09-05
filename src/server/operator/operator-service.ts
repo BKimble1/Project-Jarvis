@@ -27,7 +27,11 @@ import {
 } from '@/domain/operating-mode';
 import { missionCapabilityRequests } from '@/domain/mission-capabilities';
 import { scopeContains } from '@/domain/charter';
-import { isReadOnlyMissionType, type MissionState } from '@/domain/mission';
+import {
+  isReadOnlyMissionType,
+  TERMINAL_MISSION_STATES,
+  type MissionState,
+} from '@/domain/mission';
 import { buildBranchName } from '@/domain/workspace-safety';
 import { redactSecrets } from '@/domain/redaction';
 import { resolveMissionRepository } from '@/server/missions/repository-resolution';
@@ -42,6 +46,14 @@ import type {
   RunRepository,
 } from '@/server/repositories/mission-types';
 import { boundsFromCharter } from '@/domain/progress';
+import {
+  assertBenefitPermitted,
+  deriveVerdict,
+  MAX_SELF_STARTED_CONCURRENT,
+  OUTCOME_VERDICT_LABELS,
+  type BenefitKind,
+  type OutcomeHypothesis,
+} from '@/domain/outcome';
 import type { CharterLimits } from '@/domain/charter';
 import { superviseFromCharter, type SupervisionReport } from './supervisor';
 import type { FreshnessState } from '@/domain/enums';
@@ -55,6 +67,7 @@ import type {
   OperatorTickRepository,
   OpportunityRecord,
   OpportunityRepository,
+  OutcomeRepository,
 } from '@/server/repositories/operator-types';
 import type { CharterService } from './charter-service';
 
@@ -181,6 +194,8 @@ export interface OperatorServiceDeps {
    * has no business reclaiming someone else's.
    */
   readonly reclaimAbandonedTasks: () => Promise<ReclaimSummary>;
+  /** Where the loop writes down what it expects, and later what actually happened. */
+  readonly outcomes: OutcomeRepository;
   readonly clock?: () => Date;
 }
 
@@ -235,6 +250,56 @@ const COVERAGE_BY_FRESHNESS: Record<FreshnessState, ObservationState> = {
   stale: 'stale',
   failing: 'failed',
   never: 'unwatched',
+};
+
+/**
+ * What Jarvis expects from working an opportunity, derived from the opportunity itself.
+ *
+ * Deterministic, and deliberately not written by a model. A generated hypothesis would be fluent,
+ * plausible and unfalsifiable — it would describe a benefit chosen to sound worth having rather
+ * than one the rule actually predicted. Every field here traces to the rule that raised the work,
+ * which is what makes the later verdict checkable.
+ *
+ * `revenue` is never inferred. No rule raises an opportunity on the basis that it will make money,
+ * so nothing here may claim it will.
+ */
+function hypothesisFor(opportunity: Opportunity): OutcomeHypothesis {
+  const benefitKind = BENEFIT_BY_SEVERITY[opportunity.severity];
+  return {
+    observedProblem: opportunity.detail,
+    expectedBenefit: `${BENEFIT_SENTENCE[benefitKind]} ${opportunity.title.toLowerCase()}.`,
+    benefitKind,
+    whyNow: `Raised by ${opportunity.rule}, seen as ${opportunity.severity}.`,
+    estimatedEffort:
+      opportunity.severity === 'critical' || opportunity.severity === 'high' ? 'medium' : 'small',
+    verificationPlan:
+      opportunity.acceptanceCriteria.length > 0
+        ? opportunity.acceptanceCriteria.join('; ')
+        : `Look again at whether ${opportunity.rule} still raises this.`,
+    successSignal: `Whether ${opportunity.rule} still fires for this project`,
+  };
+}
+
+/**
+ * What kind of good a fix of this severity is expected to do.
+ *
+ * Crude on purpose. The point of the field is to make the *claim* explicit so a wrong one can be
+ * disagreed with, not to be subtle — and a severity is the only thing every rule reports.
+ */
+const BENEFIT_BY_SEVERITY: Record<Opportunity['severity'], BenefitKind> = {
+  critical: 'reliability',
+  high: 'reliability',
+  medium: 'risk',
+  low: 'clarity',
+};
+
+const BENEFIT_SENTENCE: Record<BenefitKind, string> = {
+  reliability: 'Stop this recurring:',
+  speed: 'Make this quicker:',
+  cost: 'Spend less on:',
+  risk: 'Reduce the chance of:',
+  clarity: 'Make this legible:',
+  revenue: 'Increase revenue from:',
 };
 
 export class OperatorService {
@@ -381,6 +446,86 @@ export class OperatorService {
     return reports;
   }
 
+  /**
+   * Did the work Jarvis chose for itself help?
+   *
+   * ## Why the signal is the rule, not a metric
+   *
+   * Every opportunity is raised by a deterministic rule against a project's real evidence, so the
+   * honest question after the work is simply: does that rule still fire? It needs no new
+   * instrumentation, it cannot be gamed by the thing being measured, and it is exactly what the
+   * hypothesis said it would check. A bespoke metric per opportunity would be more impressive and
+   * much easier to get quietly wrong.
+   *
+   * ## Why it is so willing to say nothing
+   *
+   * `deriveVerdict` returns `too_early` for a day, and `inconclusive` whenever the comparison
+   * cannot be made — including for anything claiming revenue, always, because no financial source
+   * is connected. The failure this guards against is not modesty; it is a run of unverifiable
+   * successes, which converts uncertainty into false confidence and spends real money doing it.
+   *
+   * A failure here is swallowed. Measurement must never be able to stop the loop it measures.
+   */
+  private async measureOutcomes(now: Date): Promise<number> {
+    let recorded = 0;
+    try {
+      const pending = await this.deps.outcomes.awaitingObservation(10);
+      if (pending.length === 0) return 0;
+
+      const openKeys = await this.deps.opportunities.keysByState(['open', 'taken']);
+
+      for (const outcome of pending) {
+        const mission = await this.deps.missionRepo.findById(outcome.missionId);
+        if (!mission) continue;
+
+        const stillRaised = outcome.opportunityKey ? openKeys.has(outcome.opportunityKey) : null;
+
+        const decision = deriveVerdict({
+          hypothesis: outcome.hypothesis,
+          finishedAt: (TERMINAL_MISSION_STATES as readonly MissionState[]).includes(mission.state)
+            ? mission.updatedAt
+            : null,
+          now,
+          before: outcome.signalBefore,
+          after: stillRaised === null ? null : stillRaised ? 'still raised' : 'no longer raised',
+          improved: stillRaised === null ? null : !stillRaised,
+          /* No financial source exists to connect. See `revenueClaimable`. */
+          financialSourceConnected: false,
+        });
+
+        /* `too_early` is not recorded: the row is already unobserved, and writing it would make a
+         * pending measurement look like a finished one in every count that reads the column. */
+        if (decision.verdict === 'too_early') continue;
+
+        await this.deps.outcomes.observe({
+          missionId: outcome.missionId,
+          rule: decision.rule,
+          observation: {
+            observedAt: now.toISOString(),
+            before: outcome.signalBefore,
+            after: stillRaised === null ? null : stillRaised ? 'still raised' : 'no longer raised',
+            verdict: decision.verdict,
+            note: decision.note,
+            evidenceIds: [],
+          },
+        });
+        recorded += 1;
+
+        await this.deps.events.record(outcome.missionId, {
+          type: 'info',
+          actor: 'system',
+          level: 'info',
+          summary: `${OUTCOME_VERDICT_LABELS[decision.verdict]}: ${decision.note}`,
+          detail: { rule: decision.rule, expected: outcome.hypothesis.expectedBenefit },
+        });
+      }
+    } catch {
+      /* See the header. A broken instrument must not stop the machine. */
+      return recorded;
+    }
+    return recorded;
+  }
+
   private async run(now: Date): Promise<TickResult> {
     const authority = await this.deps.charter.authority();
     const tick = await this.deps.ticks.start({ mode: authority.mode, now });
@@ -399,6 +544,7 @@ export class OperatorService {
      * work to do, and a reclaim that could take the loop down would be a worse fault than the one
      * it exists to repair.
      */
+    let measured = 0;
     let reclaim = NO_RECLAIM;
     try {
       reclaim = await this.deps.reclaimAbandonedTasks();
@@ -409,9 +555,15 @@ export class OperatorService {
     const finish = async (
       result: Omit<TickResult, 'tickId' | 'reclaim'> & { readonly projectsObserved?: number },
     ): Promise<TickResult> => {
-      const summary = reclaimSentence(reclaim)
-        ? `${result.summary} ${reclaimSentence(reclaim)}`
-        : result.summary;
+      const summary = [
+        result.summary,
+        reclaimSentence(reclaim),
+        measured > 0
+          ? `Went back and judged ${measured} thing${measured === 1 ? '' : 's'} it had started itself.`
+          : null,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(' ');
       await this.deps.ticks.finish({
         id: tick.id,
         outcome: result.outcome,
@@ -490,6 +642,17 @@ export class OperatorService {
      * up the caller.
      */
     const supervision = await this.supervise(authority.charter?.content.limits ?? null, now);
+
+    /* ---------------------------------------------------------- observe */
+
+    /*
+     * Go back and look at what Jarvis started for itself.
+     *
+     * Placed with the supervisor rather than with the execute stage because it is the same kind of
+     * act: reading, judging, writing the verdict where the owner will find it. It never changes a
+     * mission and never starts one.
+     */
+    measured = await this.measureOutcomes(now);
 
     /* ---------------------------------------------------------- observe */
 
@@ -604,9 +767,26 @@ export class OperatorService {
      * budget; `maxNewWork` is what the account's remaining Claude allows. The governor narrows —
      * it never widens — so a null from it leaves the deployment's limit exactly as it was.
      */
+    /*
+     * A third ceiling, and the one that protects the *owner* rather than the machine.
+     *
+     * The deployment's concurrency limit and the account's capacity both bound how much can run;
+     * neither bounds how much of it Jarvis chose for itself. Without this, an owner could open
+     * Jarvis to find every available slot taken by work it picked, with the thing they actually
+     * asked for queued behind it — which is the fastest way to lose trust in an operator that was
+     * technically behaving.
+     */
+    const selfStarted = (await this.deps.missionRepo.listOpen()).filter(
+      (mission) => mission.autonomous,
+    ).length;
+
     const room = Math.max(
       0,
-      Math.min(limit - active, capacity.maxNewWork ?? Number.POSITIVE_INFINITY),
+      Math.min(
+        limit - active,
+        capacity.maxNewWork ?? Number.POSITIVE_INFINITY,
+        MAX_SELF_STARTED_CONCURRENT - selfStarted,
+      ),
     );
     /*
      * `taken` is excluded here and only here. It stays in the backlog because an owner should see
@@ -866,6 +1046,41 @@ export class OperatorService {
     );
     const missionId = created.mission.id;
     await this.deps.opportunities.take(opportunity.key, missionId, input.now);
+
+    /*
+     * The prediction, written before anything happens and never rewritten.
+     *
+     * This is the whole difference between an operator and a process that generates activity: it
+     * said in advance what it expected to improve and how it would be checked, so a later pass can
+     * go back and find out. `assertBenefitPermitted` refuses here — at the point somebody wrote
+     * down what they were trying to achieve — rather than three steps later inside an
+     * authorisation check, where a forbidden goal looks like a technicality.
+     *
+     * A failure to record the hypothesis does not stop the work: the mission is already created
+     * and the opportunity already taken, and unwinding both to preserve a measurement would be
+     * letting the instrument break the thing it measures.
+     */
+    try {
+      const hypothesis = hypothesisFor(opportunity);
+      assertBenefitPermitted(hypothesis);
+      await this.deps.outcomes.open({
+        missionId,
+        opportunityKey: opportunity.key,
+        hypothesis,
+        signalBefore: opportunity.detail,
+      });
+    } catch (error) {
+      await this.deps.events.record(missionId, {
+        type: 'warning',
+        actor: 'system',
+        level: 'notice',
+        summary:
+          error instanceof Error
+            ? `Jarvis could not record what it expected from this: ${error.message}`
+            : 'Jarvis could not record what it expected from this.',
+        detail: { opportunityKey: opportunity.key },
+      });
+    }
 
     if (created.questions.length > 0) {
       return {

@@ -15,6 +15,7 @@ import { buildCapacityView } from '@/server/operator/capacity-view';
 import { ReadinessPanel } from '@/components/operations/readiness-panel';
 import { SupervisorPanel } from '@/components/operations/supervisor-panel';
 import { supervisorHealth } from '@/domain/supervisor-health';
+import { OUTCOME_VERDICT_LABELS, summariseOutcomes, type OutcomeVerdict } from '@/domain/outcome';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { RelativeTime } from '@/components/relative-time';
@@ -50,6 +51,7 @@ export default async function OperationsPage() {
     intervened,
     ticks,
     operatorState,
+    outcomes,
   ] = await Promise.all([
     services.orchestrator.posture(),
     services.orchestrator.limits(),
@@ -69,6 +71,7 @@ export default async function OperationsPage() {
     /* Twelve passes is enough to measure a cadence and cheap enough to read on every visit. */
     services.operatorTicks.recent(12),
     services.charterService.state(),
+    services.outcomes.recent(8),
   ]);
 
   /*
@@ -230,6 +233,40 @@ export default async function OperationsPage() {
                 missionTitle={missionsById.get(task.missionId)?.title}
                 stalled
               />
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {outcomes.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Did it help?</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 pt-0">
+            <p className="text-xs text-[var(--color-text-muted)]">
+              {summariseOutcomes(
+                outcomes
+                  .map((outcome) => outcome.observation?.verdict)
+                  .filter((verdict): verdict is OutcomeVerdict => verdict !== undefined),
+              )}{' '}
+              Every line was predicted before the work started, and judged afterwards against the
+              same signal.
+            </p>
+            {outcomes.map((outcome) => (
+              <div
+                key={outcome.id}
+                className="flex flex-col gap-0.5 rounded-[var(--radius-card)] border border-[var(--color-border)] px-3 py-2"
+              >
+                <Link href={`/missions/${outcome.missionId}`} className="text-sm hover:underline">
+                  {outcome.hypothesis.expectedBenefit}
+                </Link>
+                <p className="text-xs text-[var(--color-text-muted)]">
+                  {outcome.observation
+                    ? `${OUTCOME_VERDICT_LABELS[outcome.observation.verdict]} — ${outcome.observation.note}`
+                    : `Not judged yet. It will be checked against: ${outcome.hypothesis.successSignal}.`}
+                </p>
+              </div>
             ))}
           </CardContent>
         </Card>

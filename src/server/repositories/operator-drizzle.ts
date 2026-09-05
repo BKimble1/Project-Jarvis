@@ -8,7 +8,13 @@ import type {
   PriorityBand,
   PriorityFactor,
 } from '@/domain/opportunity';
-import { operatorLeases, operatorOpportunities, operatorTicks } from '@/server/db/schema';
+import type { OutcomeHypothesis, OutcomeObservation } from '@/domain/outcome';
+import {
+  missionOutcomes,
+  operatorLeases,
+  operatorOpportunities,
+  operatorTicks,
+} from '@/server/db/schema';
 import type { Database } from '@/server/db/client';
 import type {
   OperatorLease,
@@ -17,6 +23,8 @@ import type {
   OperatorTickRepository,
   OpportunityRecord,
   OpportunityRepository,
+  OutcomeRecord,
+  OutcomeRepository,
 } from './operator-types';
 import { iso, isoRequired } from './mappers';
 
@@ -410,5 +418,127 @@ export class DrizzleOperatorTickRepository implements OperatorTickRepository {
       .orderBy(desc(operatorTicks.startedAt))
       .limit(1);
     return row ? toTick(row) : null;
+  }
+}
+
+/* ---------------------------------------------------------------- outcomes */
+
+function toOutcome(row: typeof missionOutcomes.$inferSelect): OutcomeRecord {
+  const hypothesis: OutcomeHypothesis = {
+    observedProblem: row.observedProblem,
+    expectedBenefit: row.expectedBenefit,
+    benefitKind: row.benefitKind,
+    whyNow: row.whyNow,
+    estimatedEffort: row.estimatedEffort,
+    verificationPlan: row.verificationPlan,
+    successSignal: row.successSignal,
+  };
+  const observation: OutcomeObservation | null =
+    row.observedAt && row.verdict
+      ? {
+          observedAt: isoRequired(row.observedAt),
+          before: row.signalBefore,
+          after: row.signalAfter,
+          verdict: row.verdict,
+          note: row.verdictNote ?? '',
+          evidenceIds: row.evidenceIds,
+        }
+      : null;
+  return {
+    id: row.id,
+    missionId: row.missionId,
+    opportunityKey: row.opportunityKey,
+    hypothesis,
+    signalBefore: row.signalBefore,
+    observation,
+    createdAt: isoRequired(row.createdAt),
+  };
+}
+
+export class DrizzleOutcomeRepository implements OutcomeRepository {
+  constructor(private readonly db: Database) {}
+
+  /**
+   * Insert, and on conflict do *nothing*.
+   *
+   * Not an upsert. A hypothesis that could be rewritten once the result was known would not be a
+   * prediction, and the only thing separating measurement from a flattering narrative is that the
+   * prediction came first. So a second call returns what is already there.
+   */
+  async open(input: {
+    readonly missionId: string;
+    readonly opportunityKey: string | null;
+    readonly hypothesis: OutcomeHypothesis;
+    readonly signalBefore: string | null;
+  }): Promise<OutcomeRecord> {
+    const [row] = await this.db
+      .insert(missionOutcomes)
+      .values({
+        missionId: input.missionId,
+        opportunityKey: input.opportunityKey,
+        observedProblem: input.hypothesis.observedProblem,
+        expectedBenefit: input.hypothesis.expectedBenefit,
+        benefitKind: input.hypothesis.benefitKind,
+        whyNow: input.hypothesis.whyNow,
+        estimatedEffort: input.hypothesis.estimatedEffort,
+        verificationPlan: input.hypothesis.verificationPlan,
+        successSignal: input.hypothesis.successSignal,
+        signalBefore: input.signalBefore,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (row) return toOutcome(row);
+
+    const existing = await this.findByMission(input.missionId);
+    if (!existing) throw new ConflictError('That outcome record could not be written.');
+    return existing;
+  }
+
+  async observe(input: {
+    readonly missionId: string;
+    readonly observation: OutcomeObservation;
+    readonly rule: string;
+  }): Promise<OutcomeRecord | null> {
+    const [row] = await this.db
+      .update(missionOutcomes)
+      .set({
+        observedAt: new Date(input.observation.observedAt),
+        signalAfter: input.observation.after,
+        verdict: input.observation.verdict,
+        verdictRule: input.rule,
+        verdictNote: input.observation.note,
+        evidenceIds: [...input.observation.evidenceIds],
+      })
+      .where(eq(missionOutcomes.missionId, input.missionId))
+      .returning();
+    return row ? toOutcome(row) : null;
+  }
+
+  async findByMission(missionId: string): Promise<OutcomeRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(missionOutcomes)
+      .where(eq(missionOutcomes.missionId, missionId))
+      .limit(1);
+    return row ? toOutcome(row) : null;
+  }
+
+  async awaitingObservation(limit = 20): Promise<readonly OutcomeRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(missionOutcomes)
+      .where(sql`${missionOutcomes.verdict} is null`)
+      .orderBy(missionOutcomes.createdAt)
+      .limit(limit);
+    return rows.map(toOutcome);
+  }
+
+  async recent(limit = 20): Promise<readonly OutcomeRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(missionOutcomes)
+      .orderBy(desc(missionOutcomes.createdAt))
+      .limit(limit);
+    return rows.map(toOutcome);
   }
 }

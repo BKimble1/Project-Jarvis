@@ -102,11 +102,13 @@ import { OperatorService } from './operator/operator-service';
 import {
   DrizzleOperatorLeaseRepository,
   DrizzleOperatorTickRepository,
+  DrizzleOutcomeRepository,
   DrizzleOpportunityRepository,
 } from './repositories/operator-drizzle';
 import type {
   OperatorLeaseRepository,
   OperatorTickRepository,
+  OutcomeRepository,
   OpportunityRepository,
 } from './repositories/operator-types';
 import {
@@ -294,6 +296,7 @@ export interface Services {
   readonly opportunities: OpportunityRepository;
   readonly operatorLeases: OperatorLeaseRepository;
   readonly operatorTicks: OperatorTickRepository;
+  readonly outcomes: OutcomeRepository;
   readonly operatorService: OperatorService;
 }
 
@@ -732,6 +735,7 @@ export function buildServices(
   const opportunities = new DrizzleOpportunityRepository(db);
   const operatorLeases = new DrizzleOperatorLeaseRepository(db);
   const operatorTicks = new DrizzleOperatorTickRepository(db);
+  const outcomes = new DrizzleOutcomeRepository(db);
   const operatorService = new OperatorService({
     charter: charterService,
     projects,
@@ -774,6 +778,7 @@ export function buildServices(
      * back, and a healthy one must not be allowed to take somebody else's.
      */
     reclaimAbandonedTasks: () => taskWorkerService.reclaimAbandoned(),
+    outcomes,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -903,6 +908,7 @@ export function buildServices(
     opportunities,
     operatorLeases,
     operatorTicks,
+    outcomes,
     operatorService,
   };
 }

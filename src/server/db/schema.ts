@@ -80,6 +80,7 @@ import type {
   CapabilityVerdict,
 } from '@/domain/authorization';
 import type { OperatingMode } from '@/domain/operating-mode';
+import type { BenefitKind, EffortSize, OutcomeVerdict } from '@/domain/outcome';
 import type {
   ObservationCoverage,
   OpportunitySource,
@@ -3335,6 +3336,62 @@ export const authorizationDecisions = pgTable(
  * `first_seen_at` is never updated. It is what the age factor reads, and it is the reason a
  * problem nobody has dealt with eventually rises in the queue.
  */
+/**
+ * Did the work Jarvis chose for itself actually help?
+ *
+ * ## Why the hypothesis is written first and never edited
+ *
+ * Because a result recorded without a prediction is unfalsifiable. "This improved things" written
+ * after the fact is a sentence, not a measurement — the whole value is in having said, before
+ * starting, what was expected to move and how it would be checked. So the hypothesis columns are
+ * written once, when the mission is created, and the observation columns are the only ones a later
+ * pass may fill in.
+ *
+ * ## One row per mission
+ *
+ * Keyed on the mission rather than on the opportunity, because the opportunity may recur and the
+ * question "did *that* piece of work help?" is about the work. A recurring problem that was worked
+ * three times produces three rows and three verdicts, which is exactly the record needed to notice
+ * that the first two did not help.
+ */
+export const missionOutcomes = pgTable(
+  'mission_outcomes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    missionId: uuid('mission_id')
+      .notNull()
+      .unique()
+      .references(() => missions.id, { onDelete: 'cascade' }),
+    /** The backlog entry this came from, when it came from one. */
+    opportunityKey: text('opportunity_key'),
+
+    /* Written once, at creation. */
+    observedProblem: text('observed_problem').notNull(),
+    expectedBenefit: text('expected_benefit').notNull(),
+    benefitKind: text('benefit_kind').$type<BenefitKind>().notNull(),
+    whyNow: text('why_now').notNull(),
+    estimatedEffort: text('estimated_effort').$type<EffortSize>().notNull(),
+    verificationPlan: text('verification_plan').notNull(),
+    successSignal: text('success_signal').notNull(),
+    /** The signal as it read when the work started. Null when nothing could be captured. */
+    signalBefore: text('signal_before'),
+
+    /* Filled in later, by a pass that went back and looked. */
+    observedAt: timestamp('observed_at', { withTimezone: true }),
+    signalAfter: text('signal_after'),
+    verdict: text('verdict').$type<OutcomeVerdict>(),
+    verdictRule: text('verdict_rule'),
+    verdictNote: text('verdict_note'),
+    evidenceIds: jsonb('evidence_ids').$type<string[]>().notNull().default([]),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('mission_outcomes_verdict_idx').on(table.verdict),
+    index('mission_outcomes_created_idx').on(table.createdAt),
+  ],
+);
+
 export const operatorOpportunities = pgTable(
   'operator_opportunities',
   {
@@ -3565,4 +3622,5 @@ export const schema = {
   operatorOpportunities,
   operatorLeases,
   operatorTicks,
+  missionOutcomes,
 };

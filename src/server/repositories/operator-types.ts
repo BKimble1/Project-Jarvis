@@ -1,3 +1,4 @@
+import type { OutcomeHypothesis, OutcomeObservation } from '@/domain/outcome';
 import type {
   ObservationCoverage,
   Opportunity,
@@ -166,4 +167,44 @@ export interface OperatorTickRepository {
   }): Promise<OperatorTickRecord>;
   recent(limit?: number): Promise<readonly OperatorTickRecord[]>;
   lastFinished(): Promise<OperatorTickRecord | null>;
+}
+
+/* ---------------------------------------------------------------- outcomes */
+
+export interface OutcomeRecord {
+  readonly id: string;
+  readonly missionId: string;
+  readonly opportunityKey: string | null;
+  readonly hypothesis: OutcomeHypothesis;
+  readonly signalBefore: string | null;
+  readonly observation: OutcomeObservation | null;
+  readonly createdAt: string;
+}
+
+export interface OutcomeRepository {
+  /**
+   * Write the hypothesis. Idempotent on the mission, and never an update.
+   *
+   * A second call for the same mission returns the row that is already there rather than
+   * overwriting it: the whole value of a prediction is that it was made before the result was
+   * known, and a hypothesis that could be revised afterwards is not a prediction.
+   */
+  open(input: {
+    readonly missionId: string;
+    readonly opportunityKey: string | null;
+    readonly hypothesis: OutcomeHypothesis;
+    readonly signalBefore: string | null;
+  }): Promise<OutcomeRecord>;
+
+  /** Record what was seen later. Overwrites a previous observation; the hypothesis is untouched. */
+  observe(input: {
+    readonly missionId: string;
+    readonly observation: OutcomeObservation;
+    readonly rule: string;
+  }): Promise<OutcomeRecord | null>;
+
+  findByMission(missionId: string): Promise<OutcomeRecord | null>;
+  /** Rows with no observation yet, oldest first, for a pass that goes back and looks. */
+  awaitingObservation(limit?: number): Promise<readonly OutcomeRecord[]>;
+  recent(limit?: number): Promise<readonly OutcomeRecord[]>;
 }
