@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { AGENT_ROLE_LABELS, type AgentRole } from '@/domain/agent-role';
 import { formatTokens, staleTasks } from '@/domain/capacity';
-import { MISSION_STATE_LABELS } from '@/domain/mission';
+import { MISSION_STATE_LABELS, TERMINAL_MISSION_STATES } from '@/domain/mission';
 import { ACTIVE_TASK_STATES, TASK_STATE_LABELS, type MissionTask } from '@/domain/mission-task';
 import { CHUNKER_VERSION } from '@/domain/knowledge-chunker';
 import { QUALIFICATION_LEVEL_LABELS } from '@/domain/qualification';
@@ -52,6 +52,8 @@ export default async function OperationsPage() {
     ticks,
     operatorState,
     outcomes,
+    missionPage,
+    usageRows,
   ] = await Promise.all([
     services.orchestrator.posture(),
     services.orchestrator.limits(),
@@ -72,6 +74,13 @@ export default async function OperationsPage() {
     services.operatorTicks.recent(12),
     services.charterService.state(),
     services.outcomes.recent(8),
+    /* Everything Jarvis touched in the last day, for the "what happened today" question. */
+    services.missionRepo.list({ limit: 60 }),
+    /*
+     * Filtered in the query rather than in the page: an instance that has been running for months
+     * has a lot of ledger rows, and "the last day" is a range the index already answers.
+     */
+    services.usage.list({ from: new Date(Date.now() - 24 * 3_600_000), limit: 500 }),
   ]);
 
   /*
@@ -91,6 +100,24 @@ export default async function OperationsPage() {
   const now = new Date();
   const nowIso = now.toISOString();
   const loop = supervisorHealth(ticks, now);
+
+  /*
+   * "What happened today", from rows rather than from a counter.
+   *
+   * A running total kept somewhere would be one more thing to get wrong on a restart, and the
+   * rows are already indexed by time. `since` is a rolling twenty-four hours rather than midnight
+   * because somebody looking at this at one in the morning wants the evening they just had, not
+   * the sixty seconds since the date changed.
+   */
+  const since = new Date(now.getTime() - 24 * 3_600_000);
+  const touchedToday = missionPage.items.filter((mission) => {
+    const at = Date.parse(mission.updatedAt);
+    return !Number.isNaN(at) && at >= since.getTime();
+  });
+  const finishedToday = touchedToday.filter((mission) =>
+    (TERMINAL_MISSION_STATES as readonly string[]).includes(mission.state),
+  );
+  const outputToday = usageRows.reduce((total, row) => total + (row.outputTokens ?? 0), 0);
   const stalled = staleTasks(activeTasks, nowIso);
   const stalledIds = new Set(stalled.map((task) => task.id));
   const missionsById = new Map(missions.map((mission) => [mission.id, mission]));
@@ -164,6 +191,21 @@ export default async function OperationsPage() {
           <ReadinessPanel />
         </CardContent>
       </Card>
+
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="Work in the last day">
+        <Tile
+          label="Missions touched"
+          value={`${touchedToday.length}`}
+          sub="in the last 24 hours"
+        />
+        <Tile label="Finished" value={`${finishedToday.length}`} sub="in the last 24 hours" />
+        <Tile label="Agent runs" value={`${usageRows.length}`} sub="model sessions recorded" />
+        <Tile
+          label="Output"
+          value={formatTokens(outputToday)}
+          sub="tokens written in the last 24 hours"
+        />
+      </section>
 
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label="Right now">
         <Tile

@@ -164,6 +164,20 @@ export interface DisplayPayload {
       /** measured | estimated | stale | unknown, so the wall cannot look more certain than it is. */
       readonly quality: string;
     };
+    /**
+     * What Jarvis is currently allowed to do, and whether its own loop is running.
+     *
+     * State, never control. A wallboard reads this and cannot change it — the no-write contract
+     * this surface has always had is unchanged. It is here because a wall showing four agents
+     * working tells only half the story when the loop that decides what they work on stopped on
+     * Tuesday, and the wall is exactly the screen nobody thinks to check.
+     */
+    readonly jarvis: {
+      readonly mode: string;
+      readonly modeLabel: string;
+      /** never_run | healthy | late | stalled | failing. */
+      readonly loop: string;
+    };
   };
   readonly portfolio: {
     readonly projects: number;

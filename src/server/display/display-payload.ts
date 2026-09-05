@@ -19,6 +19,8 @@ import { boundText, redactSecrets } from '@/domain/redaction';
 import type { Services } from '../container';
 import { buildCapacityView } from '@/server/operator/capacity-view';
 import type { CapacityView, RateWindow } from '@/domain/claude-capacity';
+import { OPERATING_MODE_LABELS } from '@/domain/operating-mode';
+import { supervisorHealth } from '@/domain/supervisor-health';
 
 /**
  * How sure the two figures on the wall are.
@@ -70,7 +72,7 @@ export async function buildDisplayPayload(
   const scopes = new Set<DisplayScope>(device.scopes);
   const nowMs = now.getTime();
 
-  const [posture, workers, openMissions, claude] = await Promise.all([
+  const [posture, workers, openMissions, claude, ticks, operatorState] = await Promise.all([
     services.orchestrator.posture(),
     services.workerRepo.list(),
     services.missionRepo.listOpen(),
@@ -80,6 +82,15 @@ export async function buildDisplayPayload(
      * wall and the dashboard would quietly disagree — with the wall being the one nobody checks.
      */
     buildCapacityView(services, now),
+    /*
+     * Whether Jarvis is actually running its own loop, and what it is currently allowed to do.
+     *
+     * Read-only, like everything else on this surface. A wall that shows four agents working is
+     * telling only half the story if the loop that decides what they work on stopped on Tuesday —
+     * and the wall is precisely the screen nobody thinks to check.
+     */
+    services.operatorTicks.recent(12),
+    services.charterService.state(),
   ]);
 
   const liveWorkers = workers.filter((worker) => worker.revokedAt === null);
@@ -179,6 +190,15 @@ export async function buildDisplayPayload(
          * a third window nobody is looking at would teach an owner to ignore the marker.
          */
         quality: shownQuality(claude),
+      },
+      /*
+       * State, not control. The display credential can read this and cannot change it — the
+       * no-write contract this surface has always had is unchanged, and nothing here is a button.
+       */
+      jarvis: {
+        mode: operatorState.mode,
+        modeLabel: OPERATING_MODE_LABELS[operatorState.mode],
+        loop: supervisorHealth(ticks, now).state,
       },
     },
     portfolio,

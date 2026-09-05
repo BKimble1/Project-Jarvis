@@ -100,6 +100,22 @@ export function DisplayBoard() {
             {payload.health.posture !== 'open' ? ` · ${payload.health.posture}` : ''}
           </span>
           <ClaudeLeft claude={payload.health.claude} />
+          {/*
+           * Whether Jarvis is running at all, beside how much Claude is left. A wall showing four
+           * agents working tells only half the story when the loop that decides what they work on
+           * stopped on Tuesday — and this is the screen nobody thinks to check.
+           */}
+          <span
+            className={cn(
+              payload.health.jarvis.loop === 'healthy'
+                ? 'text-[var(--color-text-subtle)]'
+                : 'text-[var(--color-critical-text)]',
+            )}
+          >
+            {payload.health.jarvis.loop === 'healthy'
+              ? payload.health.jarvis.modeLabel
+              : `${payload.health.jarvis.modeLabel} · loop ${payload.health.jarvis.loop.replace(/_/g, ' ')}`}
+          </span>
           <span
             className={cn(
               stale ? 'text-[var(--color-critical-text)]' : 'text-[var(--color-text-subtle)]',
