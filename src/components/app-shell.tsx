@@ -11,6 +11,7 @@ import {
   FolderKanban,
   History,
   LayoutDashboard,
+  ListChecks,
   LogOut,
   PlugZap,
   Rocket,
@@ -37,6 +38,7 @@ const NAV: readonly NavItem[] = [
   { href: '/workers', label: 'Workers', shortLabel: 'Workers', Icon: PlugZap },
   { href: '/attention', label: 'What needs me', shortLabel: 'Needs me', Icon: BellRing },
   { href: '/changes', label: 'What changed', shortLabel: 'Changed', Icon: History },
+  { href: '/setup', label: 'Setting up', shortLabel: 'Setup', Icon: ListChecks },
   { href: '/settings', label: 'Settings', shortLabel: 'Settings', Icon: Settings },
 ];
 
@@ -47,7 +49,7 @@ const NAV: readonly NavItem[] = [
  * has to be reachable from the dashboard — in every state the dashboard can be in, empty
  * portfolio included — because the tab bar is the only navigation a phone shows by default.
  */
-const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge', '/operations', '/workers']);
+const OFF_THE_TAB_BAR = new Set(['/changes', '/knowledge', '/operations', '/workers', '/setup']);
 
 /**
  * Application chrome.
