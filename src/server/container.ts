@@ -182,6 +182,7 @@ import type {
   WorkerRepository,
 } from '@/server/repositories/mission-types';
 import { MissionService } from '@/server/missions/mission-service';
+import { VoiceService } from '@/server/voice/voice-service';
 import { buildOperatingPicture, type OperatingPicture } from '@/server/ops/operating-picture';
 import { WorkerService } from '@/server/missions/worker-service';
 
@@ -210,6 +211,7 @@ export interface Services {
   readonly imports: GithubImportService;
   readonly attention: AttentionService;
   readonly router: StatusQueryRouter;
+  readonly voiceService: VoiceService;
   readonly sessions: SessionStore;
   readonly oauthStates: OAuthStateStore;
 
@@ -799,6 +801,18 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
+  /*
+   * After the router, because speaking a question is answering a question — the same router, the
+   * same evidence, the same refusals. A second answering path reachable only by voice would be a
+   * second set of rules, and the one nobody is looking at is the one that drifts.
+   */
+  const voiceService = new VoiceService({
+    voice,
+    memories: memoryService,
+    router,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
   return {
     config,
     db,
@@ -861,6 +875,7 @@ export function buildServices(
     notificationPreferences,
     push,
     voice,
+    voiceService,
     usage,
     budgets: budgetRepo,
     prices,

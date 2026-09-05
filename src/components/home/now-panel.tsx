@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { interpretReply } from '@/domain/reply-intent';
 import type { NextAction } from '@/domain/next-actions';
 import { Button } from '@/components/ui/button';
+import { VoiceControl } from '@/components/voice/voice-control';
 
 /**
  * What Jarvis is doing, what it would do next, and a place to reply in one line.
@@ -90,6 +91,60 @@ export function NowPanel({
       };
       if (response.ok) setReply('');
       setSaid(payload.said ?? payload.error?.message ?? 'That did not work.');
+    } catch {
+      setSaid('Could not reach Jarvis.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Something said out loud, put through the same gates as something typed.
+   *
+   * Two server steps rather than one. The first says what Jarvis would do with the words; the
+   * second does it, re-deriving the interpretation from the final text so an edit that changed the
+   * meaning cannot inherit the confirmation. Anything that would change something outside Jarvis
+   * stops at the first step and is handed back for the screen.
+   */
+  async function speak(text: string) {
+    setBusy(true);
+    setSaid(null);
+    try {
+      const submitted = await fetch('/api/voice', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ transcript: text }),
+      });
+      const heard = (await submitted.json().catch(() => ({}))) as {
+        id?: string;
+        intent?: string;
+        consequence?: string;
+        requiresVisualApproval?: boolean;
+        error?: { message?: string };
+      };
+      if (!submitted.ok || !heard.id || !heard.intent) {
+        setSaid(heard.error?.message ?? 'Jarvis could not make sense of that.');
+        return;
+      }
+
+      if (heard.requiresVisualApproval) {
+        /* It ends here on purpose. See `INTENT_CONSEQUENCE` — the screen is the gate. */
+        setReply(text);
+        setSaid(heard.consequence ?? 'That one has to be done on screen.');
+        return;
+      }
+
+      const confirmed = await fetch(`/api/voice/${heard.id}/confirm`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, shownIntent: heard.intent }),
+      });
+      const result = (await confirmed.json().catch(() => ({}))) as {
+        outcome?: { said?: string };
+        error?: { message?: string };
+      };
+      setSaid(result.outcome?.said ?? result.error?.message ?? 'That did not work.');
+      router.refresh();
     } catch {
       setSaid('Could not reach Jarvis.');
     } finally {
@@ -236,6 +291,12 @@ export function NowPanel({
       </form>
 
       {said ? <p className="text-xs text-[var(--color-text-muted)]">{said}</p> : null}
+
+      {/*
+       * Below the text box, never instead of it. Everything voice can do can be typed, which is
+       * what makes a browser without speech recognition a non-event rather than a degraded one.
+       */}
+      <VoiceControl onTranscript={speak} speakThis={said} disabled={busy} />
     </section>
   );
 }
