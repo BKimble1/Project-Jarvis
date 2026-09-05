@@ -20,7 +20,63 @@ const REAL_LOOKING = {
   classic: 'ghp_0123456789abcdefghijklmnopqrstuvwxyz',
   anthropic: 'sk-ant-api03-0123456789abcdefghijklmnop',
   worker: 'jarvisw_0123456789abcdef.0123456789abcdefghij',
+  oauth: 'sk-ant-oat01-0123456789abcdefghijklmnop',
 };
+
+/**
+ * Start a session against a stub SDK and return the environment the runtime actually built.
+ *
+ * The environment is the whole subject of these tests, so the stub yields nothing and exists only
+ * to capture `options.env`.
+ */
+async function environmentHandedToTheAgent(
+  credentials: Pick<
+    ConstructorParameters<typeof ClaudeAgentRuntime>[0],
+    'apiKey' | 'oauthToken' | 'authMode' | 'apiKeyPresent'
+  >,
+): Promise<Record<string, string | undefined>> {
+  let captured: Record<string, string | undefined> | null = null;
+
+  const runtime = new ClaudeAgentRuntime({
+    ...credentials,
+    model: 'claude-opus-5',
+    /* The subscription branch probes for a login; answer it here rather than spawning Claude. */
+    observeAuth: async () => ({
+      loggedIn: true,
+      authMethod: 'oauth_token',
+      apiProvider: 'firstParty',
+      observedAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+      source: 'claude auth status --json',
+    }),
+    load: async () => ({
+      query: (params: { options?: { env?: Record<string, string | undefined> } }) => {
+        captured = params.options?.env ?? {};
+        return {
+          async *[Symbol.asyncIterator]() {
+            /* Nothing to yield: the environment is the whole subject of this test. */
+          },
+          interrupt: async () => undefined,
+        };
+      },
+    }),
+  });
+
+  const session = await runtime.start({
+    prompt: 'anything',
+    systemPrompt: 'anything',
+    workspaceRoot: '/tmp',
+    maxTurns: 1,
+    model: null,
+    readOnly: true,
+    resumeSessionId: null,
+    signal: new AbortController().signal,
+    decide: async () => ({ verdict: 'allow' as const, reason: 'allowed' }),
+  });
+  await session.close().catch(() => undefined);
+
+  expect(captured, 'the runtime must have started a session').not.toBeNull();
+  return captured as unknown as Record<string, string | undefined>;
+}
 
 describe('the environment a worker hands to a child process', () => {
   it('removes every credential Jarvis defines, by name', () => {
@@ -75,6 +131,9 @@ describe('the environment a worker hands to a child process', () => {
 
     const runtime = new ClaudeAgentRuntime({
       apiKey: REAL_LOOKING.anthropic,
+      oauthToken: null,
+      authMode: 'api_key',
+      apiKeyPresent: true,
       model: 'claude-opus-5',
       load: async () => ({
         query: (params: { options?: { env?: Record<string, string | undefined> } }) => {
@@ -125,5 +184,61 @@ describe('the environment a worker hands to a child process', () => {
       .filter(([key, value]) => key !== 'ANTHROPIC_API_KEY' && typeof value === 'string')
       .filter(([, value]) => /gh[pousr]_|github_pat_|sk-ant-|jarvisw_/.test(String(value)));
     expect(remaining, 'no other credential-shaped value may reach the agent').toEqual([]);
+  });
+
+  it('passes a configured subscription token, and no key alongside it', async () => {
+    /*
+     * The headless subscription case. There is no interactive login to read on this machine, so
+     * the owner supplied a token — it has to arrive, or the session authenticates as nobody.
+     */
+    const env = await environmentHandedToTheAgent({
+      apiKey: null,
+      oauthToken: REAL_LOOKING.oauth,
+      authMode: 'subscription',
+      apiKeyPresent: false,
+    });
+
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(REAL_LOOKING.oauth);
+    /*
+     * And not both. A key in the environment silently outranks a subscription login, so a session
+     * carrying both would bill per token while the owner believed they were inside a subscription
+     * they had already paid for.
+     */
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('does not leak an inherited subscription token into an api_key session', async () => {
+    /*
+     * The regression this test exists for: `CLAUDE_CODE_OAUTH_TOKEN` holds an `sk-ant-oat01-…`
+     * value, so before it was named in WORKER_ONLY_SECRETS the shape filter deleted it silently —
+     * and a worker started with a good token failed to authenticate with nothing said about why.
+     * Naming it makes the removal deliberate, and this asserts the re-add is deliberate too:
+     * inheriting it is never enough, the configured mode has to ask for it.
+     */
+    const previous = { ...process.env };
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = REAL_LOOKING.oauth;
+
+    try {
+      const env = await environmentHandedToTheAgent({
+        apiKey: REAL_LOOKING.anthropic,
+        oauthToken: null,
+        authMode: 'api_key',
+        apiKeyPresent: true,
+      });
+
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(env.ANTHROPIC_API_KEY).toBe(REAL_LOOKING.anthropic);
+    } finally {
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      Object.assign(process.env, previous);
+    }
+  });
+
+  it('names the subscription token, so the filter cannot be relied on to guess it', () => {
+    /*
+     * Shape would catch today's `sk-ant-oat01-…` prefix. A credential format is not a promise, and
+     * the boundary should not depend on one: the name list is what makes this deterministic.
+     */
+    expect(WORKER_ONLY_SECRETS).toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
 });

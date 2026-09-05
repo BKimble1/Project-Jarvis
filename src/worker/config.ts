@@ -43,6 +43,30 @@ const schema = z.object({
   JARVIS_WORKER_WORKSPACE_ROOT: z.string().trim().optional(),
 
   ANTHROPIC_API_KEY: z.string().trim().optional(),
+  /**
+   * A long-lived subscription token, for a worker that cannot use an interactive login.
+   *
+   * Optional and usually absent. On a machine where the owner has run `claude` and signed in, the
+   * login already lives in the Claude Code credential store and the worker needs nothing here —
+   * that is the path this V1 expects. This variable exists for the headless case, where the
+   * process runs under a service account that has no interactive session to sign in from.
+   *
+   * Only read in subscription mode, and never logged: like the API key, what travels downstream
+   * is whether it is present, not what it says.
+   */
+  CLAUDE_CODE_OAUTH_TOKEN: z.string().trim().optional(),
+  /**
+   * Which Claude credential this worker is meant to use.
+   *
+   * Defaults to `subscription`, which is V1's answer: draw on the owner's Claude subscription and,
+   * when its capacity runs out, checkpoint and wait for the reset rather than spending money
+   * nobody agreed to. `api_key` is the deliberate opt-in to per-token billing.
+   *
+   * The default matters. If this defaulted to "whatever is available", a stray ANTHROPIC_API_KEY
+   * left in a shell profile would silently move an owner from a subscription they have already
+   * paid for onto an invoice they have not seen.
+   */
+  JARVIS_WORKER_AUTH_MODE: z.enum(['subscription', 'api_key']).default('subscription'),
   JARVIS_WORKER_MODEL: z.string().trim().optional(),
   JARVIS_WORKER_MAX_TURNS: positiveInt(60, 500),
 
@@ -87,7 +111,25 @@ export interface WorkerConfig {
   readonly token: string;
   readonly name: string;
   readonly workspaceRoot: string;
+  /**
+   * The API key, when this worker is deliberately on `api_key` mode.
+   *
+   * Null in subscription mode *even when the variable is set*, so that nothing downstream can
+   * accidentally pass a key the owner did not ask to use. Whether the variable exists at all is a
+   * separate field, because that is what makes the mode ambiguous and it has to be reportable.
+   */
   readonly anthropicApiKey: string | null;
+  /** Whether ANTHROPIC_API_KEY exists in this worker's environment. Never its value. */
+  readonly anthropicApiKeyPresent: boolean;
+  /**
+   * The subscription token to hand the agent session, or null.
+   *
+   * Null both when the owner has not set one — the ordinary case, where the Claude Code login on
+   * this machine is the credential — and whenever key billing was chosen, so that the two model
+   * credentials can never both be in the child environment at once.
+   */
+  readonly claudeOauthToken: string | null;
+  readonly authMode: 'subscription' | 'api_key';
   readonly model: string | null;
   readonly maxTurns: number;
   readonly githubToken: string | null;
@@ -156,9 +198,38 @@ export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): Work
     env.JARVIS_WORKER_WORKSPACE_ROOT ?? path.join(process.cwd(), '.jarvis-workspaces'),
   );
 
-  if (!env.ANTHROPIC_API_KEY) {
+  /*
+   * The billing ambiguity, caught at configuration time.
+   *
+   * A key present in subscription mode is not a warning: the SDK would use it in preference to the
+   * subscription login, so the worker would run — and invoice — while the owner believed otherwise.
+   * The variable is left exactly where it is; only the remedy is stated.
+   */
+  const apiKeyPresent = Boolean(env.ANTHROPIC_API_KEY);
+  if (env.JARVIS_WORKER_AUTH_MODE === 'subscription' && apiKeyPresent) {
     diagnostics.push(
-      'ANTHROPIC_API_KEY is not set, so this worker cannot run a Claude session. It will report itself unavailable rather than claim missions it cannot do.',
+      'ANTHROPIC_API_KEY is set but this worker is configured for your Claude subscription. That key would take precedence and bill the API account, so Jarvis will not run model work until the ambiguity is resolved. Start the worker without the variable, or set JARVIS_WORKER_AUTH_MODE=api_key to use it deliberately.',
+    );
+  }
+  if (env.JARVIS_WORKER_AUTH_MODE === 'api_key' && !apiKeyPresent) {
+    diagnostics.push(
+      'JARVIS_WORKER_AUTH_MODE is api_key but ANTHROPIC_API_KEY is not set, so this worker cannot run a Claude session.',
+    );
+  }
+  if (env.JARVIS_WORKER_AUTH_MODE === 'subscription') {
+    diagnostics.push(
+      'Model work draws on your Claude subscription. When its capacity runs out this worker checkpoints and waits for the reset rather than spending anything.',
+    );
+  }
+  if (env.JARVIS_WORKER_AUTH_MODE === 'api_key' && env.CLAUDE_CODE_OAUTH_TOKEN) {
+    /*
+     * The mirror of the ambiguity above, and worth saying out loud even though it is the safer
+     * direction: the owner has a subscription token sitting in the environment and has asked for
+     * key billing anyway. Jarvis does what it was told and uses the key, but an owner who set that
+     * token expecting it to be used deserves to be told it is being ignored.
+     */
+    diagnostics.push(
+      'CLAUDE_CODE_OAUTH_TOKEN is set but this worker is configured for api_key billing, so the token is ignored and model work is invoiced per token. Set JARVIS_WORKER_AUTH_MODE=subscription to use the token instead.',
     );
   }
   if (!env.JARVIS_WORKER_GITHUB_TOKEN) {
@@ -212,7 +283,17 @@ export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): Work
     token: env.JARVIS_WORKER_TOKEN,
     name: env.JARVIS_WORKER_NAME ?? 'jarvis-worker',
     workspaceRoot,
-    anthropicApiKey: env.ANTHROPIC_API_KEY ?? null,
+    /*
+     * Null unless the owner asked for key billing. A key present in subscription mode is reported
+     * through `anthropicApiKeyPresent` and refused by `resolveClaudeAuth`, never quietly used.
+     */
+    anthropicApiKey:
+      env.JARVIS_WORKER_AUTH_MODE === 'api_key' ? (env.ANTHROPIC_API_KEY ?? null) : null,
+    anthropicApiKeyPresent: apiKeyPresent,
+    /* Symmetrically null in the other mode: only one model credential ever travels. */
+    claudeOauthToken:
+      env.JARVIS_WORKER_AUTH_MODE === 'subscription' ? (env.CLAUDE_CODE_OAUTH_TOKEN ?? null) : null,
+    authMode: env.JARVIS_WORKER_AUTH_MODE,
     model: env.JARVIS_WORKER_MODEL ?? null,
     maxTurns: env.JARVIS_WORKER_MAX_TURNS,
     githubToken: env.JARVIS_WORKER_GITHUB_TOKEN ?? null,

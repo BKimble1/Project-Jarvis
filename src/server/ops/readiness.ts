@@ -428,6 +428,17 @@ async function workerFleetCheck(input: ReadinessInput, now: Date): Promise<Readi
 
   const enrolledWithoutRuntime = live.filter((health) => !health.worker.runtimeAvailable);
   if (enrolledWithoutRuntime.length > 0) {
+    /*
+     * The worker knows why, and this page used to guess. It said "set ANTHROPIC_API_KEY" for every
+     * unavailable runtime — which was wrong advice for a subscription worker, and the single worst
+     * thing to say to an owner who is trying not to be billed per token. The worker's own
+     * `runtimeDetail` already carries the reason and the remedy, so it is quoted rather than
+     * second-guessed; the fallback below only runs when a worker reported nothing at all.
+     */
+    const reported = enrolledWithoutRuntime
+      .map((health) => health.worker.runtimeDetail?.trim())
+      .find((detail): detail is string => Boolean(detail));
+
     return {
       id: 'worker_can_take_work',
       area: 'worker',
@@ -436,7 +447,8 @@ async function workerFleetCheck(input: ReadinessInput, now: Date): Promise<Readi
       detail:
         'A worker is connected but reports no usable model runtime, so it will not claim a mission.',
       nextAction:
-        'Set ANTHROPIC_API_KEY in the worker environment and restart it, then check `npm run worker:health`.',
+        reported ??
+        'Check the worker\u2019s Claude credential and restart it, then run `npm run worker:health` for the reason it reports.',
       blocking: true,
     };
   }

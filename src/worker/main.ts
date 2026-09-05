@@ -300,7 +300,13 @@ export function createWorker(
             { kind: 'done', result: 'Appended a note to the readme.' },
           ],
         })
-      : new ClaudeAgentRuntime({ apiKey: config.anthropicApiKey, model: config.model });
+      : new ClaudeAgentRuntime({
+          apiKey: config.anthropicApiKey,
+          oauthToken: config.claudeOauthToken,
+          authMode: config.authMode,
+          apiKeyPresent: config.anthropicApiKeyPresent,
+          model: config.model,
+        });
 
   const delivery = config.githubToken
     ? new GitHubRestDelivery({ token: config.githubToken, apiBaseUrl: config.githubApiUrl })

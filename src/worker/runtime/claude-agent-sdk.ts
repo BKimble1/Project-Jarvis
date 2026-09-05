@@ -1,5 +1,11 @@
 import { boundText, redactSecrets } from '@/domain/redaction';
+import {
+  resolveClaudeAuth,
+  type ClaudeAuthObservation,
+  type ClaudeAuthVerdict,
+} from '@/domain/claude-auth';
 import { withoutWorkerSecrets } from '../child-env';
+import { observeClaudeAuth } from '../claude-auth-probe';
 import type { RunUsage } from '@/domain/mission-run';
 import {
   EventQueue,
@@ -100,15 +106,36 @@ interface SdkModule {
 /* -------------------------------------------------------------- the runtime */
 
 export interface ClaudeAgentRuntimeOptions {
+  /**
+   * The API key, or null.
+   *
+   * Null is the normal case now: in subscription mode the SDK inherits the Claude Code login from
+   * the operating-system user running the worker, and passing a key would override it. The config
+   * nulls this out unless key billing was deliberately chosen, so "null" here means "do not put a
+   * key in the child environment" rather than "no credential exists".
+   */
   readonly apiKey: string | null;
+  /**
+   * A subscription token for the agent session, or null.
+   *
+   * Null in the ordinary case, where the credential is the Claude Code login belonging to the
+   * operating-system user running this worker and nothing needs to be passed at all.
+   */
+  readonly oauthToken: string | null;
+  readonly authMode: 'subscription' | 'api_key';
+  /** Whether ANTHROPIC_API_KEY exists in the worker's environment. Never its value. */
+  readonly apiKeyPresent: boolean;
   readonly model: string | null;
   /** Overridable so tests can inject a module without the real package installed. */
   readonly load?: () => Promise<SdkModule>;
+  /** Overridable so a test can drive every authentication branch without a Claude installation. */
+  readonly observeAuth?: () => Promise<ClaudeAuthObservation | null>;
 }
 
 export class ClaudeAgentRuntime implements AgentRuntime {
   readonly name = 'claude-agent-sdk';
   private cached: SdkModule | null = null;
+  private lastAuth: ClaudeAuthVerdict | null = null;
 
   constructor(private readonly options: ClaudeAgentRuntimeOptions) {}
 
@@ -125,21 +152,39 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     return loaded;
   }
 
+  /**
+   * Whether this worker can really run a Claude session, and on whose account.
+   *
+   * Two questions, asked in this order and not merged. **Which credential is in force** comes
+   * first, because a worker that can technically run but would bill an account the owner did not
+   * choose should not run at all — and answering "is the package installed" first would report an
+   * encouraging `available: true` on exactly that worker. **Is the SDK loadable** comes second,
+   * because it is the cheap mechanical check and there is no point asking it about a worker that
+   * is not allowed to proceed anyway.
+   *
+   * The verdict's own sentence is used as the detail. It reaches the workers page and the
+   * heartbeat, so an owner sees the actual reason and the actual remedy rather than a generic
+   * "runtime unavailable".
+   */
   async availability(): Promise<RuntimeAvailability> {
-    if (!this.options.apiKey) {
+    const verdict = resolveClaudeAuth({
+      configured: this.options.authMode,
+      apiKeyPresent: this.options.apiKeyPresent,
+      observation: this.options.authMode === 'subscription' ? await this.observeAuth() : null,
+    });
+    this.lastAuth = verdict;
+
+    if (!verdict.usable) {
       return {
         available: false,
         version: null,
-        detail: `ANTHROPIC_API_KEY is not set on this worker, so it cannot run a Claude session. Set it and restart the worker.`,
+        detail: verdict.reason + (verdict.remedy ? ` ${verdict.remedy}` : ''),
       };
     }
+
     try {
       await this.load();
-      return {
-        available: true,
-        version: null,
-        detail: 'The Claude Agent SDK is installed and a credential is configured.',
-      };
+      return { available: true, version: null, detail: verdict.reason };
     } catch (error) {
       return {
         available: false,
@@ -147,6 +192,22 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         detail: `${PACKAGE} could not be loaded (${describe(error)}). Install it with: npm install ${PACKAGE}`,
       };
     }
+  }
+
+  /**
+   * The most recent authentication verdict, for the heartbeat to report.
+   *
+   * Cached rather than re-probed on demand: the probe spawns a process, the heartbeat runs on a
+   * timer, and asking twice per cycle would double the cost of a question whose answer changes
+   * only when somebody signs in or out.
+   */
+  auth(): ClaudeAuthVerdict | null {
+    return this.lastAuth;
+  }
+
+  private async observeAuth(): Promise<ClaudeAuthObservation | null> {
+    if (this.options.observeAuth) return this.options.observeAuth();
+    return observeClaudeAuth();
   }
 
   async start(request: AgentSessionRequest): Promise<AgentSession> {
@@ -184,8 +245,18 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           append: request.systemPrompt,
         },
         /*
-         * The agent inherits an environment with every credential removed, and then exactly one
-         * put back: the model key it cannot work without.
+         * The agent inherits an environment with every credential removed, and then at most one
+         * put back: the model credential it cannot work without.
+         *
+         * At most one, and never both. The config nulls whichever credential the configured mode
+         * did not ask for, so an `ANTHROPIC_API_KEY` here means key billing was deliberately
+         * chosen — a key silently outranks a subscription login, and that is precisely the
+         * confusion this whole path exists to prevent.
+         *
+         * Usually neither is set, and that is the healthy subscription case rather than a failure:
+         * the SDK spawns Claude Code, which reads the login already stored for the operating-system
+         * user running this worker. `CLAUDE_CODE_OAUTH_TOKEN` is for the headless machine that has
+         * no such login to read.
          *
          * The delivery token in particular must not be here. The agent has Bash, and nothing in
          * the tool policy blocks `env` or `printenv` — so before this filter existed, the
@@ -195,6 +266,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         env: {
           ...withoutWorkerSecrets(),
           ...(this.options.apiKey ? { ANTHROPIC_API_KEY: this.options.apiKey } : {}),
+          ...(this.options.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.options.oauthToken } : {}),
           CLAUDE_AGENT_SDK_CLIENT_APP: 'jarvis-worker',
         },
         canUseTool: async (toolName, input) => {

@@ -31,9 +31,17 @@ import { containsSecret } from '@/domain/redaction';
  * names in advance. A value that looks like a GitHub token, an Anthropic key or a Jarvis worker
  * secret is not something a coding agent needs, so it does not travel.
  *
- * `ANTHROPIC_API_KEY` is removed by both filters and then put back deliberately by the caller —
- * the agent genuinely needs it, and passing it explicitly rather than inheriting it means the one
- * credential that *should* be there is visible at the call site.
+ * Both model credentials — `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` — are removed by
+ * name and then put back deliberately by the caller, and only the one the configured
+ * authentication mode actually calls for. The agent genuinely needs a model credential, and
+ * passing it explicitly rather than inheriting it means the one credential that *should* be there
+ * is visible at the call site.
+ *
+ * The subscription token has to be named here even though the shape filter would also catch it.
+ * `CLAUDE_CODE_OAUTH_TOKEN` holds an `sk-ant-oat01-…` value, which `containsSecret` matches, so
+ * before it was named it was deleted silently — a worker started with a perfectly good
+ * subscription token would fail to authenticate with no message saying why. Naming it makes the
+ * removal deliberate and the re-add visible, which is the whole point of the two-filter design.
  */
 
 /** Variables Jarvis defines that must never reach a child process. */
@@ -42,8 +50,9 @@ export const WORKER_ONLY_SECRETS = [
   'JARVIS_WORKER_GITHUB_TOKEN',
   /* The worker's own identity with the control plane. Posts runs, events and verdicts. */
   'JARVIS_WORKER_TOKEN',
-  /* The model credential. Re-added explicitly by the agent runtime, never inherited. */
+  /* The model credentials. Re-added explicitly by the agent runtime, never inherited. */
   'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
   /* Names a shared environment file may carry if the worker sits beside the control plane. */
   'GITHUB_TOKEN',
   'GH_TOKEN',

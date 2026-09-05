@@ -15,7 +15,13 @@ import { checkWorkspaceRoot, listWorkspaces } from '@/worker/workspace';
 async function main(): Promise<void> {
   const config = buildWorkerConfig();
   const described = describeWorkerConfig(config);
-  const runtime = new ClaudeAgentRuntime({ apiKey: config.anthropicApiKey, model: config.model });
+  const runtime = new ClaudeAgentRuntime({
+    apiKey: config.anthropicApiKey,
+    oauthToken: config.claudeOauthToken,
+    authMode: config.authMode,
+    apiKeyPresent: config.anthropicApiKeyPresent,
+    model: config.model,
+  });
   const availability = await runtime.availability();
   const workspace = await checkWorkspaceRoot(config.workspaceRoot);
   const preserved = await listWorkspaces(config.workspaceRoot);
