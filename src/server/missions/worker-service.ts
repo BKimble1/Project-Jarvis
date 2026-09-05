@@ -25,6 +25,7 @@ import { WORKER_VERSION, isCompatibleWorkerVersion } from '@/domain/worker-proto
 import { RATE_WINDOWS, type RateWindow } from '@/domain/claude-capacity';
 import type { WorkerCapacityReading } from '@/server/repositories/mission-types';
 import { classifyMissionRisk } from '@/domain/mission-risk';
+import { usageOutcomeFor, usageRowForRun } from './usage-ledger';
 import { assertMissionBranchName, buildBranchName } from '@/domain/workspace-safety';
 import type { WorkerEnrolment } from '@/domain/worker';
 import type {
@@ -602,31 +603,34 @@ export class WorkerService {
      * computed from zeroes is a budget that does not hold.
      */
     if (input.usage) {
-      await this.deps.usage.upsertForRun({
-        /*
-         * Derived from the run rather than from the task, because the task would cost a query on
-         * every report to distinguish a review from a repair — a distinction that changes a label
-         * and nothing else. An inspection is separated because it is genuinely a different kind of
-         * spending: read-only, and the one kind that runs before anybody approved anything.
-         */
-        kind: run.kind === 'inspection' ? 'inspection' : 'agent_task',
-        runId: run.id,
-        missionId: mission.id,
-        taskId: run.taskId ?? null,
-        projectId: mission.projectId,
-        inputTokens: input.usage.inputTokens ?? null,
-        outputTokens: input.usage.outputTokens ?? null,
-        cachedInputTokens: input.usage.cacheReadTokens ?? null,
-        reportedCostUsd: input.usage.totalCostUsd ?? null,
-        costBasis:
-          input.usage.totalCostUsd === null || input.usage.totalCostUsd === undefined
-            ? 'unknown'
-            : 'reported',
-        durationMs: input.usage.durationMs ?? null,
-        failed: input.missionState === 'failed',
-        failureCode: input.failureCode ?? null,
-        occurredAt: run.startedAt ? new Date(run.startedAt) : now,
-      });
+      await this.deps.usage.upsertForRun(
+        usageRowForRun({
+          /*
+           * Derived from the run rather than from the task, because the task would cost a query on
+           * every report to distinguish a review from a repair — a distinction that changes a label
+           * and nothing else. An inspection is separated because it is genuinely a different kind
+           * of spending: read-only, and the one kind that runs before anybody approved anything.
+           */
+          kind: run.kind === 'inspection' ? 'inspection' : 'agent_task',
+          runId: run.id,
+          missionId: mission.id,
+          taskId: run.taskId ?? null,
+          projectId: mission.projectId,
+          workerId,
+          attempt: run.attempt ?? null,
+          usage: input.usage,
+          outcome: usageOutcomeFor({
+            terminal:
+              input.missionState === 'completed' || input.missionState === 'pull_request_ready',
+            failed: input.missionState === 'failed',
+            stopped: input.missionState === 'stopped',
+            paused: input.missionState === 'paused',
+          }),
+          failureCode: input.failureCode ?? null,
+          occurredAt: run.startedAt ? new Date(run.startedAt) : now,
+          capacity: await this.deps.workers.capacityObservationFor(workerId),
+        }),
+      );
     }
 
     if (!input.missionState) {

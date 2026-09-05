@@ -88,6 +88,7 @@ import type {
   PriorityFactor,
 } from '@/domain/opportunity';
 import type { AuthMode, CapacityVerdict } from '@/domain/claude-capacity';
+import type { UsageOutcome } from '@/domain/budget';
 import type { WorkerStatus } from '@/domain/worker';
 import type { AgentRole } from '@/domain/agent-role';
 import type {
@@ -2898,6 +2899,43 @@ export const usageRecords = pgTable(
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
     /** Set by the reporter, so a replayed worker report cannot double-count. */
     idempotencyKey: text('idempotency_key'),
+
+    /*
+     * ------------------------------------------------- who, on what, and how it ended
+     *
+     * Identity, because "which attempt on which machine" is the first question asked of any row
+     * that looks wrong, and joining back through the run to find out is a question the ledger
+     * should be able to answer itself.
+     */
+    workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+    attempt: integer('attempt'),
+    /**
+     * How the work that spent this ended.
+     *
+     * `failed` is a boolean and stays one, because things read it. It cannot express the
+     * difference between a run somebody stopped, a run that ran out of capacity and checkpointed,
+     * and a run that broke — and those are three different things to an owner looking at a day's
+     * spending.
+     */
+    outcome: text('outcome').$type<UsageOutcome>(),
+    /** Cache writes cost more than reads and are reported separately, so they are stored so. */
+    cacheWriteTokens: bigint('cache_write_tokens', { mode: 'number' }),
+    /**
+     * The session's context window at the time, which is not account capacity and is kept apart
+     * from it for that reason. Null is unknown, never zero.
+     */
+    contextUsedTokens: integer('context_used_tokens'),
+    contextMaxTokens: integer('context_max_tokens'),
+    /**
+     * What the account's shared windows looked like when this was spent.
+     *
+     * A snapshot rather than a link, because the point of it is to answer "how full was it when
+     * Jarvis decided to run this?" months later, when the worker row has been rewritten many
+     * times. Null for an API worker, which has no such window, and for a reading that had not
+     * arrived yet.
+     */
+    capacityFiveHourPercent: doublePrecision('capacity_five_hour_percent'),
+    capacitySevenDayPercent: doublePrecision('capacity_seven_day_percent'),
   },
   (table) => [
     uniqueIndex('usage_records_idempotency_idx')

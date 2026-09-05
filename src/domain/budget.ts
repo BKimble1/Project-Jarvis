@@ -68,6 +68,25 @@ export const COST_BASIS_LABELS: Record<CostBasis, string> = {
   unknown: 'unknown',
 };
 
+/**
+ * How the work a usage record describes ended.
+ *
+ * `failed` is a boolean elsewhere on the record and stays one, because things read it. It cannot
+ * tell apart a run somebody stopped, a run that ran out of subscription capacity and checkpointed,
+ * and a run that broke — and to an owner looking at a day's spending those are three different
+ * stories with the same total.
+ */
+export const USAGE_OUTCOMES = ['succeeded', 'paused', 'cancelled', 'failed', 'unknown'] as const;
+export type UsageOutcome = (typeof USAGE_OUTCOMES)[number];
+
+export const USAGE_OUTCOME_LABELS: Record<UsageOutcome, string> = {
+  succeeded: 'Finished',
+  paused: 'Paused, and can resume',
+  cancelled: 'Stopped',
+  failed: 'Failed',
+  unknown: 'Not recorded',
+};
+
 export interface UsageRecord {
   readonly id: string;
   readonly kind: UsageKind;
@@ -91,6 +110,17 @@ export interface UsageRecord {
   readonly failed: boolean;
   readonly failureCode: string | null;
   readonly occurredAt: string;
+  /** Which machine, and which attempt on it. Null on rows written before this was recorded. */
+  readonly workerId: string | null;
+  readonly attempt: number | null;
+  readonly outcome: UsageOutcome | null;
+  readonly cacheWriteTokens: number | null;
+  /** One session's context window. Never account capacity; kept apart so it cannot be mistaken. */
+  readonly contextUsedTokens: number | null;
+  readonly contextMaxTokens: number | null;
+  /** The account's shared windows when this was spent. Null for a worker that has none. */
+  readonly capacityFiveHourPercent: number | null;
+  readonly capacitySevenDayPercent: number | null;
 }
 
 /**

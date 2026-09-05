@@ -15,6 +15,8 @@ import {
   type TaskState,
 } from '@/domain/mission-task';
 import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
+import type { UsageRepository } from '@/server/repositories/accounting-types';
+import { usageOutcomeFor, usageRowForRun } from './usage-ledger';
 import { autonomousWriteScopeVerdict, normaliseWriteSet } from '@/domain/write-set';
 import { boundText, redactSecrets } from '@/domain/redaction';
 import type { ReviewSubmissionInput } from '@/domain/mission-review';
@@ -69,6 +71,13 @@ export interface TaskWorkerServiceDeps {
   readonly projects: ProjectRepository;
   readonly sources: SourceRepository;
   readonly orchestrator: MissionOrchestrator;
+  /**
+   * The spend ledger.
+   *
+   * Required rather than optional, because this protocol ran without one for its whole life and an
+   * optional dependency is one a container eventually forgets to pass.
+   */
+  readonly usage: UsageRepository;
   readonly limits: CapacityLimits;
   readonly allowWebResearch: boolean;
   /**
@@ -481,6 +490,7 @@ export class TaskWorkerService {
       usage?: {
         inputTokens?: number | null;
         outputTokens?: number | null;
+        cacheReadTokens?: number | null;
         totalCostUsd?: number | null;
         turns?: number | null;
         durationMs?: number | null;
@@ -507,6 +517,43 @@ export class TaskWorkerService {
       ...(input.filesChanged ? { filesChanged: [...input.filesChanged] } : {}),
       lastEventAt: now,
     });
+
+    /*
+     * The ledger, which this protocol never reached.
+     *
+     * The mission protocol recorded every run and this one recorded nothing, so the charter's
+     * daily and weekly spend caps, the budget page and the capacity governor were all computed
+     * over a table containing none of the factory's spending — and the more work Jarvis did
+     * through tasks, the more confidently wrong those numbers became.
+     *
+     * Written on every report that carries usage rather than only on the last, because a task that
+     * dies without a final report still spent what it spent. It is keyed on the run, so repeating
+     * the report replaces one row rather than appending a second, and a retry or a repair round
+     * gets a fresh run and therefore a genuinely distinct row.
+     */
+    if (input.usage) {
+      await this.deps.usage.upsertForRun(
+        usageRowForRun({
+          kind: isReviewRole(task.role) ? 'review' : task.repairRound > 0 ? 'repair' : 'agent_task',
+          runId: input.runId,
+          missionId: task.missionId,
+          taskId: task.id,
+          projectId: (await this.deps.missions.findById(task.missionId))?.projectId ?? null,
+          workerId,
+          attempt: task.attempt,
+          usage: input.usage,
+          outcome: usageOutcomeFor({
+            terminal: input.taskState === 'succeeded',
+            failed: input.taskState === 'failed',
+            stopped: input.taskState === 'stopped',
+            paused: input.taskState === 'paused',
+          }),
+          failureCode: input.failureCode ?? null,
+          occurredAt: now,
+          capacity: await this.deps.workers.capacityObservationFor(workerId),
+        }),
+      );
+    }
 
     const patch = {
       lastActivityAt: now,

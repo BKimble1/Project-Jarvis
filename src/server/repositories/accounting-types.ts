@@ -5,6 +5,7 @@ import type {
   CostBasis,
   ModelPrice,
   UsageKind,
+  UsageOutcome,
   UsageRecord,
   UsageTotals,
 } from '@/domain/budget';
@@ -42,6 +43,14 @@ export interface UsageCreateInput {
   readonly occurredAt?: Date;
   /** Set by a worker report so a replay cannot double-count. */
   readonly idempotencyKey?: string | null;
+  readonly workerId?: string | null;
+  readonly attempt?: number | null;
+  readonly outcome?: UsageOutcome | null;
+  readonly cacheWriteTokens?: number | null;
+  readonly contextUsedTokens?: number | null;
+  readonly contextMaxTokens?: number | null;
+  readonly capacityFiveHourPercent?: number | null;
+  readonly capacitySevenDayPercent?: number | null;
 }
 
 export interface UsageFilter {

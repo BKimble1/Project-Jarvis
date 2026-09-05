@@ -1285,6 +1285,11 @@ export class DrizzleWorkerRepository implements WorkerRepository {
       .filter((observation): observation is CapacityObservation => observation !== null);
   }
 
+  async capacityObservationFor(workerId: string): Promise<CapacityObservation | null> {
+    const [row] = await this.db.select().from(workers).where(eq(workers.id, workerId)).limit(1);
+    return row ? toCapacityObservation(row) : null;
+  }
+
   async remove(id: string): Promise<void> {
     await this.db.delete(workers).where(eq(workers.id, id));
   }

@@ -386,6 +386,15 @@ export interface WorkerRepository {
    * no account at all.
    */
   capacityObservations(): Promise<readonly CapacityObservation[]>;
+  /**
+   * One worker's latest reading, or null if it has never taken one.
+   *
+   * Separate from `capacityObservations` because the two answer different questions. That one asks
+   * "what does the account look like", and merges. This one asks "what could *this* worker see
+   * when it spent that", which is what a ledger row records — and merging would put another
+   * machine's figure on this machine's spending.
+   */
+  capacityObservationFor(workerId: string): Promise<CapacityObservation | null>;
   remove(id: string): Promise<void>;
 }
 

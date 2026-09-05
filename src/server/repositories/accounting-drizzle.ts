@@ -120,6 +120,14 @@ export class DrizzleUsageRepository implements UsageRepository {
       failed: input.failed ?? false,
       failureCode: input.failureCode ?? null,
       idempotencyKey: key,
+      workerId: input.workerId ?? null,
+      attempt: input.attempt ?? null,
+      outcome: input.outcome ?? null,
+      cacheWriteTokens: input.cacheWriteTokens ?? null,
+      contextUsedTokens: input.contextUsedTokens ?? null,
+      contextMaxTokens: input.contextMaxTokens ?? null,
+      capacityFiveHourPercent: input.capacityFiveHourPercent ?? null,
+      capacitySevenDayPercent: input.capacitySevenDayPercent ?? null,
     };
 
     const rows = await this.db
@@ -310,6 +318,14 @@ function toUsageRecord(row: typeof usageRecords.$inferSelect): UsageRecord {
     failed: row.failed,
     failureCode: row.failureCode,
     occurredAt: isoRequired(row.occurredAt),
+    workerId: row.workerId,
+    attempt: row.attempt,
+    outcome: row.outcome,
+    cacheWriteTokens: row.cacheWriteTokens,
+    contextUsedTokens: row.contextUsedTokens,
+    contextMaxTokens: row.contextMaxTokens,
+    capacityFiveHourPercent: row.capacityFiveHourPercent,
+    capacitySevenDayPercent: row.capacitySevenDayPercent,
   };
 }
 

@@ -639,6 +639,49 @@ describe('the multi-agent factory, end to end', () => {
       graph!.maxRepairRounds,
     );
 
+    /*
+     * The ledger, which this protocol never reached.
+     *
+     * The mission protocol recorded every run and the task protocol recorded nothing, so the
+     * charter's spend caps, the budget page and the capacity governor were all computed over a
+     * table that contained none of the factory's spending — and the more work Jarvis did through
+     * tasks, the more confidently wrong those numbers became. A whole multi-agent mission had just
+     * run, so if the ledger is still empty here the connection does not exist.
+     */
+    const ledger = await services.usage.list({ missionId });
+    expect(ledger.length).toBeGreaterThan(0);
+
+    /* One row per run, never two: the key is the run, and a worker reports its total each time. */
+    const runIds = ledger.map((record) => record.runId);
+    expect(new Set(runIds).size).toBe(runIds.length);
+
+    /* Every row is attributable — which machine, which attempt, and which task it belongs to. */
+    for (const record of ledger) {
+      expect(record.taskId, `${record.id} should name its task`).not.toBeNull();
+      expect(record.workerId, `${record.id} should name its worker`).not.toBeNull();
+      expect(record.attempt, `${record.id} should name its attempt`).not.toBeNull();
+    }
+
+    /*
+     * A repair round is its own spending, not an amendment to the builder's. Both are present,
+     * because each got a fresh run.
+     */
+    expect(ledger.some((record) => record.kind === 'repair')).toBe(true);
+    expect(ledger.some((record) => record.kind === 'review')).toBe(true);
+
+    /*
+     * And nothing claims money it does not know about.
+     *
+     * The invariant, rather than a fixed value: a row carries `reported` only when the provider
+     * actually gave a number, and `unknown` otherwise. What must never appear is `reported` beside
+     * a null — a claim that the work was measured and free, which would quietly make every budget
+     * hold no matter how much was spent.
+     */
+    for (const record of ledger) {
+      if (record.reportedCostUsd === null) expect(record.costBasis).toBe('unknown');
+      else expect(record.costBasis).toBe('reported');
+    }
+
     /* 11. A draft pull request was produced. */
     expect(delivery.created).toHaveLength(1);
     const pullRequest = delivery.created[0]!;
