@@ -41,16 +41,15 @@ export function CommandBar({ initialHistory = [] }: { initialHistory?: readonly 
   /*
    * Keep whatever was typed before this component came alive.
    *
-   * The field is controlled, so React's first render after hydration writes its own state into the
-   * DOM — and anything typed in the gap between the HTML arriving and the JavaScript attaching is
-   * silently wiped. On a fast machine that gap is imperceptible; on a slow one, on a cold route, or
-   * on a phone, it is long enough to lose a sentence somebody has already finished typing, and the
-   * failure is invisible: the words vanish and the button stays disabled, so pressing it does
-   * nothing at all.
+   * The field is controlled, so React's own hydration writes its empty initial state into the DOM,
+   * and anything typed in the gap between the HTML arriving and the JavaScript attaching is wiped.
+   * On a fast machine that gap is imperceptible; on a phone, or on a cold route, it is long enough
+   * to lose a sentence somebody has already finished typing — and the failure is silent, because
+   * the words simply vanish.
    *
-   * Reading the field once on mount closes it. The dashboard grew heavier when the operating
-   * picture moved above this bar, which is what turned a race that was theoretically lost into one
-   * that was reliably lost.
+   * Reading the field on mount recovers it where the value survived hydration. Where it did not,
+   * the submit path below is what saves the day: it reads the field rather than the state, so what
+   * gets asked is what is actually in the box.
    */
   React.useEffect(() => {
     const typedBeforeHydration = inputRef.current?.value ?? '';
@@ -103,7 +102,14 @@ export function CommandBar({ initialHistory = [] }: { initialHistory?: readonly 
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          void ask(query);
+          /*
+           * The field, not the state.
+           *
+           * These agree in every ordinary case, and disagree in exactly one: text that arrived
+           * before React attached its listeners. Asking what is in the box removes that whole
+           * class of bug rather than narrowing the window in which it happens.
+           */
+          void ask(inputRef.current?.value ?? query);
         }}
         className="flex items-center gap-2 px-3 py-2.5"
       >
@@ -136,7 +142,15 @@ export function CommandBar({ initialHistory = [] }: { initialHistory?: readonly 
             <X className="h-4 w-4" aria-hidden />
           </button>
         ) : null}
-        <Button type="submit" size="sm" disabled={pending || query.trim().length === 0}>
+        {/*
+         * Disabled only while a question is in flight.
+         *
+         * It used to be disabled on an empty field as well, which reads as helpful and is the
+         * thing that made a lost keystroke unrecoverable: the text was gone *and* the button was
+         * dead, so pressing it did nothing and said nothing. Submitting an empty box is already a
+         * no-op — `ask` returns immediately — so nothing is gained by refusing the press.
+         */}
+        <Button type="submit" size="sm" disabled={pending}>
           {pending ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           ) : (
