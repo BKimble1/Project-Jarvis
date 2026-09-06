@@ -159,8 +159,16 @@ export async function quickReadiness(input: {
 
 /* ------------------------------------------------------------------- runtime */
 
-/** The floor the application is built against. Below it, failures are obscure rather than loud. */
-const MINIMUM_NODE_MAJOR = 20;
+/**
+ * The floor the application is built against. Below it, failures are obscure rather than loud.
+ *
+ * Raised from 20 to 22 because it was not true. `pdfjs-dist` — a direct dependency, and not a new
+ * one — declares `engines.node: ">=22.13.0 || >=24"`, so a Node 20 host could not read a PDF while
+ * this check reported the runtime as healthy. A readiness report that says "verified" about
+ * something it has not verified is worse than no check, so the number now matches the highest
+ * floor any dependency actually asks for.
+ */
+const MINIMUM_NODE_MAJOR = 22;
 
 /**
  * What is actually executing this.

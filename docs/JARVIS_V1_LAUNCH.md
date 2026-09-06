@@ -20,6 +20,16 @@ seconds later is missing, applies migrations when the database is hosted, starts
 waits until it answers, then starts the worker. Ctrl-C stops both — the worker first, with fifteen
 seconds to finish what it is holding.
 
+Then open **<http://localhost:3000>**. That spelling matters: it is the origin the GitHub callback
+redirects to and the host the session cookie is set on, so signing in on `127.0.0.1` leaves you
+signed out on `localhost` and the other way round.
+
+**On the very first run there is no worker token**, and there cannot be — the token is minted by a
+Jarvis that is already running. So the launcher starts the control plane alone and says so rather
+than refusing. Sign in, open **Workers**, press **Enrol**, put the token it shows once into
+`.env.local` as `JARVIS_WORKER_TOKEN`, stop the launcher and start it again. After that both halves
+come up together, and the launcher tells the worker where the control plane is.
+
 **Run it as the account that ran `claude login`.** A subscription worker authenticates from that
 account's own Claude credentials. Running as `root` or a dedicated user gives you a worker that
 starts, finds nothing, and refuses every mission.

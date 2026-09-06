@@ -4,7 +4,7 @@ For Windows, see [SETUP_WINDOWS.md](SETUP_WINDOWS.md).
 
 ## Requirements
 
-- Node.js 20.11 or newer (22 LTS recommended — it is what CI and Netlify use)
+- Node.js 22.13 or newer (22 LTS is what CI and Netlify use; `pdfjs-dist` sets this floor)
 - npm 10 or newer
 - Git
 

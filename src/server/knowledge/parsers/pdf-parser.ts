@@ -35,7 +35,16 @@ import { blocksFromLines } from './text-parser';
  */
 export class PdfParser implements KnowledgeParser {
   readonly name = 'pdf';
-  readonly version = '1.0.0';
+  /*
+   * Bumped for pdf.js 6.
+   *
+   * Not decoration: `knowledge-revision.ts` folds the parser's name and version into the revision
+   * content hash, precisely so that the same bytes read by a different parser version count as a
+   * different revision. pdf.js 6 rewrote large parts of the text extractor, so leaving this at
+   * 1.0.0 would have told the knowledge base that output from two different engines was
+   * interchangeable. The label is also shown to the owner and written into their export.
+   */
+  readonly version = '2.0.0';
 
   accepts(input: {
     readonly contentType: string | null;
@@ -53,8 +62,15 @@ export class PdfParser implements KnowledgeParser {
     const loading = pdfjs.getDocument({
       /* A copy: pdfjs transfers ownership of the buffer it is given. */
       data: new Uint8Array(input.bytes),
-      /* Nothing here needs fonts rendered, scripts run or external resources fetched. */
-      isEvalSupported: false,
+      /*
+       * No fonts rendered, no external resources fetched.
+       *
+       * `isEvalSupported: false` used to sit here too. It was removed because pdf.js no longer has
+       * the option — it appears zero times in 6.3.289's `pdf.mjs` and `pdf.worker.mjs` — and a
+       * dead flag whose comment claims it stops a PDF running script is worse than no flag: it
+       * reads like a mitigation. Document-level JavaScript is not executed on this path regardless;
+       * pdf.js only runs it through the annotation layer, which this parser never builds.
+       */
       useSystemFonts: false,
       disableFontFace: true,
       /* A PDF must not be able to make the server issue requests. */
@@ -66,7 +82,7 @@ export class PdfParser implements KnowledgeParser {
       document = (await withTimeout(
         loading.promise,
         PARSER_LIMITS.parseTimeoutMs,
-        () => void loading.destroy(),
+        () => void loading.destroy().catch(() => {}),
       )) as PdfDocument;
     } catch (error) {
       throw translatePdfError(error);
@@ -75,7 +91,20 @@ export class PdfParser implements KnowledgeParser {
     try {
       return await this.extract(document, input);
     } finally {
-      await document.destroy().catch(() => {});
+      /*
+       * The loading task, not the document.
+       *
+       * pdf.js 6 removed `PDFDocumentProxy.prototype.destroy`, which on 5.x was only ever a
+       * forward to this same call — so this is the identical cleanup on both and the only one
+       * that survives. It matters more than an ordinary rename because it sits in a `finally`:
+       * calling a method that no longer exists here would replace a successful parse *and* any
+       * ParseError on its way out with a bare TypeError, so "this looks like a scan" and "this
+       * file is encrypted" would both have been reported as a generic ingestion failure.
+       *
+       * TypeScript could not have caught it. This module declares its own minimal pdfjs types
+       * rather than importing the DOM-flavoured ones, so the removed method type-checked fine.
+       */
+      await loading.destroy().catch(() => {});
     }
   }
 
@@ -294,7 +323,6 @@ interface PdfPage {
 interface PdfDocument {
   readonly numPages: number;
   getPage(pageNumber: number): Promise<PdfPage>;
-  destroy(): Promise<void>;
 }
 
 interface PdfLoadingTask {

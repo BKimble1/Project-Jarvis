@@ -3,18 +3,17 @@ import type { NextConfig } from 'next';
 /**
  * Security headers applied to every response.
  *
- * The Content-Security-Policy is *not* here: it carries a per-request nonce and is therefore set
- * by `src/middleware.ts`. Everything below is static and identical on every response.
+ * Two are *not* here, and for the same reason: they are not the same on every response.
+ * `Content-Security-Policy` carries a per-request nonce, and `Permissions-Policy` differs between
+ * the owner's application, which needs the microphone, and the wallboard, which must never have
+ * it. Both are set by `src/middleware.ts`. Everything below genuinely is static and identical on
+ * every response, which is what makes this the right place for it.
  */
 const securityHeaders = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'X-DNS-Prefetch-Control', value: 'off' },
-  {
-    key: 'Permissions-Policy',
-    value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
-  },
   { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
   { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
 ];

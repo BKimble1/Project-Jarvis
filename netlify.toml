@@ -26,7 +26,12 @@
     X-Content-Type-Options = "nosniff"
     X-Frame-Options = "DENY"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    # Permissions-Policy is deliberately absent.
+    #
+    # It is per-path — the owner's application needs the microphone, the wallboard must never have
+    # it — so it is set by src/middleware.ts on every document response. A blanket
+    # `microphone=()` here would silently undo that on a Netlify deployment and nowhere else,
+    # which is the worst shape a bug can have: it works locally and is dead in production.
 
 [[headers]]
   for = "/sw.js"

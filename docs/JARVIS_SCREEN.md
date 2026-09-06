@@ -176,10 +176,18 @@ answer path, immersive entry and exit with input preserved, the graphics and mot
 surviving a reload, the pre-hydration typing defence, and the capacity wording. Covered by
 `tests/unit/core-state.test.ts` and `tests/e2e/jarvis-screen.spec.ts`.
 
+**A header used to make this moot.** Until the fix recorded in `docs/SECURITY.md`, every response
+carried `Permissions-Policy: microphone=()` — an empty allowlist, which denies the feature to this
+origin too — so `getUserMedia` was refused on the one screen built around it, silently and with no
+permission prompt for the owner to act on. Voice could not have worked in a real browser whatever
+the client code did. It is now `microphone=(self)` on the owner's application and `microphone=()`
+on the wallboard, asserted on real responses by `tests/e2e/security-headers.spec.ts`.
+
 **Not proved here, and not claimed:** no microphone and no audio output exist in this environment,
 so the listening and speaking states have never been exercised against a real voice — the analyser
 path, the level it produces and the speech playback events are implemented and typed but not
-live-tested. No worker has ever enrolled here, so `working` and `complete` have not been seen with
+live-tested. What the header fix proves is that the browser is no longer refusing before they run;
+it does not prove they work. No worker has ever enrolled here, so `working` and `complete` have not been seen with
 real missions behind them. Performance was measured on this development container only; no
 Raspberry Pi or Android tablet was available, so the lite graphics mode is built and switchable but
 its frame rate on that hardware is unmeasured.

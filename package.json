@@ -5,7 +5,7 @@
   "description": "Jarvis \u2014 a private, single-user project registry and evidence-based portfolio status brain.",
   "type": "module",
   "engines": {
-    "node": ">=20.11.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "next dev",
@@ -60,7 +60,7 @@
     "drizzle-orm": "^0.45.2",
     "lucide-react": "^1.39.0",
     "next": "^15.5.25",
-    "pdfjs-dist": "^5.7.284",
+    "pdfjs-dist": "^6.3.289",
     "pg": "^8.23.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -91,6 +91,12 @@
     "tsx": "^4.23.13",
     "typescript": "5.9",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "postcss": "$postcss",
+    "@esbuild-kit/core-utils": {
+      "esbuild": "^0.25.12"
+    }
   },
   "optionalDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.258"

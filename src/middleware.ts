@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
+import { permissionsPolicyFor } from '@/domain/permissions-policy';
+
 /**
  * Per-request Content-Security-Policy with a nonce.
  *
@@ -10,6 +12,15 @@ import { NextResponse, type NextRequest } from 'next/server';
  *
  * `style-src` keeps `'unsafe-inline'`: the framework inlines critical CSS without a nonce, and an
  * injected stylesheet is a far smaller risk than injected script.
+ *
+ * ## Why `Permissions-Policy` is set here and not in `next.config.ts`
+ *
+ * Because it is the one security header whose value depends on the path: the owner's application
+ * needs the microphone and the wallboard must never have it. `headers()` in the config is static,
+ * and expressing this there would mean two entries whose `source` patterns overlap — leaving the
+ * question of which one wins for the same header key to undocumented ordering. Here the decision
+ * is an ordinary function of `pathname`, there is exactly one writer, and the rule itself lives in
+ * `@/domain/permissions-policy` where it is unit-tested against the paths that matter.
  */
 export function middleware(request: NextRequest): NextResponse {
   const nonce = crypto.randomUUID().replace(/-/g, '');
@@ -36,6 +47,7 @@ export function middleware(request: NextRequest): NextResponse {
 
   const response = NextResponse.next({ request: { headers } });
   response.headers.set('Content-Security-Policy', csp);
+  response.headers.set('Permissions-Policy', permissionsPolicyFor(request.nextUrl.pathname));
   return response;
 }
 

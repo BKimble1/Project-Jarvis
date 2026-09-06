@@ -61,7 +61,20 @@ for (const file of ['.env.local', '.env']) {
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.JARVIS_LIVE_HOST ?? '0.0.0.0';
-const LOCAL = `http://127.0.0.1:${PORT}`;
+
+/** Where the launcher probes for health. No cookie is involved, so the loopback literal is right. */
+const PROBE = `http://127.0.0.1:${PORT}`;
+
+/*
+ * Where a person opens Jarvis, which is not the same string.
+ *
+ * It has to match `config.baseUrl`, which falls back to `http://localhost:3000` — because that is
+ * the origin the GitHub callback redirects to and the host the session cookie is set on. Printing
+ * `127.0.0.1` sent an owner to a URL they could sign in on and then be signed out of for ever:
+ * the two are the same machine and different origins, and a cookie set on one is invisible to the
+ * other. The health probe keeps the loopback literal because no cookie is involved there.
+ */
+const BASE = process.env.JARVIS_BASE_URL?.replace(/\/$/, '') ?? `http://localhost:${PORT}`;
 
 /** Everything this launcher writes: the instance lock and the logs. Never anything else. */
 const STATE_DIR = path.resolve(process.cwd(), '.jarvis-live');
@@ -343,7 +356,7 @@ async function waitForHealth(timeoutMs: number): Promise<void> {
        * starts against a control plane whose database is not ready spends its first minute logging
        * failures at an owner who is watching the terminal for the first time.
        */
-      const response = await fetch(`${LOCAL}/api/health`, { signal: AbortSignal.timeout(3000) });
+      const response = await fetch(`${PROBE}/api/health`, { signal: AbortSignal.timeout(3000) });
       if (response.ok) return;
     } catch {
       /* Not up yet. */
@@ -351,7 +364,7 @@ async function waitForHealth(timeoutMs: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 700));
   }
   throw new Error(
-    `The control plane did not answer ${LOCAL}/api/health within ${Math.round(timeoutMs / 1000)}s. ` +
+    `The control plane did not answer ${PROBE}/api/health within ${Math.round(timeoutMs / 1000)}s. ` +
       'Its output is above; `npm run doctor` explains most configuration failures.',
   );
 }
@@ -426,9 +439,21 @@ function preflight(): {
     );
   }
 
+  /*
+   * A notice, not a blocker, and the difference is the whole first run.
+   *
+   * The token can only be minted from a Jarvis that is already running and signed in — so refusing
+   * to start without one made the very first launch a dead end: the owner could not get the token
+   * without the control plane, and could not start the control plane without the token. Starting
+   * the control plane alone is exactly the state somebody needs in order to enrol a worker, so
+   * that is what happens now, and it says so loudly.
+   */
   if (!process.env.JARVIS_WORKER_TOKEN) {
-    problems.push(
-      'JARVIS_WORKER_TOKEN is not set, so no worker can start. Enrol one in Jarvis (Operations → Workers), then put the token in .env.local as JARVIS_WORKER_TOKEN.',
+    notices.push(
+      'JARVIS_WORKER_TOKEN is not set, so no worker will start and nothing will run missions. ' +
+        'The token only exists once Jarvis is running: open Workers, press Enrol, and put the ' +
+        'token it shows once into .env.local as JARVIS_WORKER_TOKEN. Then stop this and start it ' +
+        'again, and the worker will come up with it.',
     );
   }
 
@@ -470,13 +495,29 @@ async function main(): Promise<void> {
     await runOnce('npx', ['tsx', 'scripts/migrate.ts']);
   }
 
+  /*
+   * The address the worker reports to, filled in from the one thing this process cannot be wrong
+   * about: the port it is starting the control plane on.
+   *
+   * Without it the worker threw `JARVIS_CONTROL_PLANE_URL must be set` on startup, was restarted
+   * five times in a minute, and then took the whole launcher down with it — behind a message that
+   * said Jarvis was running. `??=` so a deliberately remote value is never overwritten.
+   */
+  process.env.JARVIS_CONTROL_PLANE_URL ??= BASE;
+
   log('[jarvis] Starting the control plane…');
   start('control plane', 'npx', ['next', 'dev', '--hostname', HOST, '--port', String(PORT)]);
 
   await waitForHealth(180_000);
 
-  log('[jarvis] Control plane is answering. Starting the worker…');
-  start('worker', 'npx', ['tsx', 'scripts/worker.ts']);
+  if (process.env.JARVIS_WORKER_TOKEN) {
+    log('[jarvis] Control plane is answering. Starting the worker…');
+    start('worker', 'npx', ['tsx', 'scripts/worker.ts']);
+  } else {
+    log(
+      '[jarvis] Control plane is answering. No worker token, so no worker — see the note above.\n',
+    );
+  }
 
   const lan = lanUrls();
   log(
@@ -484,11 +525,11 @@ async function main(): Promise<void> {
       '',
       '  Jarvis is running.',
       '',
-      `    Dashboard   ${LOCAL}`,
+      `    Dashboard   ${BASE}`,
       ...lan.map(
         (url, index) => `    ${index === 0 ? 'On your network' : '               '} ${url}`,
       ),
-      `    Wallboard   ${lan[0] ?? LOCAL}/display   (needs a display device token — Operations → Displays)`,
+      `    Wallboard   ${lan[0] ?? BASE}/display   (needs a display device token — Settings → Displays)`,
       '',
       '    Health      npm run doctor',
       '    Worker      npm run worker:health',

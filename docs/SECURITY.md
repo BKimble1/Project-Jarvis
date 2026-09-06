@@ -137,8 +137,15 @@ Applied in `next.config.ts` and reinforced in `netlify.toml`:
   framework inlines critical CSS without a nonce; an injected stylesheet is a far smaller risk
   than injected script. No third-party scripts are loaded at all.
 - `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
-  `Referrer-Policy: strict-origin-when-cross-origin`, a restrictive `Permissions-Policy`, and
-  `Cross-Origin-Opener-Policy: same-origin`.
+  `Referrer-Policy: strict-origin-when-cross-origin`, and `Cross-Origin-Opener-Policy: same-origin`.
+- `Permissions-Policy` disables camera, geolocation, payment and USB outright, everywhere. The
+  microphone is the one exception and it is scoped: `microphone=(self)` on the owner's application,
+  which is what lets the Jarvis screen listen when somebody presses Speak, and `microphone=()` on
+  the wallboard at `/display`, which runs on a display credential and must never listen. The value
+  is chosen per request in `src/middleware.ts` from the rule in `src/domain/permissions-policy.ts`;
+  `(self)` is an allowlist of this origin alone, not a grant — the browser still asks the person,
+  and a cross-origin frame is still refused. `tests/unit/permissions-policy.test.ts` and
+  `tests/e2e/security-headers.spec.ts` both fail if the wallboard ever gains a microphone.
 - `robots` metadata marks every page `noindex, nofollow`.
 
 ## Fail-closed configuration

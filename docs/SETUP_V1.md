@@ -13,7 +13,7 @@ reason.
 
 On the machine that will run the worker, and on your own computer if they differ:
 
-- **Node 22** (20 is the minimum; 22 is what Jarvis is built and tested against)
+- **Node 22** (22.13 is the minimum — `pdfjs-dist` requires it — and 22 LTS is what Jarvis is built and tested against)
 - **git**, on the PATH
 - A checkout of this repository, and `npm install` inside it
 

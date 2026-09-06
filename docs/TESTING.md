@@ -16,9 +16,9 @@ Nothing is skipped or weakened to make the gate pass. If a check fails, the phas
 
 | Layer       | Runner                         | Runs against                                                                                                            | Location             | Tests |
 | ----------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------- | ----- |
-| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                                 | `tests/unit/`        | 555   |
-| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL, plus the real worker against a local git sandbox | `tests/integration/` | 114   |
-| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport                 | `tests/e2e/`         | 44    |
+| Unit        | Vitest (`unit` project)        | Pure functions — no I/O                                                                                                 | `tests/unit/`        | 1166  |
+| Integration | Vitest (`integration` project) | The real services and repositories on a migrated in-memory PostgreSQL, plus the real worker against a local git sandbox | `tests/integration/` | 426   |
+| End-to-end  | Playwright                     | The real application, a mock GitHub API and the test-auth endpoint, at a desktop and an iPhone viewport                 | `tests/e2e/`         | 67    |
 | Live        | Vitest (`live` project)        | A real Claude session on the owner's own subscription. **Opt-in, and it spends real capacity**                          | `tests/live/`        | 5     |
 
 Individually:

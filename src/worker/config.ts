@@ -218,7 +218,7 @@ export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): Work
   }
   if (!env.JARVIS_WORKER_TOKEN) {
     throw new ConfigurationError(
-      'JARVIS_WORKER_TOKEN must be set. Enrol a worker in Jarvis under Settings → Workers to get one.',
+      'JARVIS_WORKER_TOKEN must be set. Open Workers in Jarvis and press Enrol to get one.',
     );
   }
   let controlPlaneUrl: string;

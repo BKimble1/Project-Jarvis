@@ -6,7 +6,16 @@ On the machine that has your Claude login, in the checkout:
 npm run jarvis:live
 ```
 
-Then open <http://127.0.0.1:3000>. Jarvis fills the screen: the core in the middle says what it is
+Then open <http://localhost:3000> — that exact spelling, because it is the origin GitHub redirects
+back to and the host the session cookie is set on. `127.0.0.1` is the same machine and a different
+origin, so signing in there leaves you signed out here.
+
+**The very first time** there is no worker token yet, so `npm run jarvis:live` starts the control
+plane on its own and says so. Sign in, open **Workers**, press **Enrol**, put the token it shows
+once into `.env.local` as `JARVIS_WORKER_TOKEN`, then Ctrl-C and run it again. From then on both
+halves come up together.
+
+Jarvis fills the screen: the core in the middle says what it is
 doing, your projects are on the left, what needs you is on the right, numbered. Reply in the box
 along the bottom: **"do the first one"**, **"continue"**, **"not tonight"**, or
 **"remember that …"**. Press **Speak** to say it instead.

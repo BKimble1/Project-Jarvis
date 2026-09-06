@@ -15,7 +15,7 @@ winget install Git.Git
 Check the versions in a **new** terminal (so the PATH refresh takes effect):
 
 ```powershell
-node --version    # v20.11+ ; v22.x recommended
+node --version    # v22.13+ ; v22.x LTS is what Jarvis is built and tested against
 npm --version     # 10+
 git --version
 ```
