@@ -45,6 +45,7 @@ async function environmentHandedToTheAgent(
       loggedIn: true,
       authMethod: 'oauth_token',
       apiProvider: 'firstParty',
+      subscriptionType: null,
       observedAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
       source: 'claude auth status --json',
     }),

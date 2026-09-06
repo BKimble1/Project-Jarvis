@@ -31,11 +31,27 @@ const REAL_PAYLOAD = readFileSync(
   'utf8',
 );
 
+/**
+ * The payload a current Claude Code reports for a subscription login, sanitised.
+ *
+ * This is the shape that broke the worker: the same login, reporting the *account* it was made
+ * against (`claude.ai`) rather than the mechanism (`oauth_token`), and Jarvis called it
+ * unrecognised and stopped. The captured payload also carried an email address, an organisation id
+ * and an organisation name; those are replaced with placeholders here, because a fixture that
+ * carries an owner's identity into the repository is its own kind of leak — and because the
+ * assertions below need to prove those fields are dropped, which only works if they are present.
+ */
+const CLAUDE_AI_PAYLOAD = readFileSync(
+  fileURLToPath(new URL('../fixtures/claude-auth-status-claude-ai.json', import.meta.url)),
+  'utf8',
+);
+
 function observation(overrides: Partial<ClaudeAuthObservation> = {}): ClaudeAuthObservation {
   return {
     loggedIn: true,
     authMethod: 'oauth_token',
     apiProvider: 'firstParty',
+    subscriptionType: null,
     observedAt: NOW.toISOString(),
     source: CLAUDE_AUTH_COMMAND,
     ...overrides,
@@ -67,6 +83,43 @@ describe('reading what Claude Code reports', () => {
       'loggedIn',
       'observedAt',
       'source',
+      'subscriptionType',
+    ]);
+  });
+
+  /*
+   * The regression. A current Claude Code reports the account a login was made against rather than
+   * the mechanism behind it, and the parse must carry that word through verbatim — the decision
+   * about what it means belongs one layer up, where it can be read.
+   */
+  it('parses a claude.ai subscription login and keeps the plan name', () => {
+    const parsed = parseClaudeAuthStatus(CLAUDE_AI_PAYLOAD, NOW);
+    expect(parsed?.loggedIn).toBe(true);
+    expect(parsed?.authMethod).toBe('claude.ai');
+    expect(parsed?.apiProvider).toBe('firstParty');
+    expect(parsed?.subscriptionType).toBe('max');
+  });
+
+  /*
+   * The newer payload carries more than the old one did: an email address, an organisation id and
+   * an organisation name. A plan name is a bare word and says nothing about who the owner is; the
+   * rest identify them, and none of it is needed to answer "which kind of login is this".
+   */
+  it('drops the identity the newer payload carries', () => {
+    const parsed = parseClaudeAuthStatus(CLAUDE_AI_PAYLOAD, NOW);
+    const serialised = JSON.stringify(parsed);
+    expect(serialised).not.toMatch(/@[a-z0-9.-]+\.[a-z]{2,}/i);
+    expect(serialised).not.toContain('orgId');
+    expect(serialised).not.toContain('00000000-0000');
+    expect(serialised).not.toContain('Organization');
+    expect(serialised).not.toMatch(/\/(home|Users)\//);
+    expect(Object.keys(parsed ?? {}).sort()).toEqual([
+      'apiProvider',
+      'authMethod',
+      'loggedIn',
+      'observedAt',
+      'source',
+      'subscriptionType',
     ]);
   });
 
@@ -131,6 +184,100 @@ describe('deciding which credential is in force', () => {
     expect(verdict.usable).toBe(true);
     expect(verdict.bills).toBe('subscription');
     expect(verdict.remedy).toBeNull();
+  });
+
+  /*
+   * The bug, at the level where it was visible: an enrolled worker heartbeating "Claude Code
+   * reports an authentication method Jarvis does not recognise ("claude.ai")" while sitting on a
+   * perfectly good Max subscription. `claude.ai` is the account the login was made against, not a
+   * different kind of credential.
+   */
+  it('accepts a claude.ai login as the subscription it is', () => {
+    const verdict = resolveClaudeAuth({
+      configured: 'subscription',
+      apiKeyPresent: false,
+      observation: observation({ authMethod: 'claude.ai', subscriptionType: 'max' }),
+    });
+    expect(verdict.mode).toBe('subscription');
+    expect(verdict.usable).toBe(true);
+    expect(verdict.bills).toBe('subscription');
+    expect(verdict.remedy).toBeNull();
+    /* And it names the plan, so an owner can see which subscription is paying. */
+    expect(verdict.reason).toContain('max');
+  });
+
+  it('accepts a claude.ai login that reports no plan at all', () => {
+    const verdict = resolveClaudeAuth({
+      configured: 'subscription',
+      apiKeyPresent: false,
+      observation: observation({ authMethod: 'claude.ai', subscriptionType: null }),
+    });
+    expect(verdict.usable).toBe(true);
+    expect(verdict.mode).toBe('subscription');
+  });
+
+  /* The older mechanism-shaped value still means the same thing, and must keep working. */
+  it('still accepts the oauth_token form the older Claude Code reported', () => {
+    const verdict = resolveClaudeAuth({
+      configured: 'subscription',
+      apiKeyPresent: false,
+      observation: observation({ authMethod: 'oauth_token' }),
+    });
+    expect(verdict.mode).toBe('subscription');
+    expect(verdict.usable).toBe(true);
+  });
+
+  /*
+   * The trap in widening the check. `console.anthropic.com` is also an OAuth login, and reading it
+   * as a subscription would put per-token invoices on exactly the worker whose owner asked not to
+   * have any.
+   */
+  it('treats an API-console login as a key, not as a subscription', () => {
+    const verdict = resolveClaudeAuth({
+      configured: 'subscription',
+      apiKeyPresent: false,
+      observation: observation({ authMethod: 'console.anthropic.com' }),
+    });
+    expect(verdict.mode).toBe('api_key');
+    expect(verdict.usable).toBe(false);
+    expect(verdict.bills).toBe('api');
+  });
+
+  /* Widening the recognised set does not widen it to everything. */
+  it('still refuses a claude.ai login when a stray key would bill the API instead', () => {
+    const verdict = resolveClaudeAuth({
+      configured: 'subscription',
+      apiKeyPresent: true,
+      observation: observation({ authMethod: 'claude.ai', subscriptionType: 'max' }),
+    });
+    expect(verdict.usable).toBe(false);
+    expect(verdict.mode).toBe('unknown');
+    expect(verdict.reason).toMatch(/would take precedence and bill/);
+  });
+
+  it('does not read a plan name as evidence of a login it cannot identify', () => {
+    const verdict = resolveClaudeAuth({
+      configured: 'subscription',
+      apiKeyPresent: false,
+      observation: observation({ authMethod: 'something_new', subscriptionType: 'max' }),
+    });
+    expect(verdict.usable).toBe(false);
+    expect(verdict.mode).toBe('unknown');
+    expect(verdict.bills).toBe('unknown');
+  });
+
+  /* The end-to-end shape: the real command's output, through the parser, into a verdict. */
+  it('takes the real claude.ai payload all the way to a usable subscription verdict', () => {
+    const parsed = parseClaudeAuthStatus(CLAUDE_AI_PAYLOAD, NOW);
+    const verdict = resolveClaudeAuth({
+      configured: 'subscription',
+      apiKeyPresent: false,
+      observation: parsed,
+    });
+    expect(verdict.usable).toBe(true);
+    expect(verdict.mode).toBe('subscription');
+    expect(verdict.bills).toBe('subscription');
+    expect(describeClaudeAuth(verdict)).not.toMatch(/does not recognise/);
   });
 
   /*
