@@ -292,6 +292,7 @@ describe('what a subscription run reports as cost', () => {
           loggedIn: true,
           authMethod: 'oauth_token',
           apiProvider: 'firstParty',
+          subscriptionType: null,
           observedAt: NOW.toISOString(),
           source: 'claude auth status --json',
         }),

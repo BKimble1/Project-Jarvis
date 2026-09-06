@@ -56,7 +56,17 @@ describe('the real Claude credential on this machine', () => {
       'loggedIn',
       'observedAt',
       'source',
+      'subscriptionType',
     ]);
+
+    /*
+     * And nothing identifying came with them. The current payload carries an email address, an
+     * organisation id and an organisation name; a live run is the only place a regression that
+     * started keeping one of those would ever show up.
+     */
+    const serialised = JSON.stringify(observation);
+    expect(serialised).not.toMatch(/@[a-z0-9.-]+\.[a-z]{2,}/i);
+    expect(serialised).not.toMatch(/\/(home|Users)\//);
   });
 
   it('resolves to a subscription, and says who pays', async () => {

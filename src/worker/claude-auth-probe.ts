@@ -22,9 +22,10 @@ const run = promisify(execFile);
  * questions, two answers, and conflating them is how an owner ends up unable to tell why Jarvis
  * thinks it is on an API key.
  *
- * **Nothing from stdout is kept except three fields.** The command also returns a projects
- * directory, which is a filesystem path and none of Jarvis's business. Parsing narrowly rather
- * than storing the payload is what keeps that true as the command's output grows.
+ * **Nothing from stdout is kept except four fields.** The command also returns a projects
+ * directory, the signed-in email address, and an organisation id and name — a path, an identity,
+ * and an account Jarvis has no business recording. Parsing narrowly rather than storing the
+ * payload is what keeps that true as the command's output grows.
  */
 
 export const CLAUDE_AUTH_COMMAND = 'claude auth status --json';
@@ -88,7 +89,7 @@ export async function observeClaudeAuth(
 }
 
 /**
- * Parse the command's JSON into the three fields Jarvis keeps.
+ * Parse the command's JSON into the four fields Jarvis keeps.
  *
  * Exported so a test can pin the shape against a real payload without spawning anything, and so
  * the narrowing is visible in one place rather than buried in the probe.
@@ -110,6 +111,13 @@ export function parseClaudeAuthStatus(stdout: string, now: Date): ClaudeAuthObse
     loggedIn,
     authMethod: typeof record.authMethod === 'string' ? record.authMethod : null,
     apiProvider: typeof record.apiProvider === 'string' ? record.apiProvider : null,
+    /*
+     * The plan name, when the command reports one. It is a bare enum-like word — `max`, `pro` —
+     * carrying no identity, and it is what lets the verdict tell an owner *which* subscription is
+     * paying rather than just that one is. Absent on logins that do not report it, and never
+     * required: `authMethod` alone decides the verdict, this only enriches the sentence.
+     */
+    subscriptionType: typeof record.subscriptionType === 'string' ? record.subscriptionType : null,
     observedAt: now.toISOString(),
     source: CLAUDE_AUTH_COMMAND,
   };

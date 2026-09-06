@@ -41,10 +41,10 @@ export const CLAUDE_AUTH_MODE_LABELS: Record<ClaudeAuthMode, string> = {
 /**
  * What a supported Claude Code command reported about the stored login.
  *
- * Exactly three fields are kept from it. `claude auth status --json` also returns a projects
- * directory, which is a filesystem path and therefore none of Jarvis's business — a path is not
- * needed to answer "which kind of login is this", and carrying one would be the beginning of
- * carrying transcripts.
+ * Only the four fields below are kept from it. The command also returns a projects directory, an
+ * email address, an organisation id and an organisation name. None of those are needed to answer
+ * "which kind of login is this" — a path is the beginning of carrying transcripts, and an email is
+ * the beginning of carrying an identity — so none of them are read.
  */
 export interface ClaudeAuthObservation {
   readonly loggedIn: boolean;
@@ -52,6 +52,11 @@ export interface ClaudeAuthObservation {
   readonly authMethod: string | null;
   /** e.g. `firstParty`, `bedrock`, `vertex`. */
   readonly apiProvider: string | null;
+  /**
+   * e.g. `max`, `pro`. Corroborates a subscription login and names it in the sentence an owner
+   * reads; never required, because a login that reports no plan is still a login.
+   */
+  readonly subscriptionType: string | null;
   readonly observedAt: string;
   /** The command this came from, so a wrong reading can be traced to a wrong reader. */
   readonly source: string;
@@ -70,15 +75,47 @@ export interface ClaudeAuthVerdict {
   readonly remedy: string | null;
 }
 
-/** Auth methods that mean a Claude Code login rather than a key. */
-function isOauthMethod(method: string | null): boolean {
-  return method !== null && method.toLowerCase().includes('oauth');
-}
-
+/**
+ * Auth methods that bill an API account per token.
+ *
+ * `console.anthropic.com` belongs here even though it is an OAuth login: it is a login to the API
+ * console, and it invoices. Deciding subscription-versus-key on the word "oauth" alone would put
+ * it on the wrong side of the only distinction this module exists to draw.
+ */
 function isKeyMethod(method: string | null): boolean {
   if (method === null) return false;
-  const lower = method.toLowerCase();
-  return lower.includes('api_key') || lower.includes('apikey');
+  const lower = method.trim().toLowerCase();
+  return (
+    lower.includes('api_key') || lower.includes('apikey') || lower.includes('console.anthropic.com')
+  );
+}
+
+/**
+ * Auth methods that mean a Claude Code login drawing on a subscription.
+ *
+ * Claude Code does not report one fixed string here, and assuming it did is what broke this. A
+ * login made through the browser flow reports the *account* it was made against — `claude.ai` —
+ * while other builds report the *mechanism*, `oauth_token`. They are the same kind of credential
+ * and neither is invoiced per token, so both are recognised.
+ *
+ * The list is closed on purpose. Anything not on it stays unknown and the worker stays stopped:
+ * an owner told "Jarvis does not recognise this" can go and look, whereas an owner whose
+ * unrecognised login was optimistically read as free finds out from a bill.
+ */
+const SUBSCRIPTION_METHODS: ReadonlySet<string> = new Set([
+  'claude.ai',
+  'claudeai',
+  'claude_ai',
+  'claude-ai',
+  'subscription',
+]);
+
+function isSubscriptionMethod(method: string | null): boolean {
+  if (method === null) return false;
+  const lower = method.trim().toLowerCase();
+  /* Checked first so an API-console OAuth login can never be read as a subscription. */
+  if (isKeyMethod(lower)) return false;
+  return SUBSCRIPTION_METHODS.has(lower) || lower.includes('oauth');
 }
 
 /**
@@ -169,7 +206,7 @@ export function resolveClaudeAuth(input: {
     };
   }
 
-  if (!isOauthMethod(input.observation.authMethod)) {
+  if (!isSubscriptionMethod(input.observation.authMethod)) {
     return {
       mode: 'unknown',
       usable: false,
@@ -185,6 +222,8 @@ export function resolveClaudeAuth(input: {
     usable: true,
     bills: 'subscription',
     reason: `Signed in to Claude Code with a subscription login${
+      input.observation.subscriptionType ? ` (${input.observation.subscriptionType})` : ''
+    }${
       input.observation.apiProvider ? ` on ${input.observation.apiProvider}` : ''
     }. Model work draws on the subscription rather than being invoiced per token.`,
     remedy: null,
