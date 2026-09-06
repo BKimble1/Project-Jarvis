@@ -7,6 +7,7 @@ import { FakeSourceProvider } from './fake-provider';
 import { FakeUrlFetcher } from './fake-url-fetcher';
 import type { EmbeddingProvider } from '@/domain/embedding';
 import type { AnswerProvider } from '@/server/ask/answer-provider';
+import type { RepositoryProvisioner } from '@/server/providers/github/provisioner';
 
 /**
  * A fully wired service graph backed by a migrated in-memory PostgreSQL database and a fake
@@ -42,6 +43,13 @@ export async function createHarness(
      * it did not ask for.
      */
     answerProvider?: AnswerProvider;
+    /**
+     * Replaces the repository provisioner.
+     *
+     * Omitted means the real one with no credential, which creates nothing — the safe default for
+     * a suite that must never reach somebody's GitHub account.
+     */
+    repositoryProvisioner?: RepositoryProvisioner;
   } = {},
 ): Promise<TestHarness> {
   const { db, close } = await createTestDatabase();
@@ -53,6 +61,9 @@ export async function createHarness(
     urlFetcher,
     ...(options.embeddings !== undefined ? { embeddings: options.embeddings } : {}),
     ...(options.answerProvider ? { answerProvider: options.answerProvider } : {}),
+    ...(options.repositoryProvisioner
+      ? { repositoryProvisioner: options.repositoryProvisioner }
+      : {}),
     ...(options.narrator ? { narrator: options.narrator } : {}),
     ...(options.clock ? { clock: options.clock } : {}),
   });

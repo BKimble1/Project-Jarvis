@@ -31,6 +31,12 @@ export const QUERY_INTENTS = [
   'mission_detail',
   'mission_command',
   'prohibited_request',
+  /* Conversation (AUT): the readings that are not questions and are not missions. */
+  'idea',
+  'follow_up',
+  'memory_capture',
+  'declined',
+  'pace_preference',
   'unsupported',
 ] as const;
 export type QueryIntent = (typeof QUERY_INTENTS)[number];

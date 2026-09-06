@@ -57,6 +57,12 @@ export const WORKER_ONLY_SECRETS = [
   'GITHUB_TOKEN',
   'GH_TOKEN',
   'GITHUB_READ_TOKEN',
+  /*
+   * The one credential that can create a repository. A coding agent has no business holding it:
+   * everything it does happens inside a repository that already exists, and a repository created
+   * by mistake is the only outward-visible thing here that reverting a commit cannot undo.
+   */
+  'GITHUB_PROVISION_TOKEN',
   'JARVIS_CI_GITHUB_TOKEN',
   'SESSION_SECRET',
   'CRON_SECRET',

@@ -91,6 +91,9 @@ export const CAPABILITY_CLASSES = [
   'analytics.read',
   'project.status.update',
 
+  /* Making somewhere for new work to live. */
+  'repository.create',
+
   /* Changing code, inside a branch Jarvis owns. */
   'code.change',
   'test.add',
@@ -227,6 +230,26 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     true,
     'nothing',
     'scheduled_evidence_refresh',
+    ['projects'],
+  ),
+  DEF(
+    'repository.create',
+    'Create a repository',
+    'Create a new private repository on your GitHub account for a project Jarvis is starting. Never makes one public, and never touches a repository that already exists.',
+    true,
+    'repository',
+    'github_write',
+    /*
+     * Scoped by project and by nothing else, because there is nothing else yet.
+     *
+     * Every other repository capability is confined to repositories the owner named, which works
+     * because those repositories exist to be named. A repository that is about to be created
+     * cannot be, so confining this to a repository list would either be theatre or would make the
+     * capability impossible to use. The honest scope is the project the repository is being made
+     * for — and for the case this exists to serve, an idea that has just become a project, that
+     * means the grant has to read `projects: *`. The meaning above says so in the owner's words,
+     * because a grant whose real reach is wider than it looks is worse than no grant at all.
+     */
     ['projects'],
   ),
   DEF(

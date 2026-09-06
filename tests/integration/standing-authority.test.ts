@@ -1198,6 +1198,58 @@ describe('standing authority', () => {
     }
 
     /*
+     * The change that removed the clicks.
+     *
+     * Blake asks for something by talking to the dashboard. A mission is created, a worker plans
+     * it, and until this existed the mission then stopped: `awaiting_plan_approval`, waiting for
+     * somebody to open Mission Control and press a button — the administration screen he said
+     * ordinary use should never require. `advanceOwnWork` deliberately skipped it, because a
+     * mission a person created used to be considered theirs to approve.
+     *
+     * He has since granted standing authority over his own requests, so the operator now offers
+     * those plans to the charter too. What is asserted here is that it advances *and* that the
+     * charter is still the thing that decided: the mission is not touched by an owner approval
+     * anywhere in this test.
+     */
+    it('advances a mission the owner asked for, with no owner approval', async () => {
+      await operatingAtLiveRead();
+      const { missionId } = await readyMission('project_review');
+
+      const before = await harness.services.missionRepo.findById(missionId);
+      expect(before?.state).toBe('awaiting_plan_approval');
+      /* Nobody's work but his: no opportunity record points at this mission. */
+      const opportunities = await harness.services.opportunities.listByState(['taken']);
+      expect(opportunities.some((record) => record.missionId === missionId)).toBe(false);
+
+      const result = await harness.services.operatorService.tick();
+      expect(result.outcome).not.toBe('held');
+
+      const after = await harness.services.missionRepo.findById(missionId);
+      expect(after?.state, 'the mission should no longer be waiting on a click').not.toBe(
+        'awaiting_plan_approval',
+      );
+      expect(after?.approvedPlanVersion).toBe(before?.currentPlanVersion);
+    });
+
+    /*
+     * The other half, and the reason the first half is safe.
+     *
+     * Widening *which* missions are offered to the charter must not widen the answer. With no
+     * charter in force there is nothing granting anything, so the same mission stays exactly where
+     * it was — and it stays there rather than being refused outright, because the owner is the
+     * fallback authority and a mission waiting for them is a useful outcome.
+     */
+    it('leaves an owner request waiting when the charter authorises nothing', async () => {
+      const { missionId } = await readyMission('project_review');
+
+      await harness.services.operatorService.tick();
+
+      const after = await harness.services.missionRepo.findById(missionId);
+      expect(after?.state).toBe('awaiting_plan_approval');
+      expect(after?.approvedPlanVersion).toBeNull();
+    });
+
+    /*
      * The composition, stated plainly.
      *
      * A charter is the owner saying yes. It is not, and must never become, evidence that the

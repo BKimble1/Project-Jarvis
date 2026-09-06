@@ -11,6 +11,7 @@ import {
   type VoiceCapture,
 } from '@/domain/voice';
 import type { MemoryService, CaptureResult } from '@/server/knowledge/memory-service';
+import type { ConversationService } from '@/server/conversation/conversation-service';
 import type { StatusQueryRouter } from '@/server/query/router';
 import type { VoiceRepository } from '@/server/repositories/automation-types';
 
@@ -44,6 +45,14 @@ export interface VoiceServiceDeps {
   readonly voice: VoiceRepository;
   readonly memories: MemoryService;
   readonly router: StatusQueryRouter;
+  /**
+   * Where a confirmed spoken request goes.
+   *
+   * Optional so the voice service can still be constructed without it — the whole conversational
+   * half of Jarvis is not needed to save a note or answer a question — and when it is absent a
+   * spoken request is handed back to the screen rather than silently dropped.
+   */
+  readonly conversation?: ConversationService;
   readonly clock?: () => Date;
 }
 
@@ -59,6 +68,13 @@ export interface VoiceSubmission {
 
 export type VoiceOutcome =
   | { readonly kind: 'answer'; readonly said: string; readonly href: string | null }
+  /** Work that is now under way, with somewhere to look at it. */
+  | {
+      readonly kind: 'started';
+      readonly said: string;
+      readonly href: string | null;
+      readonly missionId: string | null;
+    }
   | { readonly kind: 'note'; readonly said: string; readonly href: string | null }
   | { readonly kind: 'refused'; readonly said: string }
   | { readonly kind: 'draft'; readonly said: string; readonly text: string };
@@ -191,11 +207,41 @@ export class VoiceService {
       return { kind: 'answer', said: answer.summary, href: answer.href };
     }
 
-    if (intent === 'mission_draft' || intent === 'project_update') {
+    if (intent === 'mission_draft') {
       /*
-       * Handed back rather than acted on. Both of these change something, and both already have a
-       * screen where that change is reviewed — a spoken sentence is where the request starts, not
-       * where it is agreed.
+       * Started, not handed back — with the read-back that already happened standing in for the
+       * misrecognition check it was always for. This is where the owner's instruction lands: a
+       * spoken request now goes through exactly the path a typed one does, and the charter decides
+       * whether it runs, which is what an authority is for. What voice still cannot do is approve
+       * a plan, a merge or a release; `assertNotSelfApproving` ran before this was called.
+       */
+      if (!this.deps.conversation) {
+        return {
+          kind: 'draft',
+          said: 'This Jarvis is running without the conversational half, so that has been put in the box for you instead. Nothing has started.',
+          text,
+        };
+      }
+      const turn = await this.deps.conversation.handle({
+        message: text,
+        ownerLogin: actor.actor,
+      });
+      const said = turn.notes.length > 0 ? `${turn.said} ${turn.notes.join(' ')}` : turn.said;
+      /*
+       * `started` only when something actually was. The conversation service returns an answer
+       * instead when it cannot place the work — most often "which project did you mean?" — and
+       * reporting that as a start would be the exact dishonesty this whole surface is trying to
+       * avoid. The recording shows what happened, not what was hoped for.
+       */
+      if (!turn.started) return { kind: 'answer', said, href: turn.href };
+      return { kind: 'started', said, href: turn.href, missionId: turn.started.missionId };
+    }
+
+    if (intent === 'project_update') {
+      /*
+       * Still handed back. This one writes to a project's own record — a blocker, a decision, a
+       * date — and there is a screen for that where the change is visible beside what it replaces.
+       * Nothing in the owner's instruction was about this path.
        */
       return {
         kind: 'draft',

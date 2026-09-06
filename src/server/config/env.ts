@@ -55,6 +55,19 @@ const rawSchema = z.object({
   GITHUB_OAUTH_CLIENT_ID: z.string().trim().optional(),
   GITHUB_OAUTH_CLIENT_SECRET: z.string().trim().optional(),
   GITHUB_READ_TOKEN: z.string().trim().optional(),
+  /**
+   * The one credential that can create a repository, and nothing Jarvis already had.
+   *
+   * Deliberately separate from `GITHUB_READ_TOKEN`, which is documented read-only and enforced
+   * read-only in the client, and from the worker's push token, which is scoped to repositories
+   * that already exist. Creating a repository is the only outward-visible thing in this codebase
+   * that cannot be undone by reverting a commit, so it gets its own variable: leaving it unset is
+   * how an installation says "never create anything on my account", and that has to be the
+   * default rather than a setting somebody has to find.
+   */
+  GITHUB_PROVISION_TOKEN: z.string().trim().optional(),
+  /** The account new repositories are created under. Blank means the token's own user. */
+  GITHUB_PROVISION_OWNER: z.string().trim().optional(),
   GITHUB_API_BASE_URL: z.string().trim().default('https://api.github.com'),
 
   DATABASE_URL: z.string().trim().optional(),
@@ -241,6 +254,9 @@ export interface AppConfig {
   readonly owner: { readonly githubLogin: string | null; readonly githubUserId: string | null };
   readonly githubOAuth: { readonly clientId: string; readonly clientSecret: string } | null;
   readonly githubReadToken: string | null;
+  /** Set only when this installation is allowed to create repositories. */
+  readonly githubProvisionToken: string | null;
+  readonly githubProvisionOwner: string | null;
   readonly githubApiBaseUrl: string;
   readonly database: {
     readonly driver: 'neon' | 'pg' | 'pglite';
@@ -534,6 +550,8 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
         }
       : null,
     githubReadToken: env.GITHUB_READ_TOKEN ?? null,
+    githubProvisionToken: env.GITHUB_PROVISION_TOKEN ?? null,
+    githubProvisionOwner: env.GITHUB_PROVISION_OWNER ?? null,
     githubApiBaseUrl: env.GITHUB_API_BASE_URL.replace(/\/+$/, ''),
     database: {
       driver,

@@ -30,6 +30,12 @@ import type { BriefingNarrator } from '@/server/briefing/types';
 import { BriefingService } from '@/server/services/briefing-service';
 import { ProjectSyncService } from '@/server/services/sync-service';
 import { GithubImportService } from '@/server/services/import-service';
+import { ProjectProvisioningService } from '@/server/services/project-provisioning';
+import {
+  GithubRepositoryProvisioner,
+  type RepositoryProvisioner,
+} from '@/server/providers/github/provisioner';
+import { ConversationService } from '@/server/conversation/conversation-service';
 import { AttentionService } from '@/server/services/attention-service';
 import {
   DrizzleAppProfileRepository,
@@ -211,6 +217,8 @@ export interface Services {
   readonly briefings: BriefingService;
   readonly sync: ProjectSyncService;
   readonly imports: GithubImportService;
+  readonly provisioning: ProjectProvisioningService;
+  readonly conversation: ConversationService;
   readonly attention: AttentionService;
   readonly router: StatusQueryRouter;
   readonly voiceService: VoiceService;
@@ -325,6 +333,14 @@ export interface BuildServicesOverrides {
    * without a network and without pretending a model is configured when none is.
    */
   readonly answerProvider?: AnswerProvider;
+  /**
+   * Replaces the thing that creates repositories.
+   *
+   * Overridable so a test can watch what would have been created on somebody's GitHub account
+   * without creating it. The default reads `GITHUB_PROVISION_TOKEN` and is inert without one, so
+   * a test that forgets to override it makes nothing rather than reaching the network.
+   */
+  readonly repositoryProvisioner?: RepositoryProvisioner;
 }
 
 export function buildServices(
@@ -383,6 +399,16 @@ export function buildServices(
   });
 
   const imports = new GithubImportService({ projects, sources, provider, sync, activity });
+  /*
+   * Its own credential and its own object, because the source provider is read-only by
+   * construction and that is worth keeping. See `provisioner.ts`.
+   */
+  const provisioning = new ProjectProvisioningService({
+    projects,
+    sources,
+    activity,
+    provisioner: overrides.repositoryProvisioner ?? new GithubRepositoryProvisioner({ config }),
+  });
   const attention = new AttentionService({ projects, briefings });
 
   /* ------------------------------------------------------- Mission Control */
@@ -807,6 +833,26 @@ export function buildServices(
   });
 
   /*
+   * The conversational front door, assembled from the services above rather than owning anything.
+   * It is deliberately built here, after the router and the mission service, because those two are
+   * what it is: a question goes to one, a request goes to the other, and the charter decides what
+   * happens next.
+   */
+  const conversation = new ConversationService({
+    router,
+    missions,
+    projects,
+    provisioning,
+    authority: async () => {
+      const active = await charterService.authority();
+      return {
+        standingAuthority: active.standingAuthority,
+        blockedReason: active.blockedReason,
+      };
+    },
+  });
+
+  /*
    * After the router, because speaking a question is answering a question — the same router, the
    * same evidence, the same refusals. A second answering path reachable only by voice would be a
    * second set of rules, and the one nobody is looking at is the one that drifts.
@@ -815,6 +861,12 @@ export function buildServices(
     voice,
     memories: memoryService,
     router,
+    /*
+     * So a spoken request goes exactly where a typed one goes. The read-back stays — it is the
+     * misrecognition check, and speech genuinely needs one — but what happens after it is confirmed
+     * is now the same path, decided by the same charter.
+     */
+    conversation,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -835,6 +887,8 @@ export function buildServices(
     briefings,
     sync,
     imports,
+    provisioning,
+    conversation,
     attention,
     router,
     sessions: new SessionStore(db),

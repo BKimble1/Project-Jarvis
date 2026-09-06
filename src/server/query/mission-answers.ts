@@ -5,7 +5,8 @@ import {
   type Mission,
   type MissionState,
 } from '@/domain/mission';
-import { classifyIntake, deriveMissionTitle } from '@/domain/mission-intake';
+import { deriveMissionTitle } from '@/domain/mission-intake';
+import { interpretMessage, type Interpretation } from '@/domain/interpretation';
 import { assessProjectGate } from '@/domain/mission-clarification';
 import type { AnswerItem, MissionPreview, QueryAnswer, QueryIntent } from '@/domain/query';
 import type { Project } from '@/domain/project';
@@ -378,8 +379,18 @@ export function answerExecutionRequest(
   raw: string,
   scopedProject: Project | null,
   projectHint: string | null,
+  /*
+   * What the request was already understood to be.
+   *
+   * Passed in rather than worked out again. This function used to call `classifyIntake`, which is
+   * a second classifier with its own ordering, so one request was read twice by two functions that
+   * could disagree — and did, which is how a sentence the router had decided was work arrived here
+   * and was re-read as a status query. There is now one reading per request, made once at the top
+   * of the router. The default exists only for callers that have no reading to hand.
+   */
+  interpretation: Interpretation = interpretMessage(raw),
 ): QueryAnswer {
-  const intake = classifyIntake(raw);
+  const intake = interpretation;
 
   if (intake.kind === 'prohibited') {
     return {
@@ -475,8 +486,12 @@ export function answerExecutionRequest(
 }
 
 /** A mission-control phrase typed into the bar ("pause the OffRent mission"). */
-export function answerMissionCommand(context: MissionAnswerContext, raw: string): QueryAnswer {
-  const intake = classifyIntake(raw);
+export function answerMissionCommand(
+  context: MissionAnswerContext,
+  raw: string,
+  interpretation: Interpretation = interpretMessage(raw),
+): QueryAnswer {
+  const intake = interpretation;
   const subject = intake.subject;
   const candidates = subject
     ? context.missions.filter(

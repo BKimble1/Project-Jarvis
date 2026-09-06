@@ -2,6 +2,8 @@
 
 import * as React from 'react';
 
+import { chooseVoice, type VoiceChoice } from '@/domain/speaking-voice';
+
 /**
  * The browser's own speech recognition and synthesis, and nothing else.
  *
@@ -67,6 +69,8 @@ export interface SpeechState {
   readonly interim: string;
   readonly error: string | null;
   readonly voices: readonly { readonly name: string; readonly lang: string }[];
+  /** The voice that will actually speak, and how that was decided. */
+  readonly voiceChoice: VoiceChoice;
 }
 
 export interface SpeechControls extends SpeechState {
@@ -201,10 +205,33 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = speakOptions.rate ?? 1;
-      const chosen = window.speechSynthesis
-        .getVoices()
-        .find((voice) => voice.name === speakOptions.voice);
+
+      const installed = window.speechSynthesis.getVoices();
+      /*
+       * A name the owner picked wins outright; otherwise the British preference decides.
+       *
+       * `chooseVoice` is deliberately a pure function over the list rather than a lookup here, so
+       * the fallback order — George, then the other en-GB male voices, then any British voice, then
+       * the browser's own — is testable without a browser, and so the sentence shown in settings is
+       * generated from the same decision that picks the voice rather than written beside it.
+       */
+      const named = speakOptions.voice
+        ? installed.find((voice) => voice.name === speakOptions.voice)
+        : undefined;
+      const chosen =
+        named ?? installed.find((voice) => voice.name === chooseVoice(installed).voice?.name);
       if (chosen) utterance.voice = chosen;
+
+      /*
+       * A slightly slower, slightly lower delivery.
+       *
+       * Only applied when the caller did not ask for a rate. The default 1.0 on the Windows en-GB
+       * voices is a touch brisk for a sentence you are hearing rather than reading, and the pitch
+       * drop is what stops it sounding like a station announcement.
+       */
+      if (speakOptions.rate === undefined) utterance.rate = 0.96;
+      utterance.pitch = 0.95;
+
       utterance.onend = () => setPhase((current) => (current === 'speaking' ? 'idle' : current));
       utterance.onerror = () => setPhase('idle');
       setPhase('speaking');
@@ -212,6 +239,16 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
     },
     [canSpeak],
   );
+
+  /*
+   * Which voice this device will actually use, recomputed as voices arrive.
+   *
+   * `getVoices()` is famously empty on first call in Chrome and fills in asynchronously, which is
+   * why this is derived from the `voices` state the `voiceschanged` listener maintains rather than
+   * read directly. Exposed so the settings panel can say what will be heard instead of promising
+   * a voice the machine may not have.
+   */
+  const voiceChoice: VoiceChoice = React.useMemo(() => chooseVoice(voices), [voices]);
 
   const silence = React.useCallback(() => {
     if (!canSpeak) return;
@@ -227,6 +264,7 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
     interim,
     error,
     voices,
+    voiceChoice,
     start,
     stop,
     cancel,

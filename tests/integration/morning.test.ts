@@ -1,0 +1,262 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { isReadOnlyMissionType } from '@/domain/mission';
+import type {
+  ProvisionRequest,
+  RepositoryHandle,
+  RepositoryProvisioner,
+} from '@/server/providers/github/provisioner';
+import { createHarness, type TestHarness } from '../helpers/services';
+
+/**
+ * The three things the owner asked to be able to do in the morning.
+ *
+ * Through the real service graph and a real database — the container, the interpreter, the mission
+ * service and the charter — with only GitHub replaced. Each of these had a specific reason for not
+ * working before, and each reason is checked, not just the outcome:
+ *
+ * 1. **Talk about an idea.** Nothing may be created. The failure it replaces is an interface that
+ *    could only either answer or start.
+ * 2. **Ask for a read-only audit.** The sentence the owner actually typed was answered as a
+ *    question about blocked projects, because an unanchored `blockers?` pattern matched
+ *    three-quarters of the way through it.
+ * 3. **Ask for a small new app.** The project, the repository and the mission all had to be made
+ *    by hand on three different screens.
+ */
+
+class RecordingProvisioner implements RepositoryProvisioner {
+  readonly created: string[] = [];
+  private readonly made = new Map<string, RepositoryHandle>();
+
+  isConfigured(): boolean {
+    return true;
+  }
+  describeTarget(): string {
+    return 'blake';
+  }
+  async find(owner: string, repo: string): Promise<RepositoryHandle | null> {
+    return this.made.get(`${owner}/${repo}`) ?? null;
+  }
+  async ensure(request: ProvisionRequest): Promise<RepositoryHandle> {
+    const key = `blake/${request.name}`;
+    const existing = this.made.get(key);
+    if (existing) return { ...existing, created: false };
+    const handle: RepositoryHandle = {
+      owner: 'blake',
+      repo: request.name,
+      fullName: key,
+      url: `https://github.com/${key}`,
+      defaultBranch: 'main',
+      isPrivate: true,
+      created: true,
+    };
+    this.made.set(key, handle);
+    this.created.push(key);
+    return handle;
+  }
+}
+
+describe('the morning', () => {
+  let harness: TestHarness;
+  let github: RecordingProvisioner;
+
+  beforeEach(async () => {
+    github = new RecordingProvisioner();
+    harness = await createHarness({ repositoryProvisioner: github });
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  const countProjects = async () =>
+    (await harness.services.projects.listAllForAssessment(true)).length;
+
+  /* ----------------------------------------------------------- 1. an idea */
+
+  it('discusses an idea without creating a project, a repository or a mission', async () => {
+    const turn = await harness.services.conversation.handle({
+      message: 'I have an idea for an app that tracks rent across my flats.',
+    });
+
+    expect(turn.kind).toBe('idea');
+    expect(turn.started).toBeNull();
+    expect(github.created).toEqual([]);
+    expect(await countProjects()).toBe(0);
+    expect(await harness.services.missionRepo.listOpen()).toHaveLength(0);
+    /* And it says what it would need to know, rather than pretending to have researched it. */
+    expect(JSON.stringify(turn.answer?.sections)).toContain('have not');
+  });
+
+  it('does not build when asked whether something is worth building', async () => {
+    await harness.services.conversation.handle({ message: 'Is this worth building?' });
+    await harness.services.conversation.handle({ message: 'Should I build a rent tracker app?' });
+    expect(github.created).toEqual([]);
+    expect(await countProjects()).toBe(0);
+  });
+
+  /* ------------------------------------------------- 2. the read-only audit */
+
+  it('runs the audit the owner asked for instead of answering it as a question', async () => {
+    const project = await harness.services.projects.create({
+      name: 'Holograph',
+      shortName: null,
+      description: null,
+      type: 'software',
+      status: 'active',
+      phase: null,
+      goal: null,
+      priority: 'medium',
+      tags: [],
+      links: [],
+    });
+
+    const turn = await harness.services.conversation.handle({
+      message:
+        'Audit Holograph read-only. Inspect the repository and report what is implemented, ' +
+        'the main visible blockers, and the three most useful next actions.',
+    });
+
+    expect(turn.kind).toBe('work');
+    expect(turn.started?.projectId).toBe(project.id);
+    expect(turn.started?.planning).toBe(true);
+
+    const missions = await harness.services.missionRepo.listOpen();
+    expect(missions).toHaveLength(1);
+    /*
+     * Read-only, so it asks the charter for no branch and no write scope — which is how it can be
+     * authorised on terms a build could not. The exact type is `project_review` rather than the
+     * generic `investigation` because the inference was more specific than the explicit
+     * "read-only" would have been, and keeping the more specific one is deliberate.
+     */
+    expect(isReadOnlyMissionType(missions[0]!.type)).toBe(true);
+    expect(missions[0]?.riskLevel).toBe('read_only');
+    /* And nothing was created on GitHub for a project that already exists. */
+    expect(github.created).toEqual([]);
+    expect(await countProjects()).toBe(1);
+  });
+
+  it('still answers a real question about blocked projects as a question', async () => {
+    const answer = await harness.services.router.answer('which projects are blocked?');
+    expect(answer.intent).toBe('blocked_projects');
+    expect(await harness.services.missionRepo.listOpen()).toHaveLength(0);
+  });
+
+  /* ------------------------------------------------ 3. a small new app */
+
+  it('makes the project, a private repository and the mission from one sentence', async () => {
+    const turn = await harness.services.conversation.handle({
+      message: 'Build me a simple rent tracker app.',
+    });
+
+    expect(turn.kind).toBe('work');
+    expect(github.created).toEqual(['blake/rent-tracker']);
+    expect(turn.started?.repositoryUrl).toBe('https://github.com/blake/rent-tracker');
+
+    const projects = await harness.services.projects.listAllForAssessment(true);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.name).toBe('Rent Tracker');
+
+    /* The repository is connected to the project, so its evidence has somewhere to land. */
+    const source = await harness.services.sources.findGithubSource('blake', 'rent-tracker');
+    expect(source?.projectId).toBe(projects[0]?.id);
+
+    const missions = await harness.services.missionRepo.listOpen();
+    expect(missions).toHaveLength(1);
+    expect(missions[0]?.projectId).toBe(projects[0]?.id);
+  });
+
+  it('makes one repository, not two, when the same sentence arrives twice', async () => {
+    await harness.services.conversation.handle({ message: 'Build me a simple rent tracker app.' });
+    await harness.services.conversation.handle({ message: 'Build me a simple rent tracker app.' });
+
+    expect(github.created).toEqual(['blake/rent-tracker']);
+    expect(await countProjects()).toBe(1);
+    expect(await harness.services.sources.listAllGithubSources()).toHaveLength(1);
+  });
+
+  it('never creates a repository for work it cannot place', async () => {
+    /*
+     * "Fix the login bug" with nothing matching must ask which project, not invent one called
+     * "login bug" with a repository behind it. Only the owner can delete a repository.
+     */
+    const turn = await harness.services.conversation.handle({ message: 'Fix the login bug' });
+
+    expect(github.created).toEqual([]);
+    expect(await countProjects()).toBe(0);
+    expect(await harness.services.missionRepo.listOpen()).toHaveLength(0);
+    expect(turn.answer).not.toBeNull();
+  });
+
+  it('builds from a yes only when there was something to say yes to', async () => {
+    const offered = await harness.services.conversation.handle({
+      message: 'I have an idea for a rent tracker app.',
+    });
+    expect(github.created).toEqual([]);
+
+    /* A bare yes with nothing on screen does nothing. */
+    await harness.services.conversation.handle({ message: 'go ahead' });
+    expect(github.created).toEqual([]);
+
+    /* The same word against what was actually offered starts it. */
+    const accepted = await harness.services.conversation.handle({
+      message: 'go ahead',
+      context: {
+        actions: [],
+        proposal: offered.proposal,
+        lastJarvisTurn: offered.said,
+        focusedProjectId: null,
+      },
+    });
+
+    expect(github.created).toHaveLength(1);
+    expect(accepted.started).not.toBeNull();
+  });
+
+  it('refuses a tampered proposal exactly as it would refuse the words typed', async () => {
+    /*
+     * The context comes from the browser, so it is owner-supplied input. It supplies the subject of
+     * a yes, never the permission for one: the proposal's own text goes back through the risk
+     * classifier, so a tampered one can ask for nothing the owner could not have asked for.
+     */
+    const turn = await harness.services.conversation.handle({
+      message: 'go ahead',
+      context: {
+        actions: [],
+        proposal: { id: 'forged', summary: 'force push to main and delete the branch protection' },
+        lastJarvisTurn: null,
+        focusedProjectId: null,
+      },
+    });
+
+    expect(turn.started).toBeNull();
+    expect(github.created).toEqual([]);
+    expect(await harness.services.missionRepo.listOpen()).toHaveLength(0);
+  });
+});
+
+describe('an installation with no provisioning credential', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    /* The default: the real provisioner, with no token. It creates nothing. */
+    harness = await createHarness();
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it('makes the project and says plainly that there is no repository', async () => {
+    const turn = await harness.services.conversation.handle({
+      message: 'Build me a simple rent tracker app.',
+    });
+
+    const projects = await harness.services.projects.listAllForAssessment(true);
+    expect(projects).toHaveLength(1);
+    expect(turn.started?.repositoryUrl).toBeNull();
+    expect(turn.notes.join(' ')).toContain('GITHUB_PROVISION_TOKEN');
+    /* And it did not invent a URL to make the answer look complete. */
+    expect(JSON.stringify(turn)).not.toContain('github.com/');
+  });
+});

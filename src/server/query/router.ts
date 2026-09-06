@@ -6,7 +6,13 @@ import type { BriefingService } from '@/server/services/briefing-service';
 import { groupAttention } from '@/server/services/attention-service';
 import type { ProjectRepository, QueryHistoryRepository } from '@/server/repositories/types';
 import type { MissionRepository, WorkerRepository } from '@/server/repositories/mission-types';
-import { classifyIntake, extractProjectHint } from '@/domain/mission-intake';
+import { extractProjectHint } from '@/domain/mission-intake';
+import {
+  EMPTY_CONTEXT,
+  interpretMessage,
+  type ConversationContext,
+  type Interpretation,
+} from '@/domain/interpretation';
 import { parseQuery, resolveProjectName, type QueryIntent } from './parser';
 import {
   answerExecutionRequest,
@@ -58,16 +64,41 @@ export class StatusQueryRouter {
     },
   ) {}
 
-  async answer(rawQuery: string): Promise<QueryAnswer> {
+  async answer(
+    rawQuery: string,
+    /*
+     * What was on screen when the person started composing.
+     *
+     * A snapshot, deliberately. "The second one" has to mean the second thing they read, not the
+     * second thing a poll produced while they were speaking it.
+     */
+    context: ConversationContext = EMPTY_CONTEXT,
+  ): Promise<QueryAnswer> {
     const parsed = parseQuery(rawQuery);
+    /*
+     * One reading of the message, made once and used everywhere below.
+     *
+     * `parseQuery` still runs, because it is good at deciding *which* question a question is. What
+     * it is not allowed to decide any more is whether there was a question at all.
+     */
+    const interpretation = interpretMessage(rawQuery, context);
     const projects = await this.deps.projects.listAllForAssessment(false);
 
+    /*
+     * The project the message is about.
+     *
+     * `parseQuery` finds it from the phrasings it knows; the interpreter finds it from the verb and
+     * the trailing prepositional phrase. Taking the parser first and the interpreter second is what
+     * stops "Focus on CoreCredit today" from losing CoreCredit — the `focus` rule is unscoped, so
+     * the parser returns no project for it at all.
+     */
+    const projectQuery = parsed.projectQuery ?? interpretation.subject;
     let scoped: Project | null = null;
     let disambiguation: QueryAnswer['disambiguation'] = null;
 
-    if (parsed.projectQuery) {
+    if (projectQuery) {
       const match = resolveProjectName(
-        parsed.projectQuery,
+        projectQuery,
         projects.map((project) => ({
           id: project.id,
           name: project.name,
@@ -90,7 +121,8 @@ export class StatusQueryRouter {
       projects,
       scoped,
       disambiguation,
-      parsed.projectQuery,
+      projectQuery,
+      interpretation,
     );
 
     await this.deps.history?.record({
@@ -146,6 +178,7 @@ export class StatusQueryRouter {
     scoped: Project | null,
     disambiguation: QueryAnswer['disambiguation'],
     projectQuery: string | null,
+    interpretation: Interpretation,
   ): Promise<QueryAnswer> {
     if (disambiguation && disambiguation.length > 0) {
       return {
@@ -162,11 +195,25 @@ export class StatusQueryRouter {
     }
 
     /*
-     * A mission-control phrase, a request that reads as work, or something prohibited. All three
-     * are answered without changing anything: the owner confirms on the mission screen.
+     * The interpretation is honoured *before* the status intent, and that ordering is the fix.
+     * `parseQuery` walks an ordered list and returns on the first hit, so an unanchored `blockers?`
+     * rule captured "Audit Holograph read-only … the main visible blockers …" and answered it as a
+     * question about blocked projects — three-quarters of the way through a sentence that opens
+     * with two imperative verbs. The intent it produced was not wrong about *which* question; it
+     * was wrong that there was a question at all. So `interpretMessage` decides the kind, and
+     * `parseQuery`'s intent is consulted only once the kind is known to be a question.
      */
-    const intake = classifyIntake(raw);
-    if (intent === 'execution_request' || intake.kind === 'prohibited') {
+    if (interpretation.kind === 'decline') return declineAnswer(interpretation);
+    if (interpretation.kind === 'memory') return memoryAnswer(interpretation);
+    if (interpretation.kind === 'idea') return ideaAnswer(interpretation, scoped);
+    if (interpretation.kind === 'follow_up') return followUpAnswer(interpretation);
+    if (interpretation.kind === 'command' && interpretation.command === 'pace') {
+      return paceAnswer(interpretation);
+    }
+
+    const readsAsWork = interpretation.kind === 'work';
+
+    if (intent === 'execution_request' || readsAsWork || interpretation.kind === 'prohibited') {
       const context = await this.missionContext(projects);
       if (!context) return this.missionsUnavailableAnswer(intent, scoped);
       return answerExecutionRequest(
@@ -174,12 +221,13 @@ export class StatusQueryRouter {
         raw,
         scoped,
         projectQuery ?? extractProjectHint(raw.toLowerCase()),
+        interpretation,
       );
     }
-    if (intake.kind === 'mission_command') {
+    if (interpretation.kind === 'command') {
       const context = await this.missionContext(projects);
       if (!context) return this.missionsUnavailableAnswer('mission_command', scoped);
-      return answerMissionCommand(context, raw);
+      return answerMissionCommand(context, raw, interpretation);
     }
 
     if (MISSION_INTENTS.includes(intent)) {
@@ -259,7 +307,13 @@ export class StatusQueryRouter {
           (assessment) => assessment.currentWork.length > 0,
         );
       case 'focus':
-        return this.focusAnswer();
+        /*
+         * "Focus on CoreCredit today" names a project, and the honest answer to it is where that
+         * project stands — not the portfolio-wide focus order, and certainly not an invented change
+         * to it. The unscoped `focus` rule in the parser drops the name, so `scoped` is the only
+         * thing that carries it here.
+         */
+        return scoped ? this.projectAnswer('project_status', scoped) : this.focusAnswer();
       case 'portfolio_status':
         return this.portfolioAnswer();
       default:
@@ -595,4 +649,147 @@ function section(
     })),
     emptyText,
   };
+}
+
+/* ------------------------------------------------------------------ conversational answers */
+
+function conversational(
+  intent: QueryIntent,
+  title: string,
+  summary: string,
+  extra: Partial<QueryAnswer> = {},
+): QueryAnswer {
+  return {
+    intent,
+    title,
+    summary,
+    summaryProvenance: 'verified',
+    sections: [],
+    projectIds: [],
+    disambiguation: null,
+    notice: null,
+    href: null,
+    missionPreview: null,
+    ...extra,
+  };
+}
+
+/**
+ * An idea, thought about rather than built.
+ *
+ * The one thing this must never do is create a repository. "Is this worth building?" is a request
+ * for judgement, and answering it by provisioning something would answer a different question —
+ * expensively, visibly, and in a way that takes a deletion to undo.
+ *
+ * It is also careful about what it claims to know. Jarvis has not researched the market, the
+ * competitors or the effort at the moment this sentence arrives, and saying so is the difference
+ * between a useful answer and a confident one. What it offers instead is the two real next steps:
+ * look into it properly, which is a read-only mission, or build a small version, which is not.
+ */
+function ideaAnswer(interpretation: Interpretation, scoped: Project | null): QueryAnswer {
+  const subject = interpretation.subject;
+  return conversational(
+    'idea',
+    subject ? `Thinking about ${subject}` : 'Thinking about that',
+    'Nothing has been created. Tell me to go ahead and I will set it up — or ask me to look into it first and I will come back with what I find.',
+    {
+      sections: [
+        {
+          label: 'What I would want to know first',
+          items: [
+            { text: 'Who it is for, and what they do today instead.', provenance: 'unknown' },
+            { text: 'The smallest version that would be worth using.', provenance: 'unknown' },
+            {
+              text: 'Whether anything you already have covers part of it.',
+              provenance: 'unknown',
+            },
+          ],
+        },
+        {
+          label: 'What I have not done',
+          items: [
+            {
+              text: 'I have not researched this, compared it to anything, or estimated the work. Anything I said about its chances would be invented.',
+              provenance: 'unknown',
+            },
+          ],
+        },
+      ],
+      projectIds: scoped ? [scoped.id] : [],
+      notice: 'Nothing was created, and no repository was made.',
+      ...(scoped ? { href: `/projects/${scoped.id}` } : {}),
+    },
+  );
+}
+
+/**
+ * A reply that only means something next to what it was replying to.
+ *
+ * The stale case is the one worth having: the list moved between reading and answering, so the
+ * ordinal no longer points at what the person meant. Saying so costs a sentence; acting on the new
+ * second item acts on something never read.
+ */
+function followUpAnswer(interpretation: Interpretation): QueryAnswer {
+  const followUp = interpretation.followUp;
+  if (followUp?.kind === 'stale') {
+    return conversational('follow_up', 'That has moved', followUp.reason, {
+      notice: 'Nothing was done.',
+    });
+  }
+  return conversational('follow_up', 'Right', interpretation.understanding, {
+    href: '/dashboard',
+  });
+}
+
+/** "No", "not tonight". Nothing happens, and nothing is written down as dismissed either. */
+function declineAnswer(interpretation: Interpretation): QueryAnswer {
+  return conversational(
+    'declined',
+    'Nothing, then',
+    'Understood. Nothing has been started, and nothing has been marked as dismissed — it will all still be here.',
+    { notice: interpretation.understanding },
+  );
+}
+
+/**
+ * Something to remember, recognised but not stored here.
+ *
+ * The router reads state; the memory service writes it. Answering a question must not create
+ * anything, and that rule does not get an exception because the thing being created is small.
+ */
+function memoryAnswer(interpretation: Interpretation): QueryAnswer {
+  return conversational(
+    'memory_capture',
+    'Something to remember',
+    'Say it to me on the dashboard and I will keep it. Nothing has been stored from this screen.',
+    { notice: interpretation.understanding, href: '/dashboard' },
+  );
+}
+
+/**
+ * Pace, which is a scheduling preference and nothing else.
+ *
+ * "Slow down until my Claude allowance resets" changes how much Jarvis attempts at once — how many
+ * missions it starts, how deeply it investigates. It does not, and cannot, make a model generate
+ * tokens more slowly, and this answer does not imply otherwise.
+ */
+function paceAnswer(interpretation: Interpretation): QueryAnswer {
+  const pace = interpretation.pace ?? 'balanced';
+  const said: Record<string, string> = {
+    conserve:
+      'Understood as: attempt less at once — fewer missions running in parallel. It changes how much I start, not how fast the model itself answers; nothing can make that slower or faster.',
+    balanced: 'Understood as: back to a normal number of missions at once.',
+    fast: 'Understood as: run as many missions in parallel as the charter and your capacity allow. It changes how much I start, not how fast the model itself answers.',
+  };
+  return conversational('pace_preference', `Read as a ${pace} pace`, said[pace] ?? said.balanced!, {
+    /*
+     * Said plainly, because the alternative is a comfortable lie. The concurrency limit is
+     * configuration and the operating mode is a stored switch; neither is changed from here yet.
+     * Claiming "I have slowed down" while every mission slot stays open would be exactly the kind
+     * of thing that makes the rest of what Jarvis says untrustworthy.
+     */
+    notice:
+      'This is not applied automatically yet — set the mission concurrency or pause on the operations screen and it takes effect immediately.',
+    href: '/operations',
+  });
 }

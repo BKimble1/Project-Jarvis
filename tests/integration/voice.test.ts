@@ -123,21 +123,65 @@ describe('speaking to Jarvis', () => {
     expect(await harness.services.knowledge.list({ limit: 50 })).toHaveLength(1);
   });
 
-  it('hands work back to the screen rather than starting it', async () => {
+  it('starts work once the words have been read back and confirmed', async () => {
+    /*
+     * This test used to assert the opposite, and the owner overruled it in so many words: *"Do not
+     * merely hide approval buttons while leaving the backend waiting for approvals"*, and *"typed
+     * and spoken input must follow the same path"*.
+     *
+     * What did not change is the reason the two steps exist. A browser hears "delete the old
+     * branch" as "delete the whole branch" often enough that acting on a first pass would be
+     * reckless, so the transcript is still shown back and still re-derived server-side on confirm.
+     * Reading back what was heard is a misrecognition check, not a request for permission — and
+     * the charter, not this flag, is what decides whether the work actually runs.
+     */
+    const project = await harness.services.projects.create({
+      name: 'CoreCredit',
+      shortName: null,
+      description: null,
+      type: 'software',
+      status: 'active',
+      phase: null,
+      goal: null,
+      priority: 'medium',
+      tags: [],
+      links: [],
+    });
+    expect(project.id).toBeTruthy();
+
     const spoken = 'build the invoice importer for CoreCredit';
     const submission = await harness.services.voiceService.submit({ transcript: spoken });
     expect(submission.intent).toBe('mission_draft');
-    expect(submission.requiresVisualApproval).toBe(true);
+    expect(submission.requiresVisualApproval).toBe(false);
 
     const { outcome } = await harness.services.voiceService.confirm(
       submission.capture.id,
       { text: spoken, shownIntent: 'mission_draft' },
       owner,
     );
-    expect(outcome.kind).toBe('draft');
-    /* Nothing was created. A spoken sentence is where a request starts, not where it is agreed. */
+    expect(outcome.kind).toBe('started');
+
     const missions = await harness.services.missionRepo.listOpen();
-    expect(missions).toHaveLength(0);
+    expect(missions).toHaveLength(1);
+    expect(missions[0]?.title.toLowerCase()).toContain('invoice importer');
+  });
+
+  it('still refuses to create a repository from a spoken sentence about existing work', async () => {
+    /*
+     * Speaking now starts work, which makes the guard in front of the irreversible act matter more
+     * rather than less. "Build the invoice importer for CoreCredit" is work inside something that
+     * exists; nothing about saying it out loud should make a repository appear.
+     */
+    const before = await harness.services.projects.listAllForAssessment(true);
+    const spoken = 'build the invoice importer for CoreCredit';
+    const submission = await harness.services.voiceService.submit({ transcript: spoken });
+    await harness.services.voiceService.confirm(
+      submission.capture.id,
+      { text: spoken, shownIntent: submission.intent },
+      owner,
+    );
+    const after = await harness.services.projects.listAllForAssessment(true);
+    expect(after).toHaveLength(before.length);
   });
 
   it('will not take an empty recording', async () => {

@@ -1027,10 +1027,59 @@ describe('read-only guarantee', () => {
     expect(provider).toContain('createGithubClient({');
     expect(provider).not.toContain('new Octokit(');
 
+    /*
+     * Two files may hold an Octokit, and only two.
+     *
+     * The read-only client is the first. The second is the provisioner, which exists precisely
+     * because the first one cannot write: it holds a different credential, it is the only thing in
+     * Jarvis that can create a repository, and giving the read-only client a "writes allowed" flag
+     * instead would have made it not a read-only client. A third would need a reason and a test of
+     * its own, which is what this assertion is asking for.
+     */
     const constructors = typescriptFiles().filter((file) =>
       readSource(file).includes('new Octokit('),
     );
-    expect(constructors).toEqual(['server/providers/github/client.ts']);
+    expect([...constructors].sort()).toEqual([
+      'server/providers/github/client.ts',
+      'server/providers/github/provisioner.ts',
+    ]);
+  });
+
+  it('lets the provisioner create a repository and nothing else', () => {
+    /*
+     * The provisioner is the one writing path, so what it *cannot* do matters more than what it
+     * can. There is no method here that deletes, renames, pushes, or changes visibility — not
+     * because the token forbids it, which it might not, but because the code has no such call.
+     * A source scan is the right instrument for that: it is an assertion about absence.
+     */
+    const provisioner = readSource('server/providers/github/provisioner.ts');
+
+    const calls = [...provisioner.matchAll(/octokit\.rest\.([a-zA-Z]+)\.([a-zA-Z]+)\(/g)].map(
+      (match) => `${match[1]}.${match[2]}`,
+    );
+    expect([...new Set(calls)].sort()).toEqual([
+      'repos.createForAuthenticatedUser',
+      'repos.createInOrg',
+      'repos.get',
+      'users.getAuthenticated',
+    ]);
+
+    /*
+     * And every creation is private. Matched on the argument lines — which end in a comma — rather
+     * than the field declaration, which ends in a semicolon and reads `private: boolean` because
+     * that is what GitHub sends back. Written at the call, never taken from a parameter: there is
+     * no argument a caller could pass to get a public repository, which is the point.
+     */
+    const creations = provisioner.match(/^\s*private: (\w+),$/gm) ?? [];
+    expect(creations.length).toBeGreaterThan(0);
+    for (const creation of creations) expect(creation.trim()).toBe('private: true,');
+
+    /*
+     * Without `auto_init` the repository has no commits and no default branch, and the worker
+     * clones `--single-branch --branch <defaultBranch>`, which fails with no way out — `git init`
+     * is not on the worker's allow-list.
+     */
+    expect(provisioner).toContain('auto_init: true');
   });
 
   it('exposes only read operations on the provider that actually ships', async () => {

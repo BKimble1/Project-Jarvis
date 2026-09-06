@@ -88,6 +88,45 @@ Keep them apart, deliberately:
 Widening the read token is never the answer to a worker permission problem. If the worker cannot
 push, the fix is on the worker's own token. Full setup: [WORKER.md](WORKER.md).
 
+## The third token: creating repositories
+
+Optional, and off unless you set it. `GITHUB_PROVISION_TOKEN` is what lets Jarvis make a repository
+for a project it is starting, so that "build me a rent tracker app" does not require you to open
+GitHub first. Without it Jarvis makes the project and says plainly that there is no repository; it
+never invents a URL.
+
+It is a **third** credential because it can do something neither of the others can, and because
+leaving it unset is how an installation says "never create anything on my account" — which has to be
+the default rather than a setting somebody has to find.
+
+|             | `GITHUB_READ_TOKEN`           | `JARVIS_WORKER_GITHUB_TOKEN`   | `GITHUB_PROVISION_TOKEN`                           |
+| ----------- | ----------------------------- | ------------------------------ | -------------------------------------------------- |
+| Lives on    | The Jarvis deployment         | The worker machine only        | The Jarvis deployment                              |
+| Permissions | Read-only, several categories | Contents + PRs, read and write | **Administration: read and write**, Contents: read |
+| Scope       | The repositories you selected | The repositories you selected  | All repositories — see below                       |
+| Used for    | Synchronising evidence        | Pushing branches, opening PRs  | Creating a new private repository                  |
+
+**Why "All repositories".** A repository that does not exist yet cannot be named in a selection
+list. That is a real cost and it is the reason this token is optional: if you would rather create
+repositories yourself and connect them from the project screen, leave it unset and nothing is lost
+except the automatic step.
+
+**What it can do, exhaustively.** Four calls: look a repository up, create one for you, create one
+in an organisation, and ask who the token belongs to. There is no code in Jarvis that deletes,
+renames, pushes to, or changes the visibility of a repository with this credential — not because the
+token forbids it, which it does not, but because no such call exists.
+`tests/integration/entities-and-security.test.ts` asserts that absence on every run.
+
+**Every repository it creates is private.** `private: true` is written at the call to GitHub rather
+than taken from an argument, so there is no parameter a caller could pass to get a public one.
+Publishing a repository is a deliberate act on GitHub, where the confirmation dialog belongs.
+
+**It never reaches a coding agent.** The name is in `WORKER_ONLY_SECRETS`, so it is stripped from
+every child process the worker starts — by name, and again by shape.
+
+Set `GITHUB_PROVISION_OWNER` to an organisation to create repositories there instead of on your own
+account. Blank means your own account.
+
 ## Organisation repositories
 
 For repositories owned by an organisation, an owner may need to approve fine-grained token access

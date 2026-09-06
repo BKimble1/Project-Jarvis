@@ -814,8 +814,24 @@ export class OperatorService {
       now,
     });
 
+    /*
+     * The owner's own requests, advanced on the same authority.
+     *
+     * Without this, talking to Jarvis produced a mission that then sat in `awaiting_plan_approval`
+     * until somebody opened Mission Control and pressed a button — which is exactly the
+     * administration screen the owner said he should not have to visit. What remains bounded is
+     * everything that was bounded before: the room left in this tick, and the charter, which is
+     * still the only thing that decides whether a plan may run.
+     */
+    const requested = await this.advanceRequestedWork({
+      mode: authority.mode,
+      standingAuthority: authority.standingAuthority,
+      room: Math.max(0, room - advanced.filter((entry) => entry.outcome === 'queued').length),
+    });
+
+    const inFlight = [...advanced, ...requested];
     const started = [
-      ...advanced,
+      ...inFlight,
       ...(await this.startWork({
         selected,
         mode: authority.mode,
@@ -823,9 +839,10 @@ export class OperatorService {
         /*
          * One budget, spent on in-flight work first. Advancing and starting are both "a mission
          * Jarvis is putting into the queue", and giving them separate allowances would mean the
-         * ceiling the owner set was quietly twice what they wrote.
+         * ceiling the owner set was quietly twice what they wrote. The owner's own requests come
+         * out of the same allowance for the same reason.
          */
-        room: Math.max(0, room - advanced.filter((entry) => entry.outcome === 'queued').length),
+        room: Math.max(0, room - inFlight.filter((entry) => entry.outcome === 'queued').length),
         now,
       })),
     ];
@@ -890,9 +907,12 @@ export class OperatorService {
    * then is there a plan to authorise. This is the half of "continue" that makes the loop a loop
    * rather than a sequence of unfinished starts.
    *
-   * Only missions attached to a `taken` opportunity are considered — Jarvis's own work. A mission
-   * a person created and left waiting is theirs, and approving it would be standing authority
-   * reaching past the thing it was granted for.
+   * Only missions attached to a `taken` opportunity are considered here — Jarvis's own work.
+   * Missions the owner asked for are advanced by `advanceRequestedWork` below, which was added
+   * when the owner granted standing authority over his own requests too. The two are kept apart
+   * because they are bounded separately and because the reasons they exist are different, not
+   * because the authority differs: both go through `authoriseAndApprove`, so the charter is the
+   * only thing that ever decides.
    */
   private async advanceOwnWork(input: {
     readonly mode: OperatingMode;
@@ -922,6 +942,79 @@ export class OperatorService {
       } catch (error) {
         advanced.push({
           key: record.key,
+          missionId: mission.id,
+          outcome: 'proposed',
+          reason: error instanceof Error ? error.message : 'Jarvis could not approve this itself.',
+        });
+      }
+    }
+    return advanced;
+  }
+
+  /**
+   * Advance a mission the owner asked for, on the standing authority he granted.
+   *
+   * ## Why this exists
+   *
+   * Because talking to Jarvis used to produce a mission that stopped. The dashboard created it,
+   * a worker planned it, and then it sat in `awaiting_plan_approval` waiting for somebody to open
+   * Mission Control and press Approve — the exact administration screen the owner said ordinary
+   * use should never require. He has since granted standing authority over his own requests, so
+   * the plan is now offered to the charter the same way Jarvis's self-started work is.
+   *
+   * ## What did not change, and this is the important half
+   *
+   * The charter still decides. This method widens *which* missions get asked about; it does not
+   * weaken the answer. `authoriseAndApprove` asks `charter.decide` for the capabilities the plan
+   * actually needs, and a shortfall leaves the mission proposed and waiting — which is how work
+   * genuinely outside the authority still reaches the owner, with the specific reason attached.
+   * Write-scope enforcement, the running-agent ceiling, leases and the ledger are all downstream
+   * of approval and are untouched.
+   *
+   * An agent cannot widen its own permissions by approving its own plan: the capability request is
+   * derived from the plan by `missionCapabilityRequests`, the decision is stored, and `approvePlan`
+   * re-reads that stored decision rather than trusting an id it was handed.
+   */
+  private async advanceRequestedWork(input: {
+    readonly mode: OperatingMode;
+    readonly standingAuthority: boolean;
+    readonly room: number;
+  }): Promise<readonly StartedWork[]> {
+    if (!modeGrantsStandingAuthority(input.mode) || !input.standingAuthority) return [];
+    if (input.room <= 0) return [];
+
+    /*
+     * Jarvis's own work is handled by `advanceOwnWork`; anything still attached to an opportunity
+     * is excluded here so one mission cannot be advanced twice in a single tick.
+     */
+    const ownWork = new Set(
+      (await this.deps.opportunities.listByState(['taken']))
+        .map((record) => record.missionId)
+        .filter((id): id is string => id !== null),
+    );
+
+    const waiting = await this.deps.missions.list({
+      states: ['awaiting_plan_approval'],
+      limit: 25,
+    });
+
+    const advanced: StartedWork[] = [];
+    let queued = 0;
+    for (const summary of waiting.items) {
+      if (queued >= input.room) break;
+      const mission = summary.mission;
+      if (ownWork.has(mission.id)) continue;
+      try {
+        const result = await this.authoriseAndApprove(
+          `owner-request:${mission.id}`,
+          mission.id,
+          mission.title,
+        );
+        if (result.outcome === 'queued') queued += 1;
+        advanced.push(result);
+      } catch (error) {
+        advanced.push({
+          key: `owner-request:${mission.id}`,
           missionId: mission.id,
           outcome: 'proposed',
           reason: error instanceof Error ? error.message : 'Jarvis could not approve this itself.',

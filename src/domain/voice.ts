@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ValidationError } from './errors';
+import { interpretMessage } from './interpretation';
 import { boundText, redactSecrets } from './redaction';
 
 /**
@@ -83,7 +84,16 @@ export const TRANSCRIPT_INTENTS = [
   'note',
   /** An update to a project's own record — a blocker, a decision, a next action. */
   'project_update',
-  /** Work to be done. Becomes a mission *draft*, never a started mission. */
+  /**
+   * Work to be done.
+   *
+   * Named `mission_draft` from when a spoken request could only ever become a draft. It now
+   * creates the mission and asks it to plan — the owner authorised that in so many words: *"Do not
+   * merely hide approval buttons while leaving the backend waiting for approvals."* What did not
+   * change is where the authority comes from. The charter still decides whether the plan runs, and
+   * a request outside it still waits for a person. The name is kept because it is stored in the
+   * `voice_captures` rows of every existing installation.
+   */
   'mission_draft',
   /** Recognised as approval-shaped, and deliberately not honoured. */
   'approval_attempt',
@@ -95,7 +105,7 @@ export const INTENT_LABELS: Record<TranscriptIntent, string> = {
   question: 'A question',
   note: 'A note to keep',
   project_update: 'An update to a project',
-  mission_draft: 'Work to draft',
+  mission_draft: 'Work to start',
   approval_attempt: 'An approval, which has to be done on screen',
   unclear: 'Not clear',
 };
@@ -106,7 +116,7 @@ export const INTENT_CONSEQUENCE: Record<TranscriptIntent, string> = {
   note: 'Jarvis will save this as a note you said. Nothing else changes.',
   project_update: "Jarvis will add this to that project's record for you to review.",
   mission_draft:
-    'Jarvis will prepare a mission draft. It will not plan, approve or run anything until you say so on screen.',
+    'Jarvis will start this: it plans first, and it only runs what your charter already allows. Nothing outside the charter happens without you.',
   approval_attempt:
     'Jarvis will not approve anything from a recording. Open the item and approve it on screen, where you can see what you are agreeing to.',
   unclear: 'Jarvis is not sure what you meant. Edit the text, or type it instead.',
@@ -201,16 +211,10 @@ export const voiceSettingsSchema = z.object({
 
 /* --------------------------------------------------------------- classifying */
 
-const QUESTION_PATTERN =
-  /^(where|what|which|who|when|why|how|is|are|do|does|did|can|show|tell|read|list|any)\b/i;
-
 const NOTE_PATTERN = /^(note|remember|jot|log|record|make a note|keep in mind|fyi)\b/i;
 
 const UPDATE_PATTERN =
   /^(add|set|mark|update|change)\b.*\b(blocker|decision|action|milestone|goal|status|note)\b/i;
-
-const MISSION_PATTERN =
-  /^(draft|investigate|look into|research|fix|implement|build|add|write|refactor|audit|review|explore|find out why|work out why)\b/i;
 
 /**
  * Approval-shaped language, recognised so it can be refused.
@@ -219,9 +223,20 @@ const MISSION_PATTERN =
  * Matching it does not merely fail to approve — it produces a distinct `approval_attempt`
  * classification whose consequence text explains where approval actually happens, because
  * silently reclassifying "approve the OffRent mission" as a question would be baffling.
+ *
+ * ## What was taken out of it, and why
+ *
+ * `go ahead`, `do it` and `yes do it` used to be here, and they made the ordinary conversation
+ * impossible: saying "go ahead" to something Jarvis had just offered was refused as an attempt to
+ * approve a plan. They are not the same act. Approving is agreeing to a *specific plan, merge or
+ * release that already exists*; "go ahead" is answering an offer, and it now resolves against the
+ * proposal that was on screen and goes through the charter like anything else.
+ *
+ * Everything whose object is a plan, a merge, a deployment or a release stays exactly where it
+ * was. Voice still cannot approve any of those, and that is the property this list is for.
  */
 const APPROVAL_PATTERN =
-  /\b(approve|approved|approval|sign off|signoff|ship it|ship this|go ahead|do it|merge|deploy|release|publish|submit to (?:the )?app store|send to testflight|upload to testflight|yes do it|make it live)\b/i;
+  /\b(approve|approved|approval|sign off|signoff|ship it|ship this|merge|deploy|release|publish|submit to (?:the )?app store|send to testflight|upload to testflight|make it live)\b/i;
 
 export interface Classification {
   readonly intent: TranscriptIntent;
@@ -269,26 +284,51 @@ export function classifyTranscript(text: string): Classification {
       requiresVisualApproval: false,
     };
   }
-  if (QUESTION_PATTERN.test(value) || value.endsWith('?')) {
+  /*
+   * Everything else is decided by the one interpreter, not by a second set of patterns here.
+   *
+   * This used to be two more regular expressions — a question list and a mission-verb list, in
+   * that order — and they disagreed with the ones in the query router about whether a sentence was
+   * work. Two classifiers that disagree mean the same words do different things depending on which
+   * one saw them first, and speaking a request is meant to be the same act as typing it.
+   */
+  const interpretation = interpretMessage(value);
+
+  if (interpretation.kind === 'memory') {
     return {
-      intent: 'question',
-      consequence: INTENT_CONSEQUENCE.question,
-      rule: 'R-VC4',
+      intent: 'note',
+      consequence: INTENT_CONSEQUENCE.note,
+      rule: 'R-VC2',
       requiresVisualApproval: false,
     };
   }
-  if (MISSION_PATTERN.test(value)) {
+
+  if (interpretation.kind === 'work') {
     return {
       intent: 'mission_draft',
       consequence: INTENT_CONSEQUENCE.mission_draft,
       rule: 'R-VC5',
-      requiresVisualApproval: true,
+      /*
+       * False, now, and this is the change the owner asked for: *"Do not merely hide approval
+       * buttons while leaving the backend waiting for approvals."* The read-back is still there —
+       * a browser hears "delete the old branch" as "delete the whole branch" often enough that
+       * acting on a first pass would be reckless — but reading back what was heard is not the same
+       * as asking permission, and the charter, not this flag, is what decides whether the work
+       * runs.
+       */
+      requiresVisualApproval: false,
     };
   }
+
+  /*
+   * A refused request lands here rather than in `mission_draft`, and the consequence line is then
+   * true: it will be answered, with the rule that refused it, and nothing will change. Labelling it
+   * as work would promise a start that is never going to happen.
+   */
   return {
-    intent: 'unclear',
-    consequence: INTENT_CONSEQUENCE.unclear,
-    rule: 'R-VC6',
+    intent: 'question',
+    consequence: INTENT_CONSEQUENCE.question,
+    rule: 'R-VC4',
     requiresVisualApproval: false,
   };
 }

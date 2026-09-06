@@ -168,6 +168,15 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * `isSecureContext` is a browser fact.
    */
   const [voiceNote, setVoiceNote] = React.useState<string | null>(null);
+  /*
+   * The thing Jarvis last offered to do, kept so "go ahead" means something.
+   *
+   * Held here rather than on the server because it is a property of *this* conversation, and
+   * because the server must not be able to decide what the person was looking at when they
+   * answered. It is sent back with the next message and re-read there through every gate a typed
+   * sentence goes through, so it supplies the subject of a yes, never the permission for one.
+   */
+  const [proposal, setProposal] = React.useState<{ id: string; summary: string } | null>(null);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
   const turnId = React.useRef(0);
@@ -445,18 +454,43 @@ export function JarvisScreen(props: JarvisScreenProps) {
   async function askJarvis(text: string) {
     setBusy(true);
     try {
-      const response = await fetch('/api/query', {
+      const response = await fetch('/api/conversation', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: text }),
+        body: JSON.stringify({
+          message: text,
+          context: {
+            actions: props.actions.map((action) => ({ id: action.id, label: action.label })),
+            proposal,
+            lastJarvisTurn: turns[turns.length - 1]?.text ?? null,
+          },
+        }),
       });
       if (!response.ok) throw new Error('no answer');
-      const data = (await response.json()) as { answer: QueryAnswer };
-      setAnswer(data.answer);
+      const turn = (await response.json()) as {
+        said: string;
+        href: string | null;
+        answer: QueryAnswer | null;
+        started: { missionId: string } | null;
+        proposal: { id: string; summary: string } | null;
+        notes: readonly string[];
+      };
+
+      setAnswer(turn.answer);
       setAsked(text);
       setBriefing(null);
-      setExpanded(true);
-      say(data.answer.summary, data.answer.href ?? null);
+      setExpanded(turn.answer !== null);
+      /*
+       * Carried forward only while there is something to say yes to. Clearing it on every other
+       * turn is what stops a "go ahead" said ten minutes later from accepting something the person
+       * has long since stopped thinking about.
+       */
+      setProposal(turn.proposal);
+      if (turn.started) {
+        markCompleted();
+        router.refresh();
+      }
+      say(turn.notes.length > 0 ? `${turn.said} ${turn.notes.join(' ')}` : turn.said, turn.href);
     } catch {
       say('I could not answer that just now. Check the connection and try again.');
     } finally {
@@ -534,6 +568,21 @@ export function JarvisScreen(props: JarvisScreenProps) {
     }
 
     const intent = interpretReply(text, props.actions.length);
+
+    /*
+     * A yes to something Jarvis offered goes to the server, not to the list reader.
+     *
+     * `interpretReply` reads a bare "go ahead" against a list of *actions*, and with none showing
+     * it calls that "continue" — carry on with what is running. That is right when there is nothing
+     * on offer and wrong the moment there is: an idea Jarvis has just proposed is exactly the thing
+     * "go ahead" means, and sending it to the running-mission branch would answer a different
+     * question. The proposal wins while it is standing.
+     */
+    if (proposal && (intent.kind === 'continue' || intent.kind === 'ambiguous')) {
+      setReply('');
+      await askJarvis(text);
+      return;
+    }
 
     if (intent.kind === 'decline') {
       setReply('');
@@ -621,6 +670,16 @@ export function JarvisScreen(props: JarvisScreenProps) {
 
   const startListening = () => {
     bind();
+    /*
+     * Silence Jarvis before opening the microphone.
+     *
+     * Without this the microphone hears the speakers and transcribes Jarvis's own sentence back
+     * into the box — which reads as the machine talking to itself, and in hands-free mode is a
+     * genuine loop: it answers, hears the answer, and answers that. Cancelling playback first is
+     * the whole fix, and it is the right behaviour anyway: pressing Speak means "I would like to
+     * say something now", which is a reason to stop talking.
+     */
+    speech.silence();
     speech.start();
     /* The level meter is a bonus, never a prerequisite: a refusal here changes nothing else. */
     void mic.attach();
@@ -783,6 +842,11 @@ export function JarvisScreen(props: JarvisScreenProps) {
                 />
                 Read answers aloud
               </label>
+              {readBack && mounted ? (
+                <p className="basis-full text-[0.6875rem] text-[var(--jx-ink-faint)]">
+                  {speech.voiceChoice.explanation}
+                </p>
+              ) : null}
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -944,6 +1008,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
         enabled={handsFree && speech.supported}
         busy={busy}
         listening={listening}
+        speaking={speaking}
         onListen={startListening}
       />
     </div>
@@ -1573,19 +1638,27 @@ function HandsFree({
   enabled,
   busy,
   listening,
+  speaking,
   onListen,
 }: {
   enabled: boolean;
   busy: boolean;
   listening: boolean;
+  speaking: boolean;
   onListen: () => void;
 }) {
   const wasBusy = React.useRef(false);
   React.useEffect(() => {
     const finished = wasBusy.current && !busy;
     wasBusy.current = busy;
-    if (enabled && finished && !listening) onListen();
-  }, [enabled, busy, listening, onListen]);
+    /*
+     * Not while Jarvis is still speaking. Re-opening the microphone during the read-back is how
+     * hands-free turns into a machine transcribing itself, so the restart waits for silence — and
+     * because `speaking` is a state this component already receives, waiting costs nothing but an
+     * extra term in the condition.
+     */
+    if (enabled && finished && !listening && !speaking) onListen();
+  }, [enabled, busy, listening, speaking, onListen]);
   return null;
 }
 
