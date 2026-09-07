@@ -7,6 +7,7 @@ import type {
   RepositoryProvisioner,
 } from '@/server/providers/github/provisioner';
 import { createHarness, type TestHarness } from '../helpers/services';
+import { ReasoningWorkerHarness } from '../helpers/reasoning-worker';
 
 /**
  * The three things the owner asked to be able to do in the morning.
@@ -60,9 +61,18 @@ describe('the morning', () => {
   let harness: TestHarness;
   let github: RecordingProvisioner;
 
+  let worker: ReasoningWorkerHarness;
+
   beforeEach(async () => {
     github = new RecordingProvisioner();
     harness = await createHarness({ repositoryProvisioner: github });
+    /*
+     * A connected worker, because that is where the model lives. Judging an idea is a Claude turn
+     * on the owner's subscription, run by the worker — so a suite about what he can do in the
+     * morning has to have one, exactly as his machine does.
+     */
+    worker = new ReasoningWorkerHarness(harness.services);
+    await worker.ensureEnrolled();
   });
 
   afterEach(async () => {
@@ -84,14 +94,26 @@ describe('the morning', () => {
     expect(github.created).toEqual([]);
     expect(await countProjects()).toBe(0);
     expect(await harness.services.missionRepo.listOpen()).toHaveLength(0);
+
     /*
-     * And it says what it would need to know rather than pretending to have researched it. The
-     * assessment now arrives as a structured evaluation rather than as a status answer, which is
-     * what lets the dashboard lay the questions out separately from the prose.
+     * The judgement comes from the worker, so the first turn says it is thinking rather than
+     * filling the gap with something that reads like an assessment. Nothing is created while it
+     * does — and nothing is created when the answer lands either.
      */
-    expect(turn.evaluation).not.toBeNull();
-    expect(turn.evaluation?.questions.length).toBeGreaterThan(0);
-    expect(turn.said).toContain('not market research');
+    expect(turn.thinking?.state).toBe('thinking');
+    expect(await worker.answerNext()).toBe(true);
+
+    const answered = await harness.services.conversation.handle({
+      message: 'I have an idea for an app that tracks rent across my flats.',
+    });
+    expect(answered.evaluation).not.toBeNull();
+    expect(answered.evaluation?.questions.length).toBeGreaterThan(0);
+    /* And it says what it reasoned from, rather than pretending to have researched it. */
+    expect(answered.said).toContain('not market research');
+
+    expect(github.created).toEqual([]);
+    expect(await countProjects()).toBe(0);
+    expect(await harness.services.missionRepo.listOpen()).toHaveLength(0);
   });
 
   it('does not build when asked whether something is worth building', async () => {
