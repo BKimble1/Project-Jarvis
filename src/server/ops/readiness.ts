@@ -49,7 +49,12 @@ export interface ReadinessInput {
   readonly db: Database;
   readonly services: Pick<
     Services,
-    'qualificationService' | 'workerRepo' | 'answerProvider' | 'operatorTicks' | 'sources'
+    | 'qualificationService'
+    | 'workerRepo'
+    | 'answerProvider'
+    | 'operatorTicks'
+    | 'sources'
+    | 'connections'
   >;
   readonly now?: Date;
 }
@@ -555,7 +560,10 @@ async function supervisorCheck(input: ReadinessInput, now: Date): Promise<Readin
 async function connectorsCheck(input: ReadinessInput): Promise<ReadinessCheck> {
   let statuses: readonly ConnectorStatus[];
   try {
-    const sources = await input.services.sources.listAllGithubSources();
+    const [sources, microsoft] = await Promise.all([
+      input.services.sources.listAllGithubSources(),
+      input.services.connections.get('microsoft'),
+    ]);
     statuses = summariseConnectors({
       repositories: {
         configured: sources.length,
@@ -567,6 +575,15 @@ async function connectorsCheck(input: ReadinessInput): Promise<ReadinessCheck> {
        * owner should be able to read off a page rather than infer from the absence of a row.
        */
       telephonyConfigured: false,
+      /*
+       * Read from the stored authorization, not from Outlook. A readiness report says whether
+       * something is set up; making it fetch mail to answer that would turn a status page into a
+       * network call, and a throttled account into a failed check.
+       */
+      personal:
+        microsoft.status === 'connected' || microsoft.status === 'degraded'
+          ? { kind: 'connected' }
+          : { kind: 'unavailable' },
     });
   } catch (error) {
     return {

@@ -309,6 +309,7 @@ export function NowPanel({
           <p className="font-medium">
             {briefing.greeting}. {briefing.headline}
           </p>
+          <BriefingSection title="On today" lines={briefing.yourDay} />
           <BriefingSection title="Since you last looked" lines={briefing.overnight} />
           <BriefingSection title="Waiting for you" lines={briefing.needsYou} />
           <BriefingSection title="Where things stand" lines={briefing.projects} />
@@ -385,6 +386,11 @@ function spokenBriefing(briefing: MorningBriefing): string {
   const waiting = briefing.needsYou.length;
   return [
     `${briefing.greeting}. ${briefing.headline}`,
+    /*
+     * Only when something was actually read. An empty day section means Jarvis did not look, not
+     * that the day is clear, and "nothing on today" is precisely the sentence it must not say.
+     */
+    ...(briefing.yourDay.length > 0 ? [`On today: ${briefing.yourDay[0]!.text}`] : []),
     waiting === 0
       ? 'Nothing is waiting for you.'
       : `${waiting} thing${waiting === 1 ? '' : 's'} waiting for you.`,

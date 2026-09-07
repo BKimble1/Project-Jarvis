@@ -15,11 +15,20 @@
  * briefing that opens with a plan is a briefing that has not yet earned the reader's attention;
  * one that opens with what changed while they were asleep has.
  *
- * ## What is deliberately not here
+ * ## Your day, and the condition on it
  *
- * A "good morning, here is your day" section. Jarvis has no calendar, no mail and no analytics,
- * and until it does, saying anything about a day would be invention dressed as service.
- * `notConnected` is the sentence that says so, once, in one line.
+ * There was no "here is your day" section here for a long time, and the reason was written down:
+ * Jarvis had no calendar and no mail, so saying anything about a day would have been invention
+ * dressed as service. It now has both, when Blake has connected Outlook — so the section exists,
+ * and the condition survives in a stricter form. `yourDay` is empty unless a source actually
+ * answered, a source that declined a permission says so in its own line rather than contributing
+ * silence, and `notConnected` still names everything Jarvis cannot see. Nothing here is inferred
+ * from an absent source; an empty list means nothing was read, never "nothing is happening".
+ *
+ * ## What is still deliberately not here
+ *
+ * Analytics and money. No product analytics and no financial data are connected, and a briefing
+ * that estimated either would be exactly the failure this shape exists to prevent.
  */
 
 export interface BriefingLine {
@@ -34,6 +43,15 @@ export interface MorningBriefing {
   readonly greeting: string;
   /** The one sentence to read if nothing else is read. From the operating picture. */
   readonly headline: string;
+  /**
+   * What is on today, from Outlook.
+   *
+   * Empty when nothing was read — because no account is connected, because a permission was
+   * declined, or because the read failed. Empty therefore means "Jarvis does not know", and the
+   * reason is in `notConnected` rather than left to be guessed at. It is never a claim that the
+   * day is clear.
+   */
+  readonly yourDay: readonly BriefingLine[];
   /** What happened while nobody was looking. Empty means nothing did, and says so. */
   readonly overnight: readonly BriefingLine[];
   /** What is waiting for the owner, in the order it is worth doing. */

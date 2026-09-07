@@ -270,3 +270,52 @@ describe('an installation with no provisioning credential', () => {
     expect(JSON.stringify(turn)).not.toContain('github.com/');
   });
 });
+
+/**
+ * The briefing's one job, tested from the side it is most likely to fail on.
+ *
+ * A briefing that reads a calendar is easy to check. A briefing that has *no* calendar and still
+ * has to be honest about it is the harder case, and it is the case Blake will be in until he
+ * connects Outlook — so it is the one pinned here: no day section at all, no sentence claiming the
+ * day is clear, and the absence named in one line rather than left as a gap.
+ */
+describe('a briefing with nothing connected', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+
+  afterEach(async () => {
+    await harness.close();
+  });
+
+  it('says nothing about a day it cannot see', async () => {
+    const { buildMorningBriefing } = await import('@/server/ops/morning-briefing');
+    const briefing = await buildMorningBriefing(harness.services);
+
+    expect(briefing.yourDay).toEqual([]);
+    expect(briefing.notConnected).toContain('calendar');
+    expect(briefing.notConnected).toContain('email');
+    expect(briefing.notConnected).toContain('Nothing here is estimated.');
+
+    /* And nowhere in the whole object does it claim a clear day, an inbox, or a meeting count. */
+    const text = JSON.stringify(briefing).toLowerCase();
+    expect(text).not.toContain('nothing on today');
+    expect(text).not.toContain('your day is clear');
+    expect(text).not.toContain('unread');
+  });
+
+  it('does not reach Outlook at all when no account is authorized', async () => {
+    /*
+     * The cheap-path guarantee. `isReady` is false without a credential key and a stored row, so
+     * the reader returns before it builds a client — which is why rendering the dashboard on a
+     * fresh install costs no network at all.
+     */
+    const signals = await harness.services.personalSignals.read();
+    expect(signals.outcomes.mail).toEqual({ state: 'not_connected' });
+    expect(signals.outcomes.calendar).toEqual({ state: 'not_connected' });
+    expect(signals.outcomes.tasks).toEqual({ state: 'not_connected' });
+    expect(signals.mail).toEqual([]);
+  });
+});

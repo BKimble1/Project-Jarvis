@@ -14,17 +14,26 @@ Everything here is optional. Jarvis runs exactly as it did without any of it.
 | **Credential vault**                      | **Built**       | AES-256-GCM at rest, its own key, versioned for rotation.               |
 | **Connections screen**                    | **Built**       | `/connections` — status, capabilities, last sync, failures, disconnect. |
 | **Microsoft sign-in**                     | **Built**       | OAuth authorization code + PKCE, read scopes, refresh rotation.         |
-| **Microsoft mail/calendar/tasks reading** | **Built**       | Unread inbox, the next 24 hours, open To Do tasks — on `/connections`.  |
+| **Microsoft mail/calendar/tasks reading** | **Built**       | Unread inbox, the next 24 hours, open To Do tasks.                      |
+| **In the morning briefing**               | **Built**       | An "On today" section, empty and explained when a source cannot answer. |
 | **App Store Connect**                     | **Not built**   | Catalogued, no API client written.                                      |
 | **iCloud Calendar**                       | **Unsupported** | Apple publishes no CalDAV endpoint. See below.                          |
 | **Apple Reminders**                       | **Unsupported** | Apple publishes no server API at all. See below.                        |
 
-Connecting Microsoft stores a valid authorization and, from that point, the
-Connections screen reads live: unread mail, the next twenty-four hours of your
-calendar, and your open To Do tasks, each with its own line saying what happened.
-What it does **not** yet do is fold that into the morning briefing or let you act on
-it in conversation — those are the next pieces of work, and no screen pretends
-otherwise.
+Connecting Microsoft stores a valid authorization and, from that point, two
+surfaces read live: the Connections screen, and the morning briefing's **On today**
+section — appointments, then anything overdue, then unread mail. Each source
+reports separately, so a permission you declined reads as a declined permission
+rather than as a broken connection.
+
+The briefing's rule has not changed, only its inputs. An empty **On today** means
+Jarvis did not look; it is never a claim that your day is clear. A source that
+could not answer says so in its own line, and the "Not connected" sentence at the
+foot of the briefing still names everything Jarvis cannot see — which, until you
+connect Outlook, includes your calendar, your mail and your tasks.
+
+What it does **not** yet do is let you act on any of it in conversation. Asking
+Jarvis to reply to a message or move a meeting does nothing today.
 
 Every Microsoft call in this repository has been exercised against fakes at the HTTP
 boundary and against nothing else. No request has ever been sent to Microsoft from
@@ -342,6 +351,9 @@ switch to paid billing quietly.
   rather than hidden.
 - Per-source degradation: one failing source leaves the other two, and only a read
   where nothing succeeded marks the connection degraded.
+- That a briefing with nothing connected has no day section, never claims a clear
+  day, and names the absence in one line — checked through the real service graph
+  against a real database.
 - The two QuickPick conversations end to end, with row counts before and after.
 
 **Verified against provider fakes, not live services:** every Microsoft HTTP call.

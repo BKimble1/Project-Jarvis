@@ -192,13 +192,16 @@ describe('is the operating loop running', () => {
 });
 
 describe('what Jarvis can see', () => {
+  const nothingPersonal = { kind: 'unavailable' } as const;
+
   it('reports an absent connection as absent, never as zero', () => {
     const statuses = summariseConnectors({
       repositories: { configured: 0, synced: 0 },
       telephonyConfigured: false,
+      personal: nothingPersonal,
     });
     const calendar = statuses.find((status) => status.kind === 'calendar');
-    expect(calendar?.state).toBe('planned');
+    expect(calendar?.state).toBe('not_connected');
     expect(calendar?.detail).toContain('rather than guess');
     expect(statuses.every((status) => status.state !== 'connected')).toBe(true);
   });
@@ -208,6 +211,7 @@ describe('what Jarvis can see', () => {
       summariseConnectors({
         repositories: { configured: 2, synced: 2 },
         telephonyConfigured: false,
+        personal: nothingPersonal,
       }),
     );
     expect(sentence).toContain('Not connected');
@@ -218,5 +222,68 @@ describe('what Jarvis can see', () => {
 
   it('has nothing to disclaim once everything is connected', () => {
     expect(absenceSentence([])).toBeNull();
+  });
+
+  /**
+   * The half of the contract that only became testable once a reader existed.
+   *
+   * "Planned" was true while Jarvis had no mail integration and became a falsehood the moment it
+   * had one. These cases pin the three states apart: nothing authorized, authorized but not read
+   * here, and read — with a declined permission distinguishable from an outage, because they need
+   * different things from Blake.
+   */
+  it('says a connected account is connected rather than planned', () => {
+    const statuses = summariseConnectors({
+      repositories: { configured: 1, synced: 1 },
+      telephonyConfigured: false,
+      personal: { kind: 'connected' },
+    });
+    const email = statuses.find((status) => status.kind === 'email');
+    expect(email?.state).toBe('configured');
+    expect(email?.detail).toContain('Outlook is connected');
+    expect(absenceSentence(statuses)).not.toContain('email');
+  });
+
+  it('reports what a read actually returned, per source', () => {
+    const statuses = summariseConnectors({
+      repositories: { configured: 1, synced: 1 },
+      telephonyConfigured: false,
+      personal: {
+        kind: 'read',
+        outcomes: {
+          mail: { state: 'ok', count: 3 },
+          calendar: { state: 'ok', count: 0 },
+          tasks: { state: 'not_permitted', scope: 'Tasks.Read' },
+        },
+      },
+    });
+
+    expect(statuses.find((status) => status.kind === 'email')?.state).toBe('connected');
+    expect(statuses.find((status) => status.kind === 'calendar')?.detail).toContain(
+      'Nothing in your day',
+    );
+
+    const tasks = statuses.find((status) => status.kind === 'tasks');
+    expect(tasks?.state).toBe('not_connected');
+    expect(tasks?.detail).toContain('Tasks.Read');
+  });
+
+  it('does not tell Blake to reconnect an account that is already connected', () => {
+    const statuses = summariseConnectors({
+      repositories: { configured: 1, synced: 1 },
+      telephonyConfigured: false,
+      personal: {
+        kind: 'read',
+        outcomes: {
+          mail: { state: 'failed', reason: 'Microsoft is temporarily unavailable.' },
+          calendar: { state: 'ok', count: 1 },
+          tasks: { state: 'ok', count: 0 },
+        },
+      },
+    });
+    const email = statuses.find((status) => status.kind === 'email');
+    /* `configured`, not `not_connected`: the authorization is fine, the network was not. */
+    expect(email?.state).toBe('configured');
+    expect(email?.detail).toContain('the last read failed');
   });
 });
