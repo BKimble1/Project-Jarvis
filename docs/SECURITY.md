@@ -110,6 +110,15 @@ caller is ingestion, which stores what it read.
 - **Audience ceilings are fixed in code.** A wallboard may see `public` and nothing else; an agent
   may see `internal`; neither can be raised by any request field. `buildScopeFilter` clamps down
   and never up.
+- **A secret is never remembered, however it is asked for.** Passwords, API keys, access and
+  refresh tokens, private keys, one-time and recovery codes, card and account numbers are refused
+  outright — not stored privately, refused. Storing one privately still puts it in the database, in
+  a backup, and in whatever a future export writes. The refusal names the kind of thing and never
+  repeats the value, and it points at the password manager, or at the Connections screen when the
+  credential belongs to a provider Jarvis can hold under its own encryption key. Material that is
+  _about_ a secret without being one — "the API key rotation happens every quarter", "my sort code
+  is on the fridge" — is still kept, and kept private: refusing that would teach the owner that
+  Jarvis cannot be talked to about security at all.
 - **An agent's inference never becomes memory on its own.** A mission may propose; only the owner
   approves, and the proposer is refused even if it presents as the owner (checked on identity, not
   only on actor kind).

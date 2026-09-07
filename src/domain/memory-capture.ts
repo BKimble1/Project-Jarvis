@@ -21,6 +21,9 @@ import { defaultSensitivity, type KnowledgeCategory } from './knowledge';
  *  3. **A deduction is labelled a deduction.** "You seem to prefer…" is stored as `inferred` with
  *     the hedge preserved in the statement, so an answer that uses it has to say where it came
  *     from.
+ *  4. **A secret is never kept, however it is asked for.** A password, a token, a private key, a
+ *     one-time code, a recovery code, an account number: refused outright, not stored privately.
+ *     The other three gates decide *where* something goes; this one decides that it goes nowhere.
  *
  * ## What this is not
  *
@@ -120,6 +123,71 @@ const SENSITIVE_PATTERNS: readonly { readonly pattern: RegExp; readonly what: st
   },
 ];
 
+/**
+ * Material Jarvis will not keep at all.
+ *
+ * Distinct from `SENSITIVE_PATTERNS` above, and the distinction is the point. Sensitive material —
+ * a diagnosis, a salary, where the sort code is written down — is a legitimate thing to ask Jarvis
+ * to remember; the rule there is *where it may go*, and the answer is "private, never a shared
+ * screen". What is below is the secret itself, and there is no place for it to go. Storing a
+ * password privately still puts a password in a database, in a backup, and in whatever a future
+ * export writes out. "Remember my password" is a reasonable thing for a person to say and the
+ * right answer is still no.
+ *
+ * Two tiers, because the failure modes are opposite.
+ *
+ * `SECRET_SHAPES` is credential material recognisable on sight. A `-----BEGIN PRIVATE KEY-----`
+ * block is never anything else, so it is refused wherever it appears and whatever the sentence
+ * around it says.
+ *
+ * `SECRET_DISCLOSURE` is a credential noun being told a value. The noun alone is not enough — "the
+ * API key rotation happens every quarter" is an operational note and refusing it would teach Blake
+ * that Jarvis cannot be talked to about security at all. So the pattern also requires something
+ * that looks like a value rather than like prose: a token carrying a digit, or a long unbroken
+ * run of characters. "My sort code is on the fridge" is therefore kept, privately, because it
+ * contains no sort code; "my sort code is 20-00-00" is not.
+ */
+const SECRET_SHAPES: readonly { readonly pattern: RegExp; readonly what: string }[] = [
+  { pattern: /-----BEGIN[ A-Z]*PRIVATE KEY-----/, what: 'a private key' },
+  { pattern: /\bsk-[A-Za-z0-9_-]{16,}/, what: 'an API key' },
+  { pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}/, what: 'a GitHub token' },
+  { pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/, what: 'a Slack token' },
+  { pattern: /\bAKIA[0-9A-Z]{16}\b/, what: 'an AWS access key' },
+  { pattern: /\bAIza[0-9A-Za-z_-]{35}\b/, what: 'a Google API key' },
+  {
+    pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
+    what: 'a signed token',
+  },
+  { pattern: /\b[01]\.A[A-Za-z0-9_-]{24,}/, what: 'a Microsoft refresh token' },
+];
+
+/** The nouns that name a secret. Only refused when one is actually being given a value. */
+const SECRET_NOUNS =
+  '(?:password|passphrase|pass ?code|pin(?: code| number)?|api[- ]?keys?|secret key|private key|' +
+  'access token|refresh token|auth(?:entication)? token|bearer token|session (?:token|cookie)|' +
+  'recovery (?:code|key)|backup code|one[- ]?time (?:code|password)|otp|2fa code|' +
+  'two[- ]factor code|verification code|security code|seed phrase|mnemonic|' +
+  'sort code|account number|iban|routing number|card number|cvv)';
+
+/**
+ * A credential noun followed by something that looks like a value.
+ *
+ * The value has to carry a digit, or be a long unbroken run — the two shapes prose almost never
+ * takes and secrets almost always do. Up to three words may sit between the noun and the verb
+ * ("my GitHub personal access token is ..."), which is the most a natural sentence needs and few
+ * enough that the pattern cannot wander into the next clause.
+ */
+const SECRET_DISCLOSURE = new RegExp(
+  `\\b${SECRET_NOUNS}(?:\\s+\\w+){0,3}?\\s*(?:is|are|was|=|:)\\s*["'\`]?` +
+    /*
+     * Either a run of at least four characters that contains a digit somewhere, or an unbroken run
+     * of twelve. Whitespace is not in the class, so the lookahead cannot reach past the word it is
+     * testing — which is what stops "…is on the fridge at 12 Elm Street" from reading as a value.
+     */
+    '(?:(?=[A-Za-z0-9!@#$%^&*_+./-]*\\d)[A-Za-z0-9!@#$%^&*_+./-]{4,}|[A-Za-z0-9!@#$%^&*_+./-]{12,})',
+  'i',
+);
+
 /** Phrases that mark a claim as a guess, whoever is making it. */
 const HEDGE = /\b(?:seems?|seemed|probably|might|maybe|i think|possibly|apparently|looks like)\b/i;
 
@@ -146,6 +214,21 @@ export function interpretCapture(text: string, options: CaptureOptions): Capture
 
   const explicit = REMEMBER.exec(trimmed);
   const statement = (explicit?.[1] ?? trimmed).trim();
+
+  /*
+   * Before anything else, including before the explicit instruction is honoured. Every other
+   * branch below decides where a memory goes; this one decides that it does not become one, and it
+   * has to run first for "remember my password is …" to reach it at all.
+   */
+  const secret = neverKept(statement);
+  if (secret) {
+    return {
+      kind: 'refused',
+      rule: 'MC-NEVER',
+      /* Names the kind of thing, never the thing. The refusal must not repeat what it refused. */
+      reason: `That looks like ${secret}. Jarvis does not keep credentials, codes or keys — not even when asked, and not privately either. Keep it in your password manager; if it is for a service Jarvis connects to, use the Connections screen so it is encrypted with its own key.`,
+    };
+  }
 
   const sensitive = SENSITIVE_PATTERNS.find((entry) => entry.pattern.test(statement));
 
@@ -213,6 +296,13 @@ export function interpretCapture(text: string, options: CaptureOptions): Capture
     rule: 'MC-EXPLICIT',
     reason: 'You asked Jarvis to remember this.',
   };
+}
+
+/** What kind of secret this is, or null when the sentence is not handing one over. */
+function neverKept(statement: string): string | null {
+  const shape = SECRET_SHAPES.find((entry) => entry.pattern.test(statement));
+  if (shape) return shape.what;
+  return SECRET_DISCLOSURE.test(statement) ? 'a credential or code' : null;
 }
 
 /**

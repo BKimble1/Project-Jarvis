@@ -54,9 +54,6 @@ describe('deciding whether to remember', () => {
 
 describe('sensitive material', () => {
   const sensitive = [
-    'my password is hunter2',
-    'the api key is sk-abcdefghijklmnop',
-    'my card number is 4111 1111 1111 1111',
     'my sort code is on the fridge',
     'I was prescribed something for anxiety last year',
     'her salary is £95,000',
@@ -67,7 +64,7 @@ describe('sensitive material', () => {
     for (const text of sensitive) {
       const verdict = interpretCapture(text, owner);
       expect(verdict.kind, text).toBe('refused');
-      if (verdict.kind === 'refused') expect(verdict.rule).toBe('MC-SENSITIVE');
+      if (verdict.kind === 'refused') expect(verdict.rule, text).toBe('MC-SENSITIVE');
     }
   });
 
@@ -87,8 +84,70 @@ describe('sensitive material', () => {
      * that happened not to look like a preference would return `none` — which reads as "nothing
      * happened" rather than as "Jarvis declined", and the person would never learn the rule.
      */
-    const verdict = interpretCapture('the pin code is 4821', owner);
+    const verdict = interpretCapture('my passport expires next year', owner);
     expect(verdict.kind).toBe('refused');
+  });
+});
+
+/**
+ * The gate that has no "yes" branch.
+ *
+ * Everything else in this file decides where a memory goes. These decide that it goes nowhere —
+ * because storing a password privately still puts a password in a database, in a backup, and in
+ * whatever a future export writes out. The asymmetry is the argument: refusing wrongly costs one
+ * sentence, and keeping wrongly cannot be undone by deleting the row.
+ */
+describe('secrets are never kept, however they are asked for', () => {
+  const secrets = [
+    'my password is hunter2',
+    'the api key is sk-abcdefghijklmnopqrst',
+    'my card number is 4111 1111 1111 1111',
+    'my sort code is 20-00-00',
+    'the pin code is 4821',
+    'the recovery code is 8h3k-9x2m-77qq',
+    'the one-time code is 483920',
+    'my app password is abcd-efgh-ijkl-mnop',
+    'the token is eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dBjftJeZ4CVPmB92K27u',
+    'the AWS key is AKIAIOSFODNN7EXAMPLE',
+    'the deploy key is -----BEGIN RSA PRIVATE KEY-----',
+  ];
+
+  it('refuses them when they are merely mentioned', () => {
+    for (const text of secrets) {
+      const verdict = interpretCapture(text, owner);
+      expect(verdict.kind, text).toBe('refused');
+      if (verdict.kind === 'refused') expect(verdict.rule, text).toBe('MC-NEVER');
+    }
+  });
+
+  it('refuses them again when asked outright, rather than storing them privately', () => {
+    for (const text of secrets) {
+      const verdict = interpretCapture(`Remember that ${text}`, owner);
+      expect(verdict.kind, text).toBe('refused');
+      if (verdict.kind === 'refused') expect(verdict.rule, text).toBe('MC-NEVER');
+    }
+  });
+
+  it('never repeats the secret back in the refusal', () => {
+    const verdict = interpretCapture('Remember that my password is hunter2', owner);
+    if (verdict.kind !== 'refused') throw new Error('expected a refusal');
+    expect(verdict.reason).not.toContain('hunter2');
+    /* And it says what to do instead, so the refusal is useful rather than merely correct. */
+    expect(verdict.reason).toMatch(/password manager/i);
+  });
+
+  it('keeps a sentence that is about a secret without being one', () => {
+    /*
+     * The distinction the whole tier turns on. Refusing this would teach Blake that Jarvis cannot
+     * be talked to about security at all, which is a worse outcome than the one being prevented.
+     */
+    for (const text of [
+      'Remember that the API key rotation happens every quarter',
+      'Remember that my sort code is on the fridge',
+      'Remember that the password manager is the only place credentials go',
+    ]) {
+      expect(interpretCapture(text, owner).kind, text).toBe('remember');
+    }
   });
 });
 
