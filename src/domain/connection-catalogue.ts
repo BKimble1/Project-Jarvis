@@ -163,10 +163,20 @@ const ICLOUD_CALENDAR: CatalogueEntry = {
   cannotSeeWhenConnected: [],
   notConnectedMeaning: 'Jarvis cannot see your iCloud calendar.',
   unsupportedReason: {
+    /*
+     * A split verdict, and worth stating precisely rather than as a flat "no".
+     *
+     * Apple *sanctions* third-party access to iCloud Calendar — its app-specific-password article
+     * names calendars explicitly, and it publishes an article on reaching iCloud Calendar from
+     * third-party apps. What it does not publish is the endpoint: unlike iCloud Mail, where exact
+     * IMAP and SMTP hostnames and ports are documented, Apple gives no CalDAV server address,
+     * discovery path or contract. Implementing this would mean hard-coding an address Apple has
+     * never committed to, which is the kind of integration that works until it silently does not.
+     */
     summary:
-      'Apple publishes no developer-facing interface for third-party access to iCloud Calendar from a Windows application. iCloud speaks CalDAV, but Apple does not document a supported contract for it, and Sign in with Apple grants identity only — never calendar data.',
+      'Apple permits third-party apps to reach iCloud Calendar with an app-specific password, but publishes no CalDAV endpoint or contract for it — unlike iCloud Mail, where exact server settings are documented. Building it would mean hard-coding an address Apple has never published. Sign in with Apple grants identity only, never calendar data.',
     wouldRequire:
-      'Either an official Apple API for iCloud Calendar, or Apple documenting CalDAV access for third-party applications. Until then, use the Microsoft calendar connection, or export an .ics feed.',
+      'Apple publishing CalDAV server settings for third-party apps, as it already does for iCloud Mail over IMAP. Until then, use the Microsoft calendar connection.',
   },
 };
 
@@ -186,8 +196,14 @@ const APPLE_REMINDERS: CatalogueEntry = {
   cannotSeeWhenConnected: [],
   notConnectedMeaning: 'Jarvis cannot see your Apple Reminders.',
   unsupportedReason: {
+    /*
+     * The clearest negative of the four, on four independent grounds: Apple's public OAuth
+     * data-sharing API has no Reminders scope; EventKit is an on-device Apple-platform framework
+     * rather than a server API; CloudKit is scoped to a developer's own container and cannot read
+     * Apple's; and iCloud for Windows ships no SDK or IPC surface a local application could use.
+     */
     summary:
-      'Apple provides no public server-side API for Reminders. The only supported way to read them is EventKit, which runs on an Apple device — not from a Windows or WSL application. Nothing here reverse-engineers a private endpoint to work around that.',
+      'Apple provides no public server-side API for Reminders. Its OAuth data-sharing API has no Reminders scope; EventKit runs on an Apple device, not on Windows or WSL; CloudKit reaches only a developer’s own container, not Apple’s; and iCloud for Windows exposes nothing a local application can call. Nothing here reverse-engineers a private endpoint to work around that.',
     wouldRequire:
       'An Apple device pushing reminders to Jarvis — an iPhone Shortcut or a small native companion posting to a local endpoint. The contract for that exists in docs/PERSONAL_ASSISTANT_SETUP.md; nothing is built, and this will keep saying Unsupported until something is.',
   },

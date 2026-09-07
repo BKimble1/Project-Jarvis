@@ -100,7 +100,7 @@ const TITLES: Record<SetupStepId, { readonly title: string; readonly why: string
   },
   connectors: {
     title: 'What Jarvis can see',
-    why: 'Nothing to configure yet beyond repositories. This is here so you can read what it cannot see, which is most things.',
+    why: 'Repositories, and optionally your Microsoft mail, calendar and tasks. The Connections screen lists every provider with what it can look at, what it can change, and what cannot be reached at all — see docs/PERSONAL_ASSISTANT_SETUP.md.',
   },
   supervisor: {
     title: 'Keeping it running',
