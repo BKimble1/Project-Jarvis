@@ -8,6 +8,7 @@ import { FakeUrlFetcher } from './fake-url-fetcher';
 import type { EmbeddingProvider } from '@/domain/embedding';
 import type { AnswerProvider } from '@/server/ask/answer-provider';
 import type { RepositoryProvisioner } from '@/server/providers/github/provisioner';
+import type { IdeaEvaluator } from '@/server/conversation/idea-evaluator';
 
 /**
  * A fully wired service graph backed by a migrated in-memory PostgreSQL database and a fake
@@ -50,6 +51,11 @@ export async function createHarness(
      * a suite that must never reach somebody's GitHub account.
      */
     repositoryProvisioner?: RepositoryProvisioner;
+    /**
+     * Replaces the idea evaluator. Omitted means the honest null one, which is production's
+     * default without an API key and keeps the suite free of any model call.
+     */
+    ideaEvaluator?: IdeaEvaluator;
   } = {},
 ): Promise<TestHarness> {
   const { db, close } = await createTestDatabase();
@@ -64,6 +70,7 @@ export async function createHarness(
     ...(options.repositoryProvisioner
       ? { repositoryProvisioner: options.repositoryProvisioner }
       : {}),
+    ...(options.ideaEvaluator ? { ideaEvaluator: options.ideaEvaluator } : {}),
     ...(options.narrator ? { narrator: options.narrator } : {}),
     ...(options.clock ? { clock: options.clock } : {}),
   });

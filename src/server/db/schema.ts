@@ -80,6 +80,7 @@ import type {
   CapabilityVerdict,
 } from '@/domain/authorization';
 import type { OperatingMode } from '@/domain/operating-mode';
+import type { ProposalState } from '@/domain/proposal';
 import type { BenefitKind, EffortSize, OutcomeVerdict } from '@/domain/outcome';
 import type {
   ObservationCoverage,
@@ -655,6 +656,38 @@ export const queryHistory = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('query_history_created_idx').on(table.createdAt)],
+);
+
+/**
+ * Ideas Jarvis offered to build, so that "go ahead" binds to a specific thing.
+ *
+ * Lives in the database rather than in the page that produced it: a proposal held in a browser tab
+ * disappears on refresh, and the owner then says "go ahead" to something that no longer exists.
+ * `fingerprint` is unique, which is what makes a repeated submission land on the same row instead
+ * of creating a second proposal for one idea; `project_id` and `mission_id` are stamped on
+ * acceptance so accepting twice returns what was already made.
+ */
+export const conversationProposals = pgTable(
+  'conversation_proposals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    fingerprint: text('fingerprint').notNull().unique(),
+    title: text('title').notNull(),
+    idea: text('idea').notNull(),
+    summary: text('summary').notNull(),
+    evaluation: jsonb('evaluation').$type<unknown>(),
+    openQuestions: jsonb('open_questions').$type<string[]>().notNull().default([]),
+    recommendedV1: jsonb('recommended_v1').$type<string[]>().notNull().default([]),
+    assumptions: jsonb('assumptions').$type<string[]>().notNull().default([]),
+    state: text('state').$type<ProposalState>().notNull().default('open'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    repositoryFullName: text('repository_full_name'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+  },
+  (table) => [index('conversation_proposals_state_idx').on(table.state, table.updatedAt)],
 );
 
 /* ---------------------------------------------------------------- relations */
@@ -3584,6 +3617,7 @@ export const schema = {
   activityLog,
   appSettings,
   queryHistory,
+  conversationProposals,
   projectRelations,
   projectSourceRelations,
   evidenceRelations,

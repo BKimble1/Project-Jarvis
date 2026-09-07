@@ -89,8 +89,12 @@ describe('an idea is not an instruction', () => {
   });
 });
 
-describe('negation wins over the verb it negates', () => {
-  it('does not start a build from a sentence declining one', () => {
+describe('negation constrains the verb it negates, and nothing else', () => {
+  it('never starts a build from a sentence declining one', () => {
+    /*
+     * The property that matters is that nothing is built. Which *kind* a refusal lands on is a
+     * presentational detail; starting a mission from a sentence that forbids one is not.
+     */
     for (const refusal of [
       "Don't build it yet.",
       'Do not build this yet.',
@@ -98,8 +102,28 @@ describe('negation wins over the verb it negates', () => {
       'No need to build anything.',
       'Hold off on building that.',
     ]) {
+      expect(interpretMessage(refusal).kind, refusal).not.toBe('work');
+      expect(
+        interpretMessage(refusal).noBuildYet || interpretMessage(refusal).kind === 'decline',
+      ).toBe(true);
+    }
+  });
+
+  it('treats a bare refusal as a refusal', () => {
+    for (const refusal of ["Don't build it yet.", 'No need to build anything.']) {
       expect(interpretMessage(refusal).kind, refusal).toBe('decline');
     }
+  });
+
+  it('keeps the rest of the message when the refusal is only part of it', () => {
+    /*
+     * This is the regression Blake hit. "Don't make it yet — let's talk about it first." is a
+     * request to talk, carrying a constraint. Answering it with "Nothing, then." discards the
+     * request and honours only the constraint, which is exactly backwards.
+     */
+    const result = interpretMessage("Don't make it yet — let's talk about it first.");
+    expect(result.kind).not.toBe('decline');
+    expect(result.kind).not.toBe('work');
   });
 
   it('treats a flat no as nothing at all', () => {

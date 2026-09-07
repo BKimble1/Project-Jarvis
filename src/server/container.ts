@@ -36,6 +36,13 @@ import {
   type RepositoryProvisioner,
 } from '@/server/providers/github/provisioner';
 import { ConversationService } from '@/server/conversation/conversation-service';
+import { DrizzleProposalRepository } from './repositories/proposal-drizzle';
+import type { ProposalRepository } from './repositories/proposal-types';
+import {
+  UnconfiguredIdeaEvaluator,
+  type IdeaEvaluator,
+} from '@/server/conversation/idea-evaluator';
+import { AnthropicIdeaEvaluator } from '@/server/conversation/anthropic-idea-evaluator';
 import { AttentionService } from '@/server/services/attention-service';
 import {
   DrizzleAppProfileRepository,
@@ -218,6 +225,8 @@ export interface Services {
   readonly sync: ProjectSyncService;
   readonly imports: GithubImportService;
   readonly provisioning: ProjectProvisioningService;
+  readonly proposals: ProposalRepository;
+  readonly ideaEvaluator: IdeaEvaluator;
   readonly conversation: ConversationService;
   readonly attention: AttentionService;
   readonly router: StatusQueryRouter;
@@ -341,6 +350,14 @@ export interface BuildServicesOverrides {
    * a test that forgets to override it makes nothing rather than reaching the network.
    */
   readonly repositoryProvisioner?: RepositoryProvisioner;
+  /**
+   * Replaces the idea evaluator.
+   *
+   * Overridable so a test can supply one that reasons, fails, or hangs without a network — and so
+   * no test can accidentally assert model behaviour when none is configured. The default is
+   * deliberately the honest null implementation.
+   */
+  readonly ideaEvaluator?: IdeaEvaluator;
 }
 
 export function buildServices(
@@ -838,8 +855,25 @@ export function buildServices(
    * what it is: a question goes to one, a request goes to the other, and the charter decides what
    * happens next.
    */
+  const proposals = new DrizzleProposalRepository(db);
+
+  /*
+   * The paid API, and only when the owner configured it.
+   *
+   * `ANTHROPIC_API_KEY` is the metered API, not the Claude subscription the worker runs on. Setting
+   * it is a deliberate act with a bill attached, so its absence means the honest evaluator rather
+   * than a quiet switch to paid billing.
+   */
+  const ideaEvaluator: IdeaEvaluator =
+    overrides.ideaEvaluator ??
+    (config.ai.enabled && config.ai.apiKey
+      ? new AnthropicIdeaEvaluator({ apiKey: config.ai.apiKey, model: config.ai.model })
+      : new UnconfiguredIdeaEvaluator());
+
   const conversation = new ConversationService({
     router,
+    proposals,
+    evaluator: ideaEvaluator,
     missions,
     projects,
     provisioning,
@@ -888,6 +922,8 @@ export function buildServices(
     sync,
     imports,
     provisioning,
+    proposals,
+    ideaEvaluator,
     conversation,
     attention,
     router,

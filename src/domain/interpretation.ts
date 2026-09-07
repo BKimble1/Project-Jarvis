@@ -34,8 +34,13 @@ import { isReadOnlyMissionType, type MissionRiskLevel, type MissionType } from '
  *
  * 1. **Nothing typed.** Cheap, and everything below assumes text.
  * 2. **Prohibited.** A refusal outranks every reading, including a question phrased innocently.
- * 3. **Negation.** "Don't build it yet" contains "build". If work were tested first it would start
- *    the very thing the sentence declines. Negation has to win over the verb it negates.
+ * 3. **Negation, as a constraint rather than a verdict.** "Don't build it yet" contains "build",
+ *    so it must not start a build. It must also not *silence the rest of the message*. The
+ *    sentence that broke this read, in full, "…Is this worth building? Ask only questions that
+ *    materially affect a simple V1. Do not build it yet." — and Jarvis answered "Nothing, then."
+ *    It refused the whole request because one clause forbade one action. Negation now sets
+ *    `noBuildYet` and classification continues on what is left; only a message that asks for
+ *    nothing else is a decline.
  * 4. **Follow-up.** "Go ahead", "the second one", "yes" mean nothing on their own; they mean what
  *    the thing on screen means. Resolved against a snapshot the caller passes in, never against
  *    whatever happens to be current when the reply arrives.
@@ -43,8 +48,11 @@ import { isReadOnlyMissionType, type MissionRiskLevel, type MissionType } from '
  * 6. **Memory.** "Remember that…" is deliberate and explicit; it is not a question about memory.
  * 7. **Idea.** "Is this worth building?" contains "building" and must not build. Asking whether to
  *    do a thing is the opposite of asking for it.
- * 8. **Work.** An imperative verb aimed at a repository. This now comes *before* the loose status
- *    patterns, which is the whole fix.
+ * 8. **Work.** An imperative verb aimed at a repository, **in imperative position** — at the start
+ *    of the message or of a clause. Position is the whole point. `change` is a work verb, and
+ *    "…the questions that would materially change that V1" was read as a code change because the
+ *    verb was merely *present*. A verb buried in a subordinate clause about questions is not an
+ *    instruction, and no amount of verb-list curation fixes that; only anchoring does.
  * 9. **Question.** Everything else, including the anchored status phrasings.
  */
 
@@ -113,6 +121,14 @@ export interface Interpretation {
   readonly riskRuleIds: readonly string[];
   /** Set for `work`: true when the request explicitly asks for no changes to be made. */
   readonly readOnly: boolean;
+  /**
+   * The owner forbade building *for now*, without withdrawing the rest of the message.
+   *
+   * A constraint, not a classification. It suppresses creation and execution wherever it is set —
+   * including on an `idea`, which is the case it exists for — while leaving the request to think,
+   * evaluate or advise fully intact.
+   */
+  readonly noBuildYet: boolean;
   /** Set for `prohibited`: exactly what Jarvis says instead of doing it. */
   readonly refusal: string | null;
   /** Set for `command`. */
@@ -231,6 +247,32 @@ const IDEA =
   /\b(?:i(?:'ve| have)? (?:an |a )?idea|thinking (?:about|of)|what do you think(?: about| of)?|is (?:this|that|it) worth|should i (?:build|make|do)|does (?:this|that|it) (?:idea )?make sense|would (?:this|that|it) work|is (?:there|this) a market|worth building|good idea|bad idea|sanity check)\b/;
 
 /**
+ * Asking Jarvis to *think*, rather than to do.
+ *
+ * The second sentence Blake typed — "Evaluate the QuickPick idea we just discussed. Tell me who
+ * would use it, whether it solves a worthwhile problem…" — was read as a code change and offered a
+ * "Prepare this mission" button. Nothing in it asks for a change to anything. What it asks for is
+ * judgement, and judgement had no representation here at all: `IDEA` recognised somebody *musing*
+ * ("I have an idea", "is this worth building") but not somebody *commissioning an assessment*.
+ *
+ * Kept separate from `IDEA` rather than merged into it because the two are asked differently and
+ * both have to work: musing arrives unprompted, an evaluation request arrives after Jarvis has
+ * already said something and refers back to it.
+ */
+const ADVICE =
+  /\b(?:evaluate|evaluation|assess|assessment|critique|appraise|advise|advice|weigh in|your (?:opinion|take|thoughts|view)|pros and cons|tell me (?:who|what|whether|if|why|how)|who would use|whether it (?:solves|works|matters)|is it worth|talk (?:me )?through|help me (?:think|decide|weigh)|let'?s (?:talk|discuss|think))\b/;
+
+/**
+ * A request for something — anything at all.
+ *
+ * Used for exactly one decision: whether a message that forbids building is *only* a refusal.
+ * "Don't build it yet." asks for nothing and is a decline. "Is this worth building? … Do not build
+ * it yet." asks for a great deal and is not.
+ */
+const ASKS_FOR_SOMETHING =
+  /\?|\b(?:tell me|show me|explain|describe|list|suggest|recommend|what|which|who|why|how|when|where|whether|should|would|could|can you|talk about|discuss|think about|advise|evaluate|assess|questions?)\b/;
+
+/**
  * Work.
  *
  * Deliberately broad, and deliberately tested before the loose status patterns. Everything here is
@@ -293,7 +335,29 @@ const WORK_VERB_LIST = [
   'integrate',
 ] as const;
 
-const WORK_VERBS = new RegExp(`\\b(?:${WORK_VERB_LIST.join('|')})\\b`);
+/**
+ * A work verb **in imperative position**, which is the only position that makes it an instruction.
+ *
+ * The bug this replaces: `\bchange\b` matched "…the questions that would materially change that
+ * V1", and an idea evaluation became a code-change mission. The verb was real; its position was
+ * not. An instruction begins a message or begins a clause — "Audit Holograph…", "…app — build a
+ * simple version." — whereas a verb inside a relative clause is describing something, not asking
+ * for it.
+ *
+ * Anchored against text that still has its punctuation, because the anchors *are* the punctuation.
+ * `normalise` strips full stops, so this must never be run against its output; see `interpretMessage`
+ * where `punctuated` is built for exactly this.
+ *
+ * The politeness prefixes are listed because "please add…" and "can you fix…" are ordinary ways to
+ * give an instruction, and dropping them would trade one false negative for another.
+ */
+const IMPERATIVE_WORK = new RegExp(
+  '(?:^|[.!?;:]\\s*|\\s[\u2014\u2013]\\s*|\\s-\\s+)' +
+    '(?:(?:please|now|then|first)\\s+)*' +
+    "(?:(?:go ahead and|can you|could you|would you|i(?:'d| would) like you to|i want you to|i need you to)\\s+)?" +
+    '(?:please\\s+)*' +
+    `(?:${WORK_VERB_LIST.join('|')})\\b`,
+);
 
 /**
  * The same verbs, followed by the thing they act on.
@@ -350,6 +414,7 @@ function build(
     riskLevel: null,
     riskRuleIds: [],
     readOnly: false,
+    noBuildYet: false,
     refusal: null,
     command: null,
     pace: null,
@@ -369,6 +434,14 @@ export function interpretMessage(
   context: ConversationContext = EMPTY_CONTEXT,
 ): Interpretation {
   const text = normalise(raw);
+  /*
+   * The same message with its punctuation intact.
+   *
+   * `normalise` strips full stops so that pattern-matching does not trip over them, which is right
+   * for word patterns and wrong for the two tests below that are *about* sentence boundaries:
+   * imperative position, and which sentence a negation governs. Both run against this instead.
+   */
+  const punctuated = raw.toLowerCase().replace(/\s+/g, ' ').trim();
 
   if (text.length === 0) {
     return build(raw, { kind: 'question', understanding: 'Nothing was typed.' });
@@ -386,21 +459,46 @@ export function interpretMessage(
     });
   }
 
-  /* Before work, because "don't build it yet" contains the verb it is refusing. */
-  if (NEGATED_WORK.test(text)) {
-    return build(raw, {
+  /*
+   * Negation, read as a constraint on one action rather than as the meaning of the message.
+   *
+   * Matched against `punctuated` so `[^.!?]*` genuinely means "within this sentence". Against the
+   * normalised text there are no sentence boundaries left, so "do not" in the last sentence reached
+   * across the whole message to any "build" anywhere in it — which is how "Is this worth building?
+   * … Do not build it yet." came out as a flat refusal of everything.
+   */
+  const noBuildYet = NEGATED_WORK.test(punctuated);
+
+  /*
+   * Every reading below carries the constraint, whatever kind it lands on.
+   *
+   * `noBuildYet` describes the *message*, not one classification of it. Setting it on the idea
+   * branch alone would mean a question that also said "don't build it" arrived downstream looking
+   * unconstrained — and the caller has no way to recover it once it is lost here.
+   */
+  const finish = (over: Partial<Interpretation> & { kind: InterpretationKind }): Interpretation =>
+    build(raw, { noBuildYet, ...over });
+
+  if (DECLINE.test(text)) {
+    return finish({ kind: 'decline', understanding: 'Nothing, then.' });
+  }
+
+  /*
+   * A refusal and nothing else. "Don't build it yet." asks for nothing, so there is nothing to do;
+   * a message that also asks a question, requests an evaluation, or proposes a discussion is not a
+   * refusal of *that*, however firmly it forbids building.
+   */
+  if (noBuildYet && !ASKS_FOR_SOMETHING.test(text)) {
+    return finish({
       kind: 'decline',
+      noBuildYet: true,
       understanding: 'Understood — not building anything yet.',
     });
   }
 
-  if (DECLINE.test(text)) {
-    return build(raw, { kind: 'decline', understanding: 'Nothing, then.' });
-  }
-
   const pace = PACE.find((entry) => entry.pattern.test(text));
   if (pace) {
-    return build(raw, {
+    return finish({
       kind: 'command',
       command: 'pace',
       pace: pace.pace,
@@ -409,9 +507,9 @@ export function interpretMessage(
   }
 
   /* Meaningless alone; resolved against what was on screen when composing started. */
-  const followUp = resolveFollowUp(text, context);
+  const followUp = resolveFollowUp(text, punctuated, context);
   if (followUp) {
-    return build(raw, {
+    return finish({
       kind: 'follow_up',
       followUp,
       understanding: describeFollowUp(followUp, context),
@@ -420,7 +518,7 @@ export function interpretMessage(
 
   for (const entry of COMMANDS) {
     if (!entry.pattern.test(text)) continue;
-    return build(raw, {
+    return finish({
       kind: 'command',
       command: entry.command,
       subject: subjectOf(text),
@@ -429,7 +527,7 @@ export function interpretMessage(
   }
 
   if (MEMORY.test(text)) {
-    return build(raw, { kind: 'memory', understanding: 'Something to remember.' });
+    return finish({ kind: 'memory', understanding: 'Something to remember.' });
   }
 
   /*
@@ -437,16 +535,32 @@ export function interpretMessage(
    * still wins if the sentence *also* gives an instruction — "I have an idea for an app, build it"
    * is a build — which is why the work test runs on the remainder.
    */
-  if (IDEA.test(text) && !hasImperativeWork(text)) {
-    return build(raw, {
+  if ((IDEA.test(text) || ADVICE.test(text)) && !IMPERATIVE_WORK.test(punctuated)) {
+    return finish({
       kind: 'idea',
       subject: subjectOf(text),
-      understanding: 'An idea to think through, not to build yet.',
+      noBuildYet,
+      understanding: noBuildYet
+        ? 'An idea to think through. Nothing will be built.'
+        : 'An idea to think through, not to build yet.',
     });
   }
 
-  /* The fix: work is considered before the loose status phrasings, not after them. */
-  if (WORK_VERBS.test(text)) {
+  /* Work is considered before the loose status phrasings, and only in imperative position. */
+  if (IMPERATIVE_WORK.test(punctuated)) {
+    /*
+     * An instruction that the same message forbids carrying out yet. Both halves are honoured: the
+     * request is understood as work, and it is returned as something to think about rather than
+     * something to start.
+     */
+    if (noBuildYet) {
+      return finish({
+        kind: 'idea',
+        subject: subjectOf(text),
+        noBuildYet: true,
+        understanding: 'Understood, and not to be built yet.',
+      });
+    }
     const inferred = inferMissionType(raw);
     /*
      * An explicit "read-only" outranks the inferred type, and it is not cosmetic: a read-only
@@ -458,7 +572,7 @@ export function interpretMessage(
     const missionType: MissionType =
       readOnly && !isReadOnlyMissionType(inferred) ? 'investigation' : inferred;
     const typed = classifyMissionRisk({ text: raw, type: missionType });
-    return build(raw, {
+    return finish({
       kind: 'work',
       subject: subjectOf(text),
       missionType,
@@ -473,7 +587,7 @@ export function interpretMessage(
 
   for (const pattern of QUESTION_PATTERNS) {
     if (pattern.test(text)) {
-      return build(raw, {
+      return finish({
         kind: 'question',
         subject: subjectOf(text),
         understanding: 'A question about your projects.',
@@ -481,26 +595,11 @@ export function interpretMessage(
     }
   }
 
-  return build(raw, {
+  return finish({
     kind: 'question',
     subject: subjectOf(text),
     understanding: 'A question about your projects.',
   });
-}
-
-/**
- * Does the sentence give an instruction as well as musing?
- *
- * "Is this worth building?" is musing. "I have an idea for an app — build a simple version" is an
- * instruction wearing musing's clothes. The difference is an imperative aimed at a verb, so the
- * test looks for a work verb that is not inside the question itself.
- */
-function hasImperativeWork(text: string): boolean {
-  return (
-    /\b(?:go ahead and|please)?\s*(?:build|make|create|implement|write|scaffold|prototype) (?:me |a |an |the |it|that)/.test(
-      text,
-    ) && !/\b(?:worth|should i|do you think|make sense)\b/.test(text)
-  );
 }
 
 /**
@@ -510,7 +609,11 @@ function hasImperativeWork(text: string): boolean {
  * be confused with a follow-up that could not be resolved. A follow-up that refers to something
  * gone comes back as `stale`, so the caller can say so rather than act on a different thing.
  */
-function resolveFollowUp(text: string, context: ConversationContext): FollowUp | null {
+function resolveFollowUp(
+  text: string,
+  punctuated: string,
+  context: ConversationContext,
+): FollowUp | null {
   if (CONTINUE.test(text)) return { kind: 'continue' };
 
   const affirms = AFFIRM.test(text);
@@ -548,7 +651,7 @@ function resolveFollowUp(text: string, context: ConversationContext): FollowUp |
    * request when there is not. Falling through to the work test in that second case is the honest
    * reading; calling it a dangling "yes" would refuse a sentence that said exactly what it wanted.
    */
-  if (WORK_VERBS.test(text)) return null;
+  if (IMPERATIVE_WORK.test(punctuated)) return null;
 
   /*
    * "Yes" with nothing to say yes to. Not an error — but acting on it would mean choosing something

@@ -12,6 +12,14 @@ import type { StatusQueryRouter } from '@/server/query/router';
 import type { MissionService } from '@/server/missions/mission-service';
 import type { ProjectRepository } from '@/server/repositories/types';
 import type { ProjectProvisioningService } from '@/server/services/project-provisioning';
+import type { ProposalRepository } from '@/server/repositories/proposal-types';
+import {
+  NO_RESEARCH_NOTICE,
+  proposalFingerprint,
+  type IdeaEvaluation,
+  type Proposal,
+} from '@/domain/proposal';
+import { UnconfiguredIdeaEvaluator, type IdeaEvaluator } from './idea-evaluator';
 
 /**
  * The one place a sentence from the owner turns into whatever it turns into.
@@ -72,12 +80,19 @@ export interface ConversationTurn {
   readonly started: StartedWorkSummary | null;
   /** Set when Jarvis is waiting for a yes. Echoed back by the browser on the next turn. */
   readonly proposal: { readonly id: string; readonly summary: string } | null;
+  /** The structured assessment behind an `idea` turn, for the dashboard to lay out. */
+  readonly evaluation: IdeaEvaluation | null;
+  /** True when the message forbade building. Nothing is created on such a turn, ever. */
+  readonly noBuildYet: boolean;
   /** Everything that was created, in plain sentences. Empty when nothing was. */
   readonly notes: readonly string[];
 }
 
 export interface ConversationDeps {
   readonly router: StatusQueryRouter;
+  readonly proposals: ProposalRepository;
+  readonly evaluator: IdeaEvaluator;
+  readonly clock?: () => Date;
   readonly missions: MissionService;
   readonly projects: ProjectRepository;
   readonly provisioning: ProjectProvisioningService;
@@ -97,6 +112,10 @@ export interface ConversationInput {
 export class ConversationService {
   constructor(private readonly deps: ConversationDeps) {}
 
+  private now(): Date {
+    return this.deps.clock?.() ?? new Date();
+  }
+
   async handle(input: ConversationInput): Promise<ConversationTurn> {
     const context = input.context ?? EMPTY_CONTEXT;
     const interpretation = interpretMessage(input.message, context);
@@ -105,7 +124,7 @@ export class ConversationService {
       case 'work':
         return this.startWork(interpretation, input.message, input.ownerLogin ?? null);
       case 'idea':
-        return this.proposeIdea(interpretation, input.message, context);
+        return this.proposeIdea(interpretation, input.message);
       case 'follow_up':
         return this.followUp(interpretation, context, input.ownerLogin ?? null);
       default:
@@ -158,6 +177,8 @@ export class ConversationService {
         answer,
         started: null,
         proposal: null,
+        evaluation: null,
+        noBuildYet: interpretation.noBuildYet,
         notes,
       };
     }
@@ -185,6 +206,8 @@ export class ConversationService {
         answer: null,
         started: null,
         proposal: null,
+        evaluation: null,
+        noBuildYet: interpretation.noBuildYet,
         notes,
       };
     }
@@ -211,6 +234,8 @@ export class ConversationService {
           planning: false,
         },
         proposal: null,
+        evaluation: null,
+        noBuildYet: interpretation.noBuildYet,
         notes,
       };
     }
@@ -235,6 +260,8 @@ export class ConversationService {
         planning: true,
       },
       proposal: null,
+      evaluation: null,
+      noBuildYet: interpretation.noBuildYet,
       notes,
     };
   }
@@ -242,32 +269,90 @@ export class ConversationService {
   /* ------------------------------------------------------------------ ideas */
 
   /**
-   * An idea, answered and offered — never built.
+   * An idea, assessed and offered — never built.
    *
-   * The proposal it returns is what makes "go ahead" mean something on the next turn. Its id is
-   * derived from the message so that saying the same thing twice does not produce two proposals
-   * the owner would have to tell apart.
+   * ## What changed here, and why
+   *
+   * This used to return one sentence and a proposal that lived in the browser tab. The owner asked
+   * whether QuickPick was worth building and got "Nothing, then." — and when he asked again, in
+   * plainer words, he got a "Prepare this mission" button. Both failures came from the same place:
+   * an idea had no representation of its own, so it fell through to something that did.
+   *
+   * Now an idea produces an assessment and a row. The assessment says who would use it, what
+   * problem it solves, whether it looks worth doing, the smallest V1, what is being assumed, and
+   * only the questions that would change that V1 — or says honestly that nothing judged it. The
+   * row is what "go ahead" attaches to, and it outlives the page that produced it.
+   *
+   * ## What it must never do
+   *
+   * Create anything. Not a project, not a repository, not a mission. `noBuildYet` makes that
+   * explicit in the reply when the owner said so, but it is true on this path either way.
    */
   private async proposeIdea(
     interpretation: Interpretation,
     raw: string,
-    context: ConversationContext,
   ): Promise<ConversationTurn> {
-    const answer = await this.deps.router.answer(raw, context);
-    const name = deriveProjectName(raw);
+    const title = deriveProjectName(raw);
+    const evaluation = await this.evaluateSafely(raw, title);
+
+    const proposal = await this.deps.proposals.open({
+      fingerprint: proposalFingerprint(raw),
+      title,
+      idea: raw.trim(),
+      summary: `Start ${title} and build the smallest useful version.`,
+      evaluation,
+      openQuestions: evaluation.questions,
+      recommendedV1: evaluation.smallestV1,
+      assumptions: evaluation.assumptions,
+      now: this.now(),
+    });
+
+    /*
+     * An idea described again after it was already built. Saying so is the useful answer; opening a
+     * second proposal for it would be how the owner ends up with two of everything.
+     */
+    if (proposal.state === 'accepted') {
+      return {
+        kind: 'idea',
+        understanding: interpretation.understanding,
+        said: `You already asked me to build ${proposal.title}, and I did — nothing new has been created.`,
+        href: proposal.projectId ? `/projects/${proposal.projectId}` : null,
+        answer: null,
+        started: null,
+        proposal: null,
+        evaluation: proposal.evaluation,
+        noBuildYet: interpretation.noBuildYet,
+        notes: [],
+      };
+    }
+
     return {
       kind: 'idea',
       understanding: interpretation.understanding,
-      said: `${answer.summary} If you want it, say go ahead and I will start ${name} — a private repository, a goal, and a first pass at the smallest useful version.`,
-      href: answer.href,
-      answer,
+      said: spokenEvaluation(proposal, evaluation, interpretation.noBuildYet),
+      href: null,
+      answer: null,
       started: null,
-      proposal: {
-        id: proposalId(raw),
-        summary: `Start ${name} and build the smallest useful version.`,
-      },
+      proposal: { id: proposal.id, summary: proposal.summary },
+      evaluation,
+      noBuildYet: interpretation.noBuildYet,
       notes: [],
     };
+  }
+
+  /**
+   * Evaluate, and never let the evaluator's failure become the conversation's failure.
+   *
+   * A model call can time out, be rate-limited, or return something unparseable. None of those is
+   * a reason to answer an idea with an error — the honest fallback already exists and says exactly
+   * what it does not know, so a failure degrades to that rather than to nothing.
+   */
+  private async evaluateSafely(raw: string, title: string): Promise<IdeaEvaluation> {
+    try {
+      return await this.deps.evaluator.evaluate({ idea: raw, title });
+    } catch {
+      return new UnconfiguredIdeaEvaluator().evaluate({ idea: raw, title });
+    }
   }
 
   /* ------------------------------------------------------------ follow-ups */
@@ -279,16 +364,37 @@ export class ConversationService {
   ): Promise<ConversationTurn> {
     const followUp = interpretation.followUp;
 
-    if (followUp?.kind === 'accept' && context.proposal) {
+    if (followUp?.kind === 'accept' || followUp?.kind === 'stale') {
       /*
-       * Re-interpreted from the proposal's own words rather than acted on as a decision already
-       * made. Everything that would have refused the original sentence refuses it here too.
+       * Bound to the proposal the page was showing when the owner answered, and to the newest open
+       * one when it was not showing any — which is what makes "go ahead" work after a refresh, from
+       * a phone, or the morning after. `stale` reaches here too: the interpreter calls a bare "yes"
+       * stale because it has no *page* context, but a stored proposal is context enough.
        */
-      return this.startWork(
-        interpretMessage(context.proposal.summary),
-        context.proposal.summary,
-        ownerLogin,
-      );
+      const bound =
+        (followUp.kind === 'accept'
+          ? await this.deps.proposals.findById(followUp.proposalId)
+          : null) ??
+        (context.proposal ? await this.deps.proposals.findById(context.proposal.id) : null) ??
+        (await this.deps.proposals.latestOpen());
+
+      if (!bound) {
+        /* Requirement, and the right instinct: ask, never guess which thing was meant. */
+        return {
+          kind: 'follow_up',
+          understanding: interpretation.understanding,
+          said: 'I do not have anything waiting for a yes. What would you like me to go ahead with?',
+          href: null,
+          answer: null,
+          started: null,
+          proposal: null,
+          evaluation: null,
+          noBuildYet: interpretation.noBuildYet,
+          notes: [],
+        };
+      }
+
+      return this.acceptProposal(bound, interpretation, ownerLogin);
     }
 
     const answer = await this.deps.router.answer(interpretation.raw, context);
@@ -300,6 +406,116 @@ export class ConversationService {
       answer,
       started: null,
       proposal: null,
+      evaluation: null,
+      noBuildYet: interpretation.noBuildYet,
+      notes: [],
+    };
+  }
+
+  /**
+   * Turn an agreed proposal into exactly one project, repository, goal and mission.
+   *
+   * ## Why acceptance is idempotent at three levels
+   *
+   * Because it is retried in ordinary use, not only in failure: the owner says "go ahead" twice
+   * because the first looked like nothing happened, the browser resubmits, a worker retries. The
+   * proposal row records what it produced and is stamped conditionally, the provisioning service
+   * adopts an existing repository rather than making a second, and the row is re-read after
+   * provisioning to close the window between the two.
+   */
+  private async acceptProposal(
+    proposal: Proposal,
+    interpretation: Interpretation,
+    ownerLogin: string | null,
+  ): Promise<ConversationTurn> {
+    /* Already done. Return what it produced rather than producing it again. */
+    if (proposal.state === 'accepted') return this.alreadyBuilt(proposal, interpretation);
+
+    const provisioned = await this.deps.provisioning.provision({
+      name: proposal.title,
+      goal: proposal.idea,
+      description: null,
+    });
+
+    /*
+     * Re-read after the slow part. A concurrent "go ahead" that got here first has stamped the row
+     * by now, and its project is the one to report — provisioning was idempotent, so both calls
+     * resolved to the same project anyway.
+     */
+    const current = await this.deps.proposals.findById(proposal.id);
+    if (current?.state === 'accepted') return this.alreadyBuilt(current, interpretation);
+
+    const created = await this.deps.missions.create(
+      {
+        rawRequest: proposal.idea,
+        projectId: provisioned.project.id,
+        priority: 'medium',
+        constraints: [],
+        doNotTouch: [],
+        acceptanceCriteria: [...proposal.recommendedV1],
+      },
+      ownerLogin,
+      { createdBy: 'owner' },
+    );
+
+    if (!created.refusal && created.questions.length === 0) {
+      await this.deps.missions.requestPlan(created.mission.id);
+    }
+
+    const accepted = await this.deps.proposals.accept(proposal.id, {
+      projectId: provisioned.project.id,
+      missionId: created.refusal ? null : created.mission.id,
+      repositoryFullName: provisioned.repository?.fullName ?? null,
+      now: this.now(),
+    });
+
+    const authority = await this.deps.authority();
+    const projectName = provisioned.project.shortName ?? provisioned.project.name;
+
+    return {
+      kind: 'follow_up',
+      understanding: `Going ahead with ${proposal.title}.`,
+      said: created.refusal
+        ? created.refusal
+        : `Started ${proposal.title}. ${authority.standingAuthority ? 'I am planning it now' : `It will wait for you at the plan — ${authority.blockedReason ?? ''}`}`.trim(),
+      href: `/missions/${created.mission.id}`,
+      answer: null,
+      started: {
+        missionId: created.mission.id,
+        title: created.mission.title,
+        projectId: provisioned.project.id,
+        projectName,
+        repositoryUrl: provisioned.repository?.url ?? null,
+        planning: !created.refusal && created.questions.length === 0,
+      },
+      proposal: null,
+      evaluation: accepted.evaluation,
+      noBuildYet: false,
+      notes: [...provisioned.notes],
+    };
+  }
+
+  /** What a repeated acceptance says: what already exists, and that nothing was added. */
+  private alreadyBuilt(proposal: Proposal, interpretation: Interpretation): ConversationTurn {
+    return {
+      kind: 'follow_up',
+      understanding: interpretation.understanding,
+      said: `${proposal.title} is already under way — nothing new was created.`,
+      href: proposal.missionId ? `/missions/${proposal.missionId}` : null,
+      answer: null,
+      started: proposal.missionId
+        ? {
+            missionId: proposal.missionId,
+            title: proposal.title,
+            projectId: proposal.projectId,
+            projectName: proposal.title,
+            repositoryUrl: null,
+            planning: false,
+          }
+        : null,
+      proposal: null,
+      evaluation: proposal.evaluation,
+      noBuildYet: false,
       notes: [],
     };
   }
@@ -320,6 +536,8 @@ export class ConversationService {
       answer,
       started: null,
       proposal: null,
+      evaluation: null,
+      noBuildYet: interpretation.noBuildYet,
       notes: [],
     };
   }
@@ -342,17 +560,43 @@ export class ConversationService {
 }
 
 /**
- * A stable id for a proposal, from the words it was made of.
+ * What Jarvis says out loud about an idea.
  *
- * Not random, so the same idea said twice is the same proposal rather than two the owner has to
- * distinguish between. Not a hash of anything secret — this is a conversation key, and it is only
- * ever compared to itself.
+ * Short, because it is spoken and because the structured evaluation is on screen beside it. It
+ * always ends by saying that nothing was created — the owner asked for that in as many words, and
+ * it is the sentence that makes the difference between "we discussed it" and "what did you just
+ * do to my GitHub account".
  */
-function proposalId(raw: string): string {
-  let hash = 0;
-  const text = raw.trim().toLowerCase();
-  for (let index = 0; index < text.length; index += 1) {
-    hash = (hash * 31 + text.charCodeAt(index)) | 0;
+function spokenEvaluation(
+  proposal: Proposal,
+  evaluation: IdeaEvaluation,
+  noBuildYet: boolean,
+): string {
+  const parts: string[] = [];
+
+  if (evaluation.basis === 'not_assessed') {
+    parts.push(
+      `I have not judged whether ${proposal.title} is worth building — there is no model configured here to reason with.`,
+    );
+  } else {
+    parts.push(evaluation.verdict);
   }
-  return `proposal-${(hash >>> 0).toString(36)}`;
+
+  if (evaluation.smallestV1.length > 0) {
+    parts.push(`The smallest useful version: ${evaluation.smallestV1.slice(0, 3).join('; ')}.`);
+  }
+  if (evaluation.questions.length > 0) {
+    parts.push(
+      `${evaluation.questions.length} question${evaluation.questions.length === 1 ? '' : 's'} would change that answer — they are on screen.`,
+    );
+  }
+
+  parts.push(NO_RESEARCH_NOTICE);
+  parts.push(
+    noBuildYet
+      ? 'Nothing has been created, and I will not build it until you say so.'
+      : 'No project, repository or mission has been created. Say go ahead and I will start it.',
+  );
+
+  return parts.join(' ');
 }

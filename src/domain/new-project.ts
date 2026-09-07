@@ -123,6 +123,16 @@ const NAMED =
  */
 export function deriveProjectName(raw: string): string {
   const text = normalise(raw);
+  /*
+   * Matching is done on lower-cased text, but the name the owner wrote is the one that should
+   * survive: "QuickPick" becomes the project name and, slugged, the repository name. Recovering
+   * the original casing from the source beats title-casing a lower-cased word, which turns
+   * QuickPick into Quickpick and quietly renames somebody's app.
+   */
+  const asWritten = (word: string): string => {
+    const found = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').exec(raw);
+    return found?.[0] ?? word;
+  };
 
   const explicit = NAMED.exec(text);
   const source = explicit?.[1] ?? NAME_BETWEEN.exec(text)?.[1] ?? '';
@@ -141,7 +151,7 @@ export function deriveProjectName(raw: string): string {
   const words = untilClause.filter((word) => word.length > 0 && !FILLER.has(word)).slice(0, 4);
 
   if (words.length === 0) return 'New project';
-  return words.map(capitalise).join(' ');
+  return words.map((word) => capitalise(asWritten(word))).join(' ');
 }
 
 /** Words that begin a clause about the thing rather than continuing its name. */

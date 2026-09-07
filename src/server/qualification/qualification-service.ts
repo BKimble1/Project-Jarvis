@@ -89,6 +89,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   '0014_operator_pause_origin.sql',
   '0015_knowledge_effective_from.sql',
   '0016_mission_outcomes.sql',
+  '0017_conversation_proposals.sql',
 ];
 
 /** Settings keys this service owns. Named once so a typo cannot silently create a second key. */

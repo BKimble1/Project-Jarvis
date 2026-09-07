@@ -7,6 +7,9 @@ import type { ProjectRepository } from '@/server/repositories/types';
 import type { StatusQueryRouter } from '@/server/query/router';
 import type { ProjectProvisioningService } from '@/server/services/project-provisioning';
 import { ConversationService } from '@/server/conversation/conversation-service';
+import { UnconfiguredIdeaEvaluator } from '@/server/conversation/idea-evaluator';
+import type { ProposalRepository } from '@/server/repositories/proposal-types';
+import type { Proposal } from '@/domain/proposal';
 
 /**
  * The three sentences the owner asked to be able to say in the morning.
@@ -100,8 +103,63 @@ function harness(
     }),
   } as unknown as ProjectProvisioningService;
 
+  /* An in-memory stand-in with the same idempotency contract as the real table. */
+  const proposalRows = new Map<string, Proposal>();
+  let seq = 0;
+  const proposals: ProposalRepository = {
+    async open(input) {
+      const found = [...proposalRows.values()].find((r) => r.fingerprint === input.fingerprint);
+      if (found && found.state !== 'open') return found;
+      seq += 1;
+      const id = found?.id ?? `prop${seq}`;
+      const row: Proposal = {
+        id,
+        fingerprint: input.fingerprint,
+        title: input.title,
+        idea: input.idea,
+        summary: input.summary,
+        evaluation: input.evaluation,
+        openQuestions: [...input.openQuestions],
+        recommendedV1: [...input.recommendedV1],
+        assumptions: [...input.assumptions],
+        state: 'open',
+        projectId: null,
+        missionId: null,
+        repositoryFullName: null,
+        createdAt: input.now.toISOString(),
+        updatedAt: input.now.toISOString(),
+        acceptedAt: null,
+      };
+      proposalRows.set(id, row);
+      return row;
+    },
+    async findById(id) {
+      return proposalRows.get(id) ?? null;
+    },
+    async latestOpen() {
+      return [...proposalRows.values()].reverse().find((r) => r.state === 'open') ?? null;
+    },
+    async accept(id, outcome) {
+      const row = proposalRows.get(id)!;
+      if (row.state !== 'open') return row;
+      const next: Proposal = {
+        ...row,
+        state: 'accepted',
+        projectId: outcome.projectId,
+        missionId: outcome.missionId,
+        repositoryFullName: outcome.repositoryFullName,
+        acceptedAt: outcome.now.toISOString(),
+        updatedAt: outcome.now.toISOString(),
+      };
+      proposalRows.set(id, next);
+      return next;
+    },
+  };
+
   const service = new ConversationService({
     router,
+    proposals,
+    evaluator: new UnconfiguredIdeaEvaluator(),
     missions,
     projects,
     provisioning,
@@ -111,7 +169,7 @@ function harness(
     }),
   });
 
-  return { service, answered, created, planned, provisioned, provisioning, missions };
+  return { service, answered, created, planned, provisioned, provisioning, missions, proposals };
 }
 
 /* --------------------------------------------------- 1. talking about an idea */

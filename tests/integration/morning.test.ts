@@ -84,8 +84,14 @@ describe('the morning', () => {
     expect(github.created).toEqual([]);
     expect(await countProjects()).toBe(0);
     expect(await harness.services.missionRepo.listOpen()).toHaveLength(0);
-    /* And it says what it would need to know, rather than pretending to have researched it. */
-    expect(JSON.stringify(turn.answer?.sections)).toContain('have not');
+    /*
+     * And it says what it would need to know rather than pretending to have researched it. The
+     * assessment now arrives as a structured evaluation rather than as a status answer, which is
+     * what lets the dashboard lay the questions out separately from the prose.
+     */
+    expect(turn.evaluation).not.toBeNull();
+    expect(turn.evaluation?.questions.length).toBeGreaterThan(0);
+    expect(turn.said).toContain('not market research');
   });
 
   it('does not build when asked whether something is worth building', async () => {
@@ -188,36 +194,40 @@ describe('the morning', () => {
     expect(turn.answer).not.toBeNull();
   });
 
-  it('builds from a yes only when there was something to say yes to', async () => {
-    const offered = await harness.services.conversation.handle({
+  it('builds from a yes only when there is a proposal to say yes to', async () => {
+    /*
+     * A bare yes with nothing proposed, ever, asks rather than guesses. This is the first half of
+     * the requirement; the second half — that a yes still finds the proposal when the page has
+     * forgotten it — is the test below.
+     */
+    const nothing = await harness.services.conversation.handle({ message: 'go ahead' });
+    expect(nothing.started).toBeNull();
+    expect(nothing.said).toMatch(/what would you like/i);
+    expect(github.created).toEqual([]);
+  });
+
+  it('binds a yes to the stored proposal even when the page has forgotten it', async () => {
+    await harness.services.conversation.handle({
       message: 'I have an idea for a rent tracker app.',
     });
     expect(github.created).toEqual([]);
 
-    /* A bare yes with nothing on screen does nothing. */
-    await harness.services.conversation.handle({ message: 'go ahead' });
-    expect(github.created).toEqual([]);
-
-    /* The same word against what was actually offered starts it. */
-    const accepted = await harness.services.conversation.handle({
-      message: 'go ahead',
-      context: {
-        actions: [],
-        proposal: offered.proposal,
-        lastJarvisTurn: offered.said,
-        focusedProjectId: null,
-      },
-    });
+    /*
+     * No context: the browser was reloaded, or he answered from his phone. The proposal outlives
+     * the page that offered it, which is the whole reason it is a row rather than a field.
+     */
+    const accepted = await harness.services.conversation.handle({ message: 'go ahead' });
 
     expect(github.created).toHaveLength(1);
     expect(accepted.started).not.toBeNull();
   });
 
-  it('refuses a tampered proposal exactly as it would refuse the words typed', async () => {
+  it('ignores a tampered proposal entirely rather than acting on its words', async () => {
     /*
-     * The context comes from the browser, so it is owner-supplied input. It supplies the subject of
-     * a yes, never the permission for one: the proposal's own text goes back through the risk
-     * classifier, so a tampered one can ask for nothing the owner could not have asked for.
+     * Stronger than it used to be. The browser's proposal is now only an *identifier*: acceptance
+     * reads the stored row and uses its recorded idea, so text injected into the request body is
+     * never executed, never re-interpreted, and never reaches a mission. An id that matches no row
+     * — forged, stale, or simply malformed — is a miss, and a miss asks.
      */
     const turn = await harness.services.conversation.handle({
       message: 'go ahead',

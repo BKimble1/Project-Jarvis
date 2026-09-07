@@ -177,6 +177,14 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * sentence goes through, so it supplies the subject of a yes, never the permission for one.
    */
   const [proposal, setProposal] = React.useState<{ id: string; summary: string } | null>(null);
+  /*
+   * The structured half of an idea assessment.
+   *
+   * The spoken line carries the verdict; this carries the parts that are worth *reading* — the
+   * V1, the assumptions, and the questions Blake is being asked. Putting the questions only in
+   * speech would mean the one thing he has to answer scrolls past and is gone.
+   */
+  const [evaluation, setEvaluation] = React.useState<ConversationEvaluation | null>(null);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
   const turnId = React.useRef(0);
@@ -473,6 +481,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
         answer: QueryAnswer | null;
         started: { missionId: string } | null;
         proposal: { id: string; summary: string } | null;
+        evaluation: ConversationEvaluation | null;
         notes: readonly string[];
       };
 
@@ -486,6 +495,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
        * has long since stopped thinking about.
        */
       setProposal(turn.proposal);
+      setEvaluation(turn.evaluation ?? null);
       if (turn.started) {
         markCompleted();
         router.refresh();
@@ -948,10 +958,12 @@ export function JarvisScreen(props: JarvisScreenProps) {
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((open) => !open)}
           detail={
-            expanded && (answer || briefing) ? (
+            expanded && (answer || briefing || evaluation) ? (
               <div className="jx-scroll max-h-[28vh] border-b border-[color-mix(in_srgb,var(--jx-line)_45%,transparent)]">
                 <div className="flex items-center justify-between px-3 pt-2">
-                  <p className="jx-label">{briefing ? 'Briefing' : 'Answer'}</p>
+                  <p className="jx-label">
+                    {briefing ? 'Briefing' : evaluation ? 'What I make of it' : 'Answer'}
+                  </p>
                   <button
                     type="button"
                     onClick={() => setExpanded(false)}
@@ -965,6 +977,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
                     <BriefingBody briefing={briefing} />
                   </div>
                 ) : null}
+                {evaluation ? <EvaluationBody evaluation={evaluation} /> : null}
                 {answer ? (
                   <AnswerPanel
                     answer={answer}
@@ -1715,4 +1728,88 @@ function spokenBriefing(briefing: MorningBriefing): string {
       : `${waiting} thing${waiting === 1 ? '' : 's'} waiting for you.`,
     briefing.next,
   ].join(' ');
+}
+
+/** The structured half of an idea assessment, laid out to be read rather than heard. */
+export interface ConversationEvaluation {
+  readonly likelyUser: string;
+  readonly problem: string;
+  readonly verdict: string;
+  readonly smallestV1: readonly string[];
+  readonly assumptions: readonly string[];
+  readonly uncertainties: readonly string[];
+  readonly questions: readonly string[];
+  readonly basis: 'reasoned' | 'not_assessed';
+}
+
+/**
+ * What Jarvis makes of an idea.
+ *
+ * The questions come first. They are the only part that needs Blake to do something, and burying
+ * them under three paragraphs of assessment is how a question goes unanswered. The basis line is
+ * not decoration: an assessment that looks like research and is not would make everything else on
+ * this screen less believable.
+ */
+function EvaluationBody({ evaluation }: { evaluation: ConversationEvaluation }) {
+  const block = (label: string, items: readonly string[]) =>
+    items.length === 0 ? null : (
+      <div key={label}>
+        <p className="jx-label">{label}</p>
+        <ul className="mt-1 space-y-1">
+          {items.map((item) => (
+            <li key={item} className="text-sm text-[var(--jx-ink-soft)]">
+              {item}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+
+  return (
+    <div className="space-y-3 p-3">
+      {evaluation.questions.length > 0 ? (
+        <div>
+          <p className="jx-label text-[var(--jx-cyan)]">Questions that would change the V1</p>
+          <ul className="mt-1 space-y-1">
+            {evaluation.questions.map((question) => (
+              <li key={question} className="text-sm text-[var(--jx-ink)]">
+                {question}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {evaluation.basis === 'reasoned' ? (
+        <>
+          <div>
+            <p className="jx-label">Likely user</p>
+            <p className="mt-1 text-sm text-[var(--jx-ink-soft)]">{evaluation.likelyUser}</p>
+          </div>
+          <div>
+            <p className="jx-label">Problem</p>
+            <p className="mt-1 text-sm text-[var(--jx-ink-soft)]">{evaluation.problem}</p>
+          </div>
+          <div>
+            <p className="jx-label">Worth building?</p>
+            <p className="mt-1 text-sm text-[var(--jx-ink-soft)]">{evaluation.verdict}</p>
+          </div>
+        </>
+      ) : (
+        <div>
+          <p className="jx-label">Not assessed</p>
+          <p className="mt-1 text-sm text-[var(--jx-ink-soft)]">{evaluation.verdict}</p>
+        </div>
+      )}
+
+      {block('Smallest useful V1', evaluation.smallestV1)}
+      {block('Assuming', evaluation.assumptions)}
+      {block('Not known', evaluation.uncertainties)}
+
+      <p className="text-[0.6875rem] text-[var(--jx-ink-faint)]">
+        Reasoning about what you described — nothing external was consulted, and no project,
+        repository or mission has been created.
+      </p>
+    </div>
+  );
 }

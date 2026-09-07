@@ -120,6 +120,13 @@
       "when": 1788621690035,
       "tag": "0016_mission_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788621691035,
+      "tag": "0017_conversation_proposals",
+      "breakpoints": true
     }
   ]
 }
