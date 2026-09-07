@@ -4,6 +4,7 @@ import { PROVIDER_CATALOGUE } from '@/domain/connection-catalogue';
 import type { ConnectionStatus, ConnectionView } from '@/domain/connection';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { SIGNAL_SOURCES, describeOutcome, type PersonalSignals } from '@/domain/personal-signals';
 
 export const dynamic = 'force-dynamic';
 export const metadata: Metadata = { title: 'Connections' };
@@ -41,6 +42,7 @@ export default async function ConnectionsPage() {
   const services = await getServices();
   const views = await services.connections.list();
   const vaultReady = services.connections.vaultReady();
+  const signals = await services.personalSignals.read();
 
   return (
     <div className="space-y-6">
@@ -70,10 +72,94 @@ export default async function ConnectionsPage() {
         </Card>
       ) : null}
 
+      <SignalsCard signals={signals} />
+
       {views.map((view) => (
         <ConnectionCard key={view.provider} view={view} vaultReady={vaultReady} />
       ))}
     </div>
+  );
+}
+
+/**
+ * What the connected accounts actually say, right now.
+ *
+ * This card is the answer to the only question the rest of the screen cannot settle: an
+ * authorization that has been granted but never used looks identical to one that works. Reading
+ * live and showing the result — including "nothing to report", including a named missing scope —
+ * is the difference between a badge and a demonstration.
+ *
+ * Nothing shown here is stored. The read happens when the page is rendered and the result is
+ * discarded with the response.
+ */
+function SignalsCard({ signals }: { signals: PersonalSignals }) {
+  const connected = SIGNAL_SOURCES.some(
+    (source) => signals.outcomes[source].state !== 'not_connected',
+  );
+  if (!connected) return null;
+
+  return (
+    <Card data-signals>
+      <CardHeader>
+        <CardTitle>What Jarvis can see right now</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        <ul className="text-muted-foreground space-y-1">
+          {SIGNAL_SOURCES.map((source) => (
+            <li key={source} data-signal-source={source}>
+              {describeOutcome(source, signals.outcomes[source])}
+            </li>
+          ))}
+        </ul>
+
+        {signals.calendar.length > 0 ? (
+          <div>
+            <p className="font-medium">Next up</p>
+            <ul className="text-muted-foreground mt-1 space-y-1">
+              {signals.calendar.slice(0, 5).map((entry) => (
+                <li key={entry.id}>
+                  {entry.isAllDay
+                    ? 'All day'
+                    : entry.startAt.toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}{' '}
+                  — {entry.subject}
+                  {entry.location ? ` · ${entry.location}` : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {signals.mail.length > 0 ? (
+          <div>
+            <p className="font-medium">Unread</p>
+            <ul className="text-muted-foreground mt-1 space-y-1">
+              {signals.mail.slice(0, 5).map((item) => (
+                <li key={item.id}>
+                  {item.subject} — {item.from}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {signals.tasks.length > 0 ? (
+          <div>
+            <p className="font-medium">Open tasks</p>
+            <ul className="text-muted-foreground mt-1 space-y-1">
+              {signals.tasks.slice(0, 5).map((task) => (
+                <li key={task.id}>
+                  {task.title}
+                  {task.overdue ? ' · overdue' : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 

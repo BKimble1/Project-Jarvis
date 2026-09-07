@@ -29,6 +29,7 @@ const PAGES = [
   '/attention',
   '/changes',
   '/workers',
+  '/connections',
   '/settings',
 ] as const;
 

@@ -14,14 +14,21 @@ Everything here is optional. Jarvis runs exactly as it did without any of it.
 | **Credential vault**                      | **Built**       | AES-256-GCM at rest, its own key, versioned for rotation.               |
 | **Connections screen**                    | **Built**       | `/connections` — status, capabilities, last sync, failures, disconnect. |
 | **Microsoft sign-in**                     | **Built**       | OAuth authorization code + PKCE, read scopes, refresh rotation.         |
-| **Microsoft mail/calendar/tasks reading** | **Not built**   | Authorization works; nothing fetches or displays the data yet.          |
+| **Microsoft mail/calendar/tasks reading** | **Built**       | Unread inbox, the next 24 hours, open To Do tasks — on `/connections`.  |
 | **App Store Connect**                     | **Not built**   | Catalogued, no API client written.                                      |
 | **iCloud Calendar**                       | **Unsupported** | Apple publishes no CalDAV endpoint. See below.                          |
 | **Apple Reminders**                       | **Unsupported** | Apple publishes no server API at all. See below.                        |
 
-Connecting Microsoft today stores a valid authorization and shows it on the
-Connections screen. It does **not** yet put your mail or calendar into a briefing —
-that is the next piece of work, and the screen does not pretend otherwise.
+Connecting Microsoft stores a valid authorization and, from that point, the
+Connections screen reads live: unread mail, the next twenty-four hours of your
+calendar, and your open To Do tasks, each with its own line saying what happened.
+What it does **not** yet do is fold that into the morning briefing or let you act on
+it in conversation — those are the next pieces of work, and no screen pretends
+otherwise.
+
+Every Microsoft call in this repository has been exercised against fakes at the HTTP
+boundary and against nothing else. No request has ever been sent to Microsoft from
+the machine this was built on. Section 7 says exactly what that leaves unproven.
 
 ---
 
@@ -115,6 +122,37 @@ yet.
 
 Start Jarvis, open **Connections**, press **Connect** on Microsoft. You are sent to
 Microsoft, you sign in, and you come back to the Connections screen.
+
+### What Jarvis reads, and what it never asks for
+
+Once connected, opening **Connections** performs three reads. They are bounded, they
+are separate, and each says what happened on its own line — a scope you declined
+reads as a declined scope, not as a broken connection.
+
+| Source      | Endpoint                                           | Asked for                                                                            |
+| ----------- | -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Unread mail | `GET /me/mailFolders/inbox/messages`               | `$filter=isRead eq false`, one page, `$top` capped at 50                             |
+| What is new | `GET /me/mailFolders/inbox/messages/delta`         | First run bounded to seven days; afterwards the stored delta link, replayed verbatim |
+| Calendar    | `GET /me/calendarView?startDateTime=&endDateTime=` | The next 24 hours; recurring meetings arrive already expanded                        |
+| Tasks       | `GET /me/todo/lists` then `.../tasks`              | Up to ten lists, one page each; completed tasks dropped locally                      |
+
+The field list sent with every message request is
+`id, subject, from, receivedDateTime, isRead, hasAttachments, importance, bodyPreview, webLink`.
+
+`body`, `uniqueBody` and `attachments` are **not** in it. That is deliberate and it is
+the whole retention policy: a full email is never fetched, so there is no code path
+that could decide to keep one. `bodyPreview` is Microsoft's own first-255-characters
+summary, trimmed again to 200 characters before it is shown.
+
+**Nothing read here is written to your database.** Not a subject, not a sender, not an
+appointment, not a task. The read happens when you open the page and the result is
+discarded with the response. The one exception is the delta link — an opaque
+resumption token that is useless without a valid access token — which is stored so
+"what arrived since you last asked" can mean something.
+
+If Microsoft rate-limits Jarvis it waits exactly as long as the `Retry-After` header
+asks, at most twice, and then stops. It does not retry a 401 or a 403: a permission
+you did not grant does not become granted by asking again.
 
 ### Verify it without exposing anything
 
@@ -297,6 +335,13 @@ switch to paid billing quietly.
   error bodies never reach a thrown message.
 - Connections statuses, including that a stale row cannot promote an unsupported
   provider to connected, and that no view contains a credential field.
+- The Graph reader's requests: that `$select` never asks for a body or attachments,
+  that a 401 and a 403 are not retried, that `Retry-After` is honoured exactly and
+  bounded, that a delta link is replayed verbatim rather than rebuilt, that an
+  expired synchronization point restarts once, and that a page limit is reported
+  rather than hidden.
+- Per-source degradation: one failing source leaves the other two, and only a read
+  where nothing succeeded marks the connection degraded.
 - The two QuickPick conversations end to end, with row counts before and after.
 
 **Verified against provider fakes, not live services:** every Microsoft HTTP call.
@@ -305,7 +350,10 @@ No request has been made to Microsoft from this environment.
 **Not verified at all:**
 
 - A real Microsoft sign-in. Nobody has completed the round trip against a live
-  Azure app registration.
+  Azure app registration, so no live mail, appointment or task has ever been read.
+  The endpoint paths, query options and permission names come from the Microsoft
+  Graph v1.0 reference; that they are correct on your mailbox is exactly what your
+  first connection will establish.
 - Repository creation against real GitHub.
 - Anything to do with App Store Connect or Apple.
 

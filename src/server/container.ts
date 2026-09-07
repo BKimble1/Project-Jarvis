@@ -46,6 +46,8 @@ import type {
   OAuthAuthorizationRepository,
 } from './repositories/connection-types';
 import { ConnectionService } from './connections/connection-service';
+import { MicrosoftAccess } from './connections/microsoft-access';
+import { PersonalSignalsService } from './connections/personal-signals-service';
 import {
   AesCredentialVault,
   UnconfiguredCredentialVault,
@@ -245,6 +247,8 @@ export interface Services {
   readonly oauthAuthorizations: OAuthAuthorizationRepository;
   readonly connections: ConnectionService;
   readonly credentialVault: CredentialVault;
+  readonly microsoftAccess: MicrosoftAccess;
+  readonly personalSignals: PersonalSignalsService;
   readonly conversation: ConversationService;
   readonly attention: AttentionService;
   readonly router: StatusQueryRouter;
@@ -896,6 +900,30 @@ export function buildServices(
   });
 
   /*
+   * The read side of Outlook.
+   *
+   * `MicrosoftAccess` is the only holder of the vault on this path, and `PersonalSignalsService`
+   * takes it rather than the vault itself: the reader can ask for a token and cannot ask for a
+   * credential, which is the boundary that keeps a stored refresh token out of everything that
+   * renders a screen.
+   */
+  const microsoftAccess = new MicrosoftAccess({
+    connections: connectionRepo,
+    vault: credentialVault,
+    config: {
+      clientId: config.microsoft.clientId,
+      clientSecret: config.microsoft.clientSecret,
+      redirectUri: new URL('/api/connections/microsoft/callback', config.baseUrl).toString(),
+    },
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+  const personalSignals = new PersonalSignalsService({
+    access: microsoftAccess,
+    connections: connectionRepo,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  /*
    * The paid API, and only when the owner configured it.
    *
    * `ANTHROPIC_API_KEY` is the metered API, not the Claude subscription the worker runs on. Setting
@@ -966,6 +994,8 @@ export function buildServices(
     oauthAuthorizations,
     connections,
     credentialVault,
+    microsoftAccess,
+    personalSignals,
     conversation,
     attention,
     router,
