@@ -19,7 +19,8 @@ import {
   type IdeaEvaluation,
   type Proposal,
 } from '@/domain/proposal';
-import { UnconfiguredIdeaEvaluator, type IdeaEvaluator } from './idea-evaluator';
+import { MATERIAL_V1_QUESTIONS } from './idea-evaluator';
+import type { ReasoningService, ThinkingState } from './reasoning-service';
 
 /**
  * The one place a sentence from the owner turns into whatever it turns into.
@@ -82,6 +83,14 @@ export interface ConversationTurn {
   readonly proposal: { readonly id: string; readonly summary: string } | null;
   /** The structured assessment behind an `idea` turn, for the dashboard to lay out. */
   readonly evaluation: IdeaEvaluation | null;
+  /**
+   * Where the worker has got to with this question.
+   *
+   * Present on an `idea` turn and null everywhere else. `thinking` means somebody is running it on
+   * the owner's Claude subscription right now; `blocked` names the exact condition and whether the
+   * question survives for a retry. The dashboard shows this rather than a spinner with no cause.
+   */
+  readonly thinking: ThinkingState | null;
   /** True when the message forbade building. Nothing is created on such a turn, ever. */
   readonly noBuildYet: boolean;
   /** Everything that was created, in plain sentences. Empty when nothing was. */
@@ -91,7 +100,7 @@ export interface ConversationTurn {
 export interface ConversationDeps {
   readonly router: StatusQueryRouter;
   readonly proposals: ProposalRepository;
-  readonly evaluator: IdeaEvaluator;
+  readonly reasoning: ReasoningService;
   readonly clock?: () => Date;
   readonly missions: MissionService;
   readonly projects: ProjectRepository;
@@ -178,6 +187,7 @@ export class ConversationService {
         started: null,
         proposal: null,
         evaluation: null,
+        thinking: null,
         noBuildYet: interpretation.noBuildYet,
         notes,
       };
@@ -207,6 +217,7 @@ export class ConversationService {
         started: null,
         proposal: null,
         evaluation: null,
+        thinking: null,
         noBuildYet: interpretation.noBuildYet,
         notes,
       };
@@ -235,6 +246,7 @@ export class ConversationService {
         },
         proposal: null,
         evaluation: null,
+        thinking: null,
         noBuildYet: interpretation.noBuildYet,
         notes,
       };
@@ -261,6 +273,7 @@ export class ConversationService {
       },
       proposal: null,
       evaluation: null,
+      thinking: null,
       noBuildYet: interpretation.noBuildYet,
       notes,
     };
@@ -293,17 +306,28 @@ export class ConversationService {
     raw: string,
   ): Promise<ConversationTurn> {
     const title = deriveProjectName(raw);
-    const evaluation = await this.evaluateSafely(raw, title);
 
+    /*
+     * The proposal is written first, before anything has judged the idea.
+     *
+     * That ordering is the whole reason "go ahead" works an hour later. The assessment now comes
+     * from the worker and arrives seconds or minutes after this turn returns, so a proposal that
+     * waited for it would not exist while the owner was reading the reply — and a page refresh in
+     * that window would lose the thing he was about to agree to.
+     *
+     * `evaluation: null` means "nothing to say about it yet", not "forget what you knew": the
+     * store keeps whatever it already had, so re-describing an idea while its answer is in flight
+     * does not erase the answer that is about to land.
+     */
     const proposal = await this.deps.proposals.open({
       fingerprint: proposalFingerprint(raw),
       title,
       idea: raw.trim(),
       summary: `Start ${title} and build the smallest useful version.`,
-      evaluation,
-      openQuestions: evaluation.questions,
-      recommendedV1: evaluation.smallestV1,
-      assumptions: evaluation.assumptions,
+      evaluation: null,
+      openQuestions: [],
+      recommendedV1: [],
+      assumptions: [],
       now: this.now(),
     });
 
@@ -321,38 +345,37 @@ export class ConversationService {
         started: null,
         proposal: null,
         evaluation: proposal.evaluation,
+        thinking: null,
         noBuildYet: interpretation.noBuildYet,
         notes: [],
       };
     }
 
+    /*
+     * Ask the worker. Idempotent on the proposal, so describing the same idea twice — or a double
+     * submit, or a retry — costs one answer rather than three.
+     */
+    const thinking = await this.deps.reasoning.requestIdeaEvaluation({
+      proposalId: proposal.id,
+      conversationId: null,
+      idea: raw.trim(),
+      title,
+      existing: proposal.evaluation,
+    });
+
     return {
       kind: 'idea',
       understanding: interpretation.understanding,
-      said: spokenEvaluation(proposal, evaluation, interpretation.noBuildYet),
+      said: spokenIdea(proposal, thinking, interpretation.noBuildYet),
       href: null,
       answer: null,
       started: null,
       proposal: { id: proposal.id, summary: proposal.summary },
-      evaluation,
+      evaluation: thinking.state === 'ready' ? thinking.evaluation : null,
+      thinking,
       noBuildYet: interpretation.noBuildYet,
       notes: [],
     };
-  }
-
-  /**
-   * Evaluate, and never let the evaluator's failure become the conversation's failure.
-   *
-   * A model call can time out, be rate-limited, or return something unparseable. None of those is
-   * a reason to answer an idea with an error — the honest fallback already exists and says exactly
-   * what it does not know, so a failure degrades to that rather than to nothing.
-   */
-  private async evaluateSafely(raw: string, title: string): Promise<IdeaEvaluation> {
-    try {
-      return await this.deps.evaluator.evaluate({ idea: raw, title });
-    } catch {
-      return new UnconfiguredIdeaEvaluator().evaluate({ idea: raw, title });
-    }
   }
 
   /* ------------------------------------------------------------ follow-ups */
@@ -389,6 +412,7 @@ export class ConversationService {
           started: null,
           proposal: null,
           evaluation: null,
+          thinking: null,
           noBuildYet: interpretation.noBuildYet,
           notes: [],
         };
@@ -407,6 +431,7 @@ export class ConversationService {
       started: null,
       proposal: null,
       evaluation: null,
+      thinking: null,
       noBuildYet: interpretation.noBuildYet,
       notes: [],
     };
@@ -490,6 +515,7 @@ export class ConversationService {
       },
       proposal: null,
       evaluation: accepted.evaluation,
+      thinking: null,
       noBuildYet: false,
       notes: [...provisioned.notes],
     };
@@ -515,6 +541,7 @@ export class ConversationService {
         : null,
       proposal: null,
       evaluation: proposal.evaluation,
+      thinking: null,
       noBuildYet: false,
       notes: [],
     };
@@ -537,6 +564,7 @@ export class ConversationService {
       started: null,
       proposal: null,
       evaluation: null,
+      thinking: null,
       noBuildYet: interpretation.noBuildYet,
       notes: [],
     };
@@ -566,32 +594,44 @@ export class ConversationService {
  * always ends by saying that nothing was created — the owner asked for that in as many words, and
  * it is the sentence that makes the difference between "we discussed it" and "what did you just
  * do to my GitHub account".
+ *
+ * ## The three states, and why none of them is a paragraph that sounds like an assessment
+ *
+ * An assessment now comes from the worker, which means there is a real moment where the idea has
+ * been heard and not yet judged. That moment has to sound like what it is. Filling it with
+ * confident prose derived from keywords would be the single worst thing this function could do:
+ * it would be indistinguishable, to a reader, from the answer that arrives a minute later.
+ *
+ * So: `ready` speaks the verdict. `thinking` says it is thinking, and offers the questions that
+ * never needed a model anyway. `blocked` names the exact condition — no worker, no runtime, no
+ * capacity — and says whether the question is still waiting. All three end the same way, because
+ * the guarantee they share is the important one: nothing was created.
  */
-function spokenEvaluation(
-  proposal: Proposal,
-  evaluation: IdeaEvaluation,
-  noBuildYet: boolean,
-): string {
+function spokenIdea(proposal: Proposal, thinking: ThinkingState, noBuildYet: boolean): string {
   const parts: string[] = [];
 
-  if (evaluation.basis === 'not_assessed') {
-    parts.push(
-      `I have not judged whether ${proposal.title} is worth building — there is no model configured here to reason with.`,
-    );
-  } else {
+  if (thinking.state === 'ready') {
+    const evaluation = thinking.evaluation;
     parts.push(evaluation.verdict);
-  }
-
-  if (evaluation.smallestV1.length > 0) {
-    parts.push(`The smallest useful version: ${evaluation.smallestV1.slice(0, 3).join('; ')}.`);
-  }
-  if (evaluation.questions.length > 0) {
+    if (evaluation.smallestV1.length > 0) {
+      parts.push(`The smallest useful version: ${evaluation.smallestV1.slice(0, 3).join('; ')}.`);
+    }
+    if (evaluation.questions.length > 0) {
+      parts.push(
+        `${evaluation.questions.length} question${evaluation.questions.length === 1 ? '' : 's'} would change that answer — they are on screen.`,
+      );
+    }
+    parts.push(NO_RESEARCH_NOTICE);
+  } else if (thinking.state === 'thinking') {
     parts.push(
-      `${evaluation.questions.length} question${evaluation.questions.length === 1 ? '' : 's'} would change that answer — they are on screen.`,
+      `I am thinking about whether ${proposal.title} is worth building. ${thinking.detail}`,
     );
+    parts.push(`In the meantime: ${MATERIAL_V1_QUESTIONS[0]}`);
+  } else {
+    parts.push(`I have not judged whether ${proposal.title} is worth building. ${thinking.detail}`);
+    parts.push(`What I can ask without one: ${MATERIAL_V1_QUESTIONS[0]}`);
   }
 
-  parts.push(NO_RESEARCH_NOTICE);
   parts.push(
     noBuildYet
       ? 'Nothing has been created, and I will not build it until you say so.'

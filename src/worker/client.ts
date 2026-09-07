@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ReasoningAssignment, ReasoningOutcomeInput } from '@/domain/reasoning';
 import type {
   MissionAssignment,
   WorkerClaimInput,
@@ -86,6 +87,32 @@ export class ControlPlaneClient {
       input,
     );
     return response.assignment;
+  }
+
+  /**
+   * Ask for a question to think about.
+   *
+   * Null is the ordinary answer: nothing waiting, or the control plane declining to spend model
+   * capacity right now. The worker treats it as "nothing to do" and comes back later, exactly as
+   * it does for a mission claim, so a full subscription window costs a poll rather than a failure.
+   */
+  async claimReasoning(input: { heartbeat: unknown }): Promise<ReasoningAssignment | null> {
+    const response = await this.post<{ assignment: ReasoningAssignment | null }>(
+      '/api/worker/reasoning/claim',
+      input,
+    );
+    return response.assignment;
+  }
+
+  /**
+   * Report what the model said, or why it could not.
+   *
+   * `applied: false` means the control plane no longer wanted the answer — the lease had been
+   * reclaimed while the model was thinking. Not an error, and deliberately not retried: the
+   * question either has an answer already or is queued for somebody else.
+   */
+  reportReasoning(input: ReasoningOutcomeInput): Promise<{ applied: boolean }> {
+    return this.post('/api/worker/reasoning', input);
   }
 
   events(input: WorkerEventBatchInput): Promise<{ accepted: number }> {

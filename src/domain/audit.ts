@@ -191,6 +191,10 @@ export const AUDIT_ACTIONS = [
   'source.fetch_refused',
   'answer.ask',
   'answer.rejected',
+  /* The dashboard asking the worker to think, and what came back. */
+  'reasoning.requested',
+  'reasoning.answered',
+  'reasoning.failed',
   'schedule.create',
   'schedule.update',
   'schedule.delete',

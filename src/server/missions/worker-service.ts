@@ -22,7 +22,15 @@ import type {
   WorkerRunStateInput,
 } from '@/domain/worker-protocol';
 import { WORKER_VERSION, isCompatibleWorkerVersion } from '@/domain/worker-protocol';
-import { RATE_WINDOWS, type RateWindow } from '@/domain/claude-capacity';
+import { RATE_WINDOWS, type CapacityDecision, type RateWindow } from '@/domain/claude-capacity';
+import {
+  REASONING_LEASE_MS,
+  REASONING_MAX_ATTEMPTS,
+  type ReasoningAssignment,
+  type ReasoningOutcomeInput,
+} from '@/domain/reasoning';
+import type { ReasoningRepository } from '@/server/repositories/reasoning-types';
+import type { WorkerReasoningClaimInput } from '@/domain/worker-protocol';
 import type { WorkerCapacityReading } from '@/server/repositories/mission-types';
 import { classifyMissionRisk } from '@/domain/mission-risk';
 import { usageOutcomeFor, usageRowForRun } from './usage-ledger';
@@ -99,6 +107,27 @@ export interface WorkerServiceDeps {
    * start-up would keep handing out work it is no longer entitled to.
    */
   readonly currentLevel: () => Promise<QualificationLevel>;
+  /** The reasoning queue. See `claimReasoning`. */
+  readonly reasoning: ReasoningRepository;
+  /**
+   * Where a reasoning answer goes once this service has established who sent it.
+   *
+   * A thunk rather than the service itself, because applying an answer also writes to the proposal
+   * it belongs to — and the proposal store is built further down the container than this service
+   * is. Nothing calls it during construction.
+   */
+  readonly applyReasoning: (
+    workerId: string,
+    outcome: ReasoningOutcomeInput,
+  ) => Promise<{ applied: boolean }>;
+  /**
+   * What the governor would say about spending model capacity right now.
+   *
+   * A thunk for the same reason `currentLevel` is one: the answer changes while the process runs,
+   * and a value captured at construction would keep handing out model work into a window that
+   * filled up an hour ago.
+   */
+  readonly reasoningCapacity: () => Promise<CapacityDecision>;
   readonly clock?: () => Date;
 }
 
@@ -788,6 +817,71 @@ export class WorkerService {
       summary: `The worker ${outcome} the ${command.kind} command.`,
       detail: { commandId, outcome, ...(detail ? { detail } : {}) },
     });
+  }
+
+  /* ------------------------------------------------------------- reasoning */
+
+  /**
+   * Hand the worker a question to think about.
+   *
+   * This is how the dashboard reasons at all. The control plane holds no model credential and must
+   * never hold one; the worker holds Blake's Claude subscription, on his machine, under his login.
+   * So a question travels here and an answer travels back, and the credential does not move.
+   *
+   * Three gates, in this order, each returning null rather than an error — a worker asking for
+   * work it may not have is the ordinary case, not a fault:
+   *
+   *  1. **Is this worker allowed to work at all?** Revoked workers and incompatible builds are
+   *     refused by the same checks the mission claim uses.
+   *  2. **Can it actually run a model?** A worker whose Claude runtime is down still polls, still
+   *     verifies and still integrates. Handing it a question would burn an attempt to learn
+   *     something the heartbeat already said.
+   *  3. **May capacity be spent?** The governor decides. A question left queued because the
+   *     five-hour window is full is a question that will be answered when the window resets, and
+   *     the conversation says exactly that rather than failing it.
+   */
+  async claimReasoning(
+    workerId: string,
+    input: WorkerReasoningClaimInput,
+  ): Promise<ReasoningAssignment | null> {
+    const now = this.clock();
+    await this.applyHeartbeat(workerId, input.heartbeat, now);
+
+    const worker = await this.deps.workers.findById(workerId);
+    if (!worker) throw new NotFoundError('Worker');
+    if (worker.revokedAt) throw new ForbiddenError('This worker has been revoked.');
+    this.assertCompatibleBuild(input.heartbeat.version);
+
+    if (!input.heartbeat.runtimeAvailable) return null;
+
+    const capacity = await this.deps.reasoningCapacity();
+    if (!capacity.mayStartNewWork) return null;
+
+    return this.deps.reasoning.claim({
+      workerId,
+      now,
+      leaseMs: REASONING_LEASE_MS,
+      maxAttempts: REASONING_MAX_ATTEMPTS,
+    });
+  }
+
+  /**
+   * Take the worker's answer.
+   *
+   * `applied` is false when the write did not land — the lease had already been reclaimed, or the
+   * request was answered by somebody else first. That is reported rather than thrown, because from
+   * the worker's side it is not an error: it did the work, the work was simply no longer wanted,
+   * and a 500 would put it into a retry loop over a question that already has an answer.
+   */
+  async reportReasoning(
+    workerId: string,
+    outcome: ReasoningOutcomeInput,
+  ): Promise<{ applied: boolean }> {
+    const worker = await this.deps.workers.findById(workerId);
+    if (!worker) throw new NotFoundError('Worker');
+    if (worker.revokedAt) throw new ForbiddenError('This worker has been revoked.');
+
+    return this.deps.applyReasoning(workerId, outcome);
   }
 
   /* ---------------------------------------------------------------- internals */

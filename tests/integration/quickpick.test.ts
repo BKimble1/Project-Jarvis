@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { IdeaEvaluation } from '@/domain/proposal';
-import type { IdeaEvaluationRequest, IdeaEvaluator } from '@/server/conversation/idea-evaluator';
 import type {
   ProvisionRequest,
   RepositoryHandle,
@@ -9,6 +7,7 @@ import type {
 } from '@/server/providers/github/provisioner';
 import type { getServices } from '@/server/container';
 import { createHarness, type TestHarness } from '../helpers/services';
+import { ReasoningWorkerHarness } from '../helpers/reasoning-worker';
 
 /**
  * The conversation Blake actually had, which the automated gate passed and reality failed.
@@ -31,29 +30,6 @@ const MESSAGE_TWO =
   'Evaluate the QuickPick idea we just discussed. Tell me who would use it, whether it solves a ' +
   'worthwhile problem, what the smallest useful V1 should include, and ask only the questions ' +
   'that would materially change that V1.';
-
-/** A scripted evaluator, so the assertions are about routing rather than about a model's prose. */
-class ScriptedEvaluator implements IdeaEvaluator {
-  readonly name = 'scripted';
-  calls = 0;
-  isConfigured(): boolean {
-    return true;
-  }
-  async evaluate(request: IdeaEvaluationRequest): Promise<IdeaEvaluation> {
-    this.calls += 1;
-    return {
-      likelyUser: 'Someone stuck between two options who wants the decision taken away from them.',
-      problem: `Deciding between two choices when neither is obviously better. From: ${request.title}`,
-      verdict:
-        'Worth an afternoon. The idea is small enough that building it answers the question.',
-      smallestV1: ['Two text inputs', 'A pick button', 'One animation on the result'],
-      assumptions: ['It is used on a phone', 'Nothing needs saving between uses'],
-      uncertainties: ['Whether anyone but you would open it twice'],
-      questions: ['Does it need to remember past picks?', 'Web page or installed app?'],
-      basis: 'reasoned',
-    };
-  }
-}
 
 class RecordingProvisioner implements RepositoryProvisioner {
   readonly created: string[] = [];
@@ -89,12 +65,18 @@ class RecordingProvisioner implements RepositoryProvisioner {
 describe('the QuickPick conversation, through the real service', () => {
   let harness: TestHarness;
   let github: RecordingProvisioner;
-  let evaluator: ScriptedEvaluator;
+  let worker: ReasoningWorkerHarness;
 
   beforeEach(async () => {
     github = new RecordingProvisioner();
-    evaluator = new ScriptedEvaluator();
-    harness = await createHarness({ repositoryProvisioner: github, ideaEvaluator: evaluator });
+    harness = await createHarness({ repositoryProvisioner: github });
+    /*
+     * A connected worker, because that is Blake's ordinary state and because the reasoning path
+     * genuinely depends on one: the model runs there, on his Claude subscription. The suite that
+     * proves what happens *without* one is the dashboard-endpoint block below.
+     */
+    worker = new ReasoningWorkerHarness(harness.services);
+    await worker.ensureEnrolled();
   });
 
   afterEach(async () => {
@@ -113,15 +95,28 @@ describe('the QuickPick conversation, through the real service', () => {
 
     expect(turn.kind).toBe('idea');
     expect(turn.said).not.toBe('Nothing, then.');
-    expect(evaluator.calls).toBe(1);
+
+    /*
+     * The assessment now comes from the worker, on Blake's own Claude subscription, so the first
+     * turn says it is thinking rather than inventing something to fill the gap. The worker then
+     * answers through the same claim-and-report pair it uses in production.
+     */
+    expect(turn.thinking?.state).toBe('thinking');
+    expect(await worker.answerNext()).toBe(true);
+
+    const again = await harness.services.conversation.handle({ message: MESSAGE_ONE });
+    expect(again.thinking?.state).toBe('ready');
 
     /* The six things the owner asked every evaluation to contain. */
-    expect(turn.evaluation?.likelyUser).toBeTruthy();
-    expect(turn.evaluation?.problem).toBeTruthy();
-    expect(turn.evaluation?.verdict).toBeTruthy();
-    expect(turn.evaluation?.smallestV1.length).toBeGreaterThan(0);
-    expect(turn.evaluation?.assumptions.length).toBeGreaterThan(0);
-    expect(turn.evaluation?.questions.length).toBeGreaterThan(0);
+    expect(again.evaluation?.likelyUser).toBeTruthy();
+    expect(again.evaluation?.problem).toBeTruthy();
+    expect(again.evaluation?.verdict).toBeTruthy();
+    expect(again.evaluation?.smallestV1.length).toBeGreaterThan(0);
+    expect(again.evaluation?.assumptions.length).toBeGreaterThan(0);
+    expect(again.evaluation?.questions.length).toBeGreaterThan(0);
+
+    /* One question asked, one answer bought, however many times it was described. */
+    expect(worker.claims).toBe(1);
   });
 
   it('honours the negation without discarding the request', async () => {
@@ -135,6 +130,9 @@ describe('the QuickPick conversation, through the real service', () => {
   });
 
   it('says the evaluation is reasoning rather than research', async () => {
+    await harness.services.conversation.handle({ message: MESSAGE_ONE });
+    await worker.answerNext();
+
     const turn = await harness.services.conversation.handle({ message: MESSAGE_ONE });
     expect(turn.said).toContain('not market research');
   });
@@ -142,6 +140,12 @@ describe('the QuickPick conversation, through the real service', () => {
   it('leaves a durable proposal carrying the idea, the V1 and the open questions', async () => {
     const turn = await harness.services.conversation.handle({ message: MESSAGE_ONE });
     expect(turn.proposal).not.toBeNull();
+
+    /*
+     * The proposal exists before anything has judged the idea — that is what makes "go ahead" an
+     * hour later mean something. The V1 and the questions land on it when the worker answers.
+     */
+    await worker.answerNext();
 
     const stored = await harness.services.proposals.findById(turn.proposal!.id);
     expect(stored?.state).toBe('open');
@@ -440,10 +444,26 @@ describe('the QuickPick conversation, through the dashboard endpoint', () => {
     expect(JSON.stringify(accepted)).not.toContain('github.com/');
   });
 
-  it('reports honestly that nothing judged the idea when no model is configured', async () => {
+  it('reports honestly that no worker is connected, rather than inventing a verdict', async () => {
     const first = await send(MESSAGE_ONE);
-    const evaluation = first.evaluation as { basis: string } | null;
-    expect(evaluation?.basis).toBe('not_assessed');
-    expect(String(first.said)).toMatch(/no model configured here/i);
+    const thinking = first.thinking as {
+      state: string;
+      reason?: string;
+      retryable?: boolean;
+    } | null;
+
+    /*
+     * No worker is enrolled in this suite, and the worker is where Blake's Claude subscription
+     * lives. The honest answer names that exact condition — not "no model is configured", which
+     * used to send him looking for an API key he should not need.
+     */
+    expect(thinking?.state).toBe('blocked');
+    expect(thinking?.reason).toBe('no_worker');
+    expect(thinking?.retryable).toBe(true);
+    expect(first.evaluation).toBeNull();
+    expect(String(first.said)).not.toMatch(/api key/i);
+    expect(String(first.said)).toMatch(/worker/i);
+    /* And it still says the thing that matters most. */
+    expect(String(first.said).toLowerCase()).toContain('nothing has been created');
   });
 });

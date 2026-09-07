@@ -185,6 +185,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * speech would mean the one thing he has to answer scrolls past and is gone.
    */
   const [evaluation, setEvaluation] = React.useState<ConversationEvaluation | null>(null);
+  const [thinking, setThinking] = React.useState<ThinkingSnapshot | null>(null);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
   const turnId = React.useRef(0);
@@ -459,6 +460,67 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * spoken line in the middle of the screen and the full structured answer opens in the panel
    * below, which is what keeps a long reply from covering the scene.
    */
+  /*
+   * Shown only while there is no assessment to show instead. Once the worker answers, the
+   * evaluation is the more useful thing on screen and the waiting note has done its job.
+   */
+  const pendingThought = thinking && thinking.state !== 'ready' && !evaluation ? thinking : null;
+
+  /**
+   * Wait for the worker to finish thinking, and say so while it does.
+   *
+   * ## Why the browser polls rather than the request blocking
+   *
+   * Because the model is not here. It runs on Blake's worker, on his Claude subscription, and the
+   * answer comes back through the control plane seconds or minutes later. Holding the POST open
+   * for that would tie a browser request to another machine's availability: close the tab, lose
+   * the network, redeploy the control plane, and the answer is gone. Polling a row means none of
+   * those lose it.
+   *
+   * ## Why it stops on its own
+   *
+   * `blocked` and `ready` are both ends. A question that cannot be answered right now says why —
+   * no worker, no runtime, no capacity — and the poll stops rather than spinning against a
+   * condition that needs Blake to change something. The row stays queued either way, so starting
+   * the worker later finishes the thought without him asking again.
+   */
+  React.useEffect(() => {
+    if (thinking?.state !== 'thinking') return;
+    const requestId = thinking.requestId;
+    let cancelled = false;
+
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const response = await fetch(
+            `/api/conversation/thinking?request=${encodeURIComponent(requestId)}`,
+          );
+          if (!response.ok || cancelled) return;
+          const body = (await response.json()) as { thinking: ThinkingSnapshot };
+          if (cancelled || body.thinking.state === 'thinking') return;
+
+          setThinking(body.thinking);
+          if (body.thinking.state === 'ready') {
+            setEvaluation(body.thinking.evaluation);
+            setExpanded(true);
+            say(body.thinking.evaluation.verdict, null);
+          } else {
+            say(body.thinking.detail, null);
+          }
+        } catch {
+          /* A missed poll is not news. The next one will say the same thing or a better one. */
+        }
+      })();
+    }, THINKING_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    /* `say` is stable for the life of the screen; re-subscribing on it would restart the timer. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thinking]);
+
   async function askJarvis(text: string) {
     setBusy(true);
     try {
@@ -482,6 +544,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
         started: { missionId: string } | null;
         proposal: { id: string; summary: string } | null;
         evaluation: ConversationEvaluation | null;
+        thinking: ThinkingSnapshot | null;
         notes: readonly string[];
       };
 
@@ -496,6 +559,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
        */
       setProposal(turn.proposal);
       setEvaluation(turn.evaluation ?? null);
+      setThinking(turn.thinking ?? null);
       if (turn.started) {
         markCompleted();
         router.refresh();
@@ -958,11 +1022,17 @@ export function JarvisScreen(props: JarvisScreenProps) {
           showHistory={showHistory}
           onToggleHistory={() => setShowHistory((open) => !open)}
           detail={
-            expanded && (answer || briefing || evaluation) ? (
+            expanded && (answer || briefing || evaluation || pendingThought) ? (
               <div className="jx-scroll max-h-[28vh] border-b border-[color-mix(in_srgb,var(--jx-line)_45%,transparent)]">
                 <div className="flex items-center justify-between px-3 pt-2">
                   <p className="jx-label">
-                    {briefing ? 'Briefing' : evaluation ? 'What I make of it' : 'Answer'}
+                    {briefing
+                      ? 'Briefing'
+                      : evaluation
+                        ? 'What I make of it'
+                        : pendingThought
+                          ? 'Thinking'
+                          : 'Answer'}
                   </p>
                   <button
                     type="button"
@@ -977,6 +1047,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
                     <BriefingBody briefing={briefing} />
                   </div>
                 ) : null}
+                {pendingThought ? <ThinkingBody thinking={pendingThought} /> : null}
                 {evaluation ? <EvaluationBody evaluation={evaluation} /> : null}
                 {answer ? (
                   <AnswerPanel
@@ -1736,6 +1807,35 @@ function spokenBriefing(briefing: MorningBriefing): string {
   ].join(' ');
 }
 
+/** How often the browser asks whether the worker has finished thinking. */
+const THINKING_POLL_MS = 2000;
+
+/**
+ * Where a question put to the worker has got to.
+ *
+ * Structural rather than imported: components may not import from `@/server`, and this is the
+ * shape that arrives over the wire from `ReasoningService`.
+ */
+export type ThinkingSnapshot =
+  | {
+      readonly state: 'thinking';
+      readonly requestId: string;
+      readonly since: string;
+      readonly detail: string;
+    }
+  | {
+      readonly state: 'ready';
+      readonly requestId: string;
+      readonly evaluation: ConversationEvaluation;
+    }
+  | {
+      readonly state: 'blocked';
+      readonly requestId: string;
+      readonly reason: string;
+      readonly detail: string;
+      readonly retryable: boolean;
+    };
+
 /** The structured half of an idea assessment, laid out to be read rather than heard. */
 export interface ConversationEvaluation {
   readonly likelyUser: string;
@@ -1746,6 +1846,34 @@ export interface ConversationEvaluation {
   readonly uncertainties: readonly string[];
   readonly questions: readonly string[];
   readonly basis: 'reasoned' | 'not_assessed';
+}
+
+/**
+ * The honest half-second — or half-minute — between asking and knowing.
+ *
+ * This panel exists because the alternative is a spinner, and a spinner says nothing about *why*
+ * you are waiting. Waiting for a worker that is running the question on your own Claude
+ * subscription is a different thing from waiting for a worker that is not running at all, and the
+ * second one needs you to go and start it.
+ *
+ * A blocked state is not an error page. The question is still queued — that is what `retryable`
+ * says — so the note tells Blake what to change and promises that the answer will arrive without
+ * him asking again.
+ */
+function ThinkingBody({ thinking }: { thinking: ThinkingSnapshot }) {
+  if (thinking.state === 'ready') return null;
+  const blocked = thinking.state === 'blocked';
+  return (
+    <div className="p-3" data-thinking={thinking.state}>
+      <p className="jx-label">{blocked ? 'Not thinking yet' : 'Jarvis is thinking'}</p>
+      <p className="mt-1 text-sm text-[var(--jx-ink-soft)]">{thinking.detail}</p>
+      {blocked && thinking.retryable ? (
+        <p className="mt-2 text-xs text-[var(--jx-ink-soft)]">
+          The question is still queued. Nothing has been created, and you do not need to ask again.
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 /**

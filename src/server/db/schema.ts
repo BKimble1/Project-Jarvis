@@ -80,7 +80,13 @@ import type {
   CapabilityVerdict,
 } from '@/domain/authorization';
 import type { OperatingMode } from '@/domain/operating-mode';
-import type { ProposalState } from '@/domain/proposal';
+import type { IdeaEvaluation, ProposalState } from '@/domain/proposal';
+import type {
+  ReasoningFailure,
+  ReasoningInput,
+  ReasoningKind,
+  ReasoningState,
+} from '@/domain/reasoning';
 import type { ConnectionProvider, ConnectionStatus } from '@/domain/connection';
 import type { BenefitKind, EffortSize, OutcomeVerdict } from '@/domain/outcome';
 import type {
@@ -689,6 +695,65 @@ export const conversationProposals = pgTable(
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
   },
   (table) => [index('conversation_proposals_state_idx').on(table.state, table.updatedAt)],
+);
+
+/**
+ * A question put to the worker's model, and the answer that came back.
+ *
+ * ## Why the dashboard queues instead of calling
+ *
+ * The control plane has no Claude credential and must never acquire one. The model access is a
+ * subscription, held by the Claude Code runtime the worker already runs on the owner's machine, and
+ * the whole point of the worker boundary is that the credential stays there. So the dashboard
+ * writes a row and the worker claims it over the authenticated protocol it already uses for
+ * missions — the question travels, the credential does not.
+ *
+ * ## Why the row outlives the request that made it
+ *
+ * The answer arrives from another process, seconds or minutes later, possibly after either side has
+ * restarted. Held in memory it would be lost to a redeploy, a crash, or the owner refreshing the
+ * page, and "Jarvis was thinking about that and forgot" is worse than never having started. The row
+ * is also what makes retry safe: `request_key` is unique, so the same question queues once however
+ * many times it is asked.
+ *
+ * `lease_owner`/`lease_expires_at` are the same claim shape the mission queue and the ingestion
+ * queue use, for the same reason: one worker at a time, and a dead worker's work comes back.
+ */
+export const reasoningRequests = pgTable(
+  'reasoning_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').$type<ReasoningKind>().notNull(),
+    /** One open request per question per subject. See the note above. */
+    requestKey: text('request_key').notNull().unique(),
+    proposalId: uuid('proposal_id').references(() => conversationProposals.id, {
+      onDelete: 'cascade',
+    }),
+    /** Which conversation is waiting, so an answer reaches the turn that asked for it. */
+    conversationId: text('conversation_id'),
+    /** Redacted and bounded before it is written. Never a credential — see `ideaEvaluationInput`. */
+    input: jsonb('input').$type<ReasoningInput>().notNull(),
+    state: text('state').$type<ReasoningState>().notNull().default('queued'),
+    attempt: integer('attempt').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    leaseOwner: text('lease_owner'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    result: jsonb('result').$type<IdeaEvaluation>(),
+    failure: text('failure').$type<ReasoningFailure>(),
+    /** One bounded sentence for the owner. Never a stack trace, never a provider payload. */
+    failureDetail: text('failure_detail'),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    durationMs: integer('duration_ms'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('reasoning_requests_claim_idx').on(table.state, table.leaseExpiresAt),
+    index('reasoning_requests_proposal_idx').on(table.proposalId),
+  ],
 );
 
 /**
@@ -3677,6 +3742,7 @@ export const schema = {
   conversationProposals,
   providerConnections,
   oauthAuthorizations,
+  reasoningRequests,
   projectRelations,
   projectSourceRelations,
   evidenceRelations,

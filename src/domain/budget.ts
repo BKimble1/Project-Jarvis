@@ -30,6 +30,8 @@ export const USAGE_KINDS = [
   'review',
   'repair',
   'inspection',
+  /** A short reasoning turn the dashboard asked the worker for — an idea evaluation. */
+  'reasoning',
   /** A narration or answer call made by the control plane rather than by a worker. */
   'narration',
   'answer',
@@ -44,6 +46,7 @@ export const USAGE_KIND_LABELS: Record<UsageKind, string> = {
   review: 'Review',
   repair: 'Repair',
   inspection: 'Inspection',
+  reasoning: 'Dashboard reasoning',
   narration: 'Briefing narration',
   answer: 'Answer',
   briefing: 'Briefing',

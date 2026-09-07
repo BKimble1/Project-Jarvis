@@ -46,6 +46,10 @@ import type {
   OAuthAuthorizationRepository,
 } from './repositories/connection-types';
 import { ConnectionService } from './connections/connection-service';
+import { DrizzleReasoningRepository } from './repositories/reasoning-drizzle';
+import { ReasoningService } from './conversation/reasoning-service';
+import type { ReasoningRepository } from './repositories/reasoning-types';
+import { currentCapacityDecision } from './operator/capacity-view';
 import { MicrosoftAccess } from './connections/microsoft-access';
 import { PersonalSignalsService } from './connections/personal-signals-service';
 import {
@@ -54,11 +58,7 @@ import {
   type CredentialVault,
 } from './security/credential-vault';
 import type { ProposalRepository } from './repositories/proposal-types';
-import {
-  UnconfiguredIdeaEvaluator,
-  type IdeaEvaluator,
-} from '@/server/conversation/idea-evaluator';
-import { AnthropicIdeaEvaluator } from '@/server/conversation/anthropic-idea-evaluator';
+import {} from '@/server/conversation/idea-evaluator';
 import { AttentionService } from '@/server/services/attention-service';
 import {
   DrizzleAppProfileRepository,
@@ -242,7 +242,8 @@ export interface Services {
   readonly imports: GithubImportService;
   readonly provisioning: ProjectProvisioningService;
   readonly proposals: ProposalRepository;
-  readonly ideaEvaluator: IdeaEvaluator;
+  readonly reasoningRepo: ReasoningRepository;
+  readonly reasoningService: ReasoningService;
   readonly connectionRepo: ConnectionRepository;
   readonly oauthAuthorizations: OAuthAuthorizationRepository;
   readonly connections: ConnectionService;
@@ -379,7 +380,6 @@ export interface BuildServicesOverrides {
    * no test can accidentally assert model behaviour when none is configured. The default is
    * deliberately the honest null implementation.
    */
-  readonly ideaEvaluator?: IdeaEvaluator;
 }
 
 export function buildServices(
@@ -509,6 +509,23 @@ export function buildServices(
    */
   const currentLevel = () => qualificationService.currentLevel();
 
+  /*
+   * The reasoning queue, and the governor's answer about spending on it.
+   *
+   * Both are declared here so the worker service — which is constructed early — can be handed them
+   * without the container becoming a cycle. `reasoningCapacity` is a thunk closing over services
+   * declared further down, exactly as `currentLevel` above is, and for the same reason: the answer
+   * changes while the process runs, and nothing calls it during construction.
+   */
+  const reasoningRepo = new DrizzleReasoningRepository(db);
+  const reasoningCapacity = async () =>
+    (
+      await currentCapacityDecision(
+        { workerRepo, charterService, operatorService },
+        overrides.clock?.() ?? new Date(),
+      )
+    ).decision;
+
   const workerService = new WorkerService({
     missions: missionRepo,
     plans,
@@ -530,6 +547,9 @@ export function buildServices(
     concurrencyLimit: config.missions.concurrencyLimit,
     allowWebResearch: config.missions.allowWebResearch,
     currentLevel,
+    reasoning: reasoningRepo,
+    reasoningCapacity,
+    applyReasoning: (workerId, outcome) => reasoningService.apply(workerId, outcome),
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -880,6 +900,21 @@ export function buildServices(
   const proposals = new DrizzleProposalRepository(db);
 
   /*
+   * Queues questions for the worker and reads the answers back. Declared here, after the proposal
+   * store it writes to, and reached from the worker service through a thunk — the forward
+   * reference is resolved long before a worker reports anything.
+   */
+  const reasoningService = new ReasoningService({
+    reasoning: reasoningRepo,
+    proposals,
+    workers: workerRepo,
+    capacity: reasoningCapacity,
+    audit,
+    usage,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  /*
    * The vault, or an honest refusal to be one.
    *
    * Without a key, `UnconfiguredCredentialVault` throws on every operation, so a provider
@@ -923,23 +958,10 @@ export function buildServices(
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
-  /*
-   * The paid API, and only when the owner configured it.
-   *
-   * `ANTHROPIC_API_KEY` is the metered API, not the Claude subscription the worker runs on. Setting
-   * it is a deliberate act with a bill attached, so its absence means the honest evaluator rather
-   * than a quiet switch to paid billing.
-   */
-  const ideaEvaluator: IdeaEvaluator =
-    overrides.ideaEvaluator ??
-    (config.ai.enabled && config.ai.apiKey
-      ? new AnthropicIdeaEvaluator({ apiKey: config.ai.apiKey, model: config.ai.model })
-      : new UnconfiguredIdeaEvaluator());
-
   const conversation = new ConversationService({
     router,
     proposals,
-    evaluator: ideaEvaluator,
+    reasoning: reasoningService,
     missions,
     projects,
     provisioning,
@@ -989,7 +1011,8 @@ export function buildServices(
     imports,
     provisioning,
     proposals,
-    ideaEvaluator,
+    reasoningRepo,
+    reasoningService,
     connectionRepo,
     oauthAuthorizations,
     connections,

@@ -9,6 +9,7 @@ import {
   type CapacityView,
   type CapacityWindowView,
 } from '@/domain/claude-capacity';
+import type { CapacityDecision } from '@/domain/claude-capacity';
 import type { Services } from '@/server/container';
 
 /**
@@ -45,14 +46,36 @@ const AUTH_MODE_LABELS: Record<string, string> = {
   unknown: 'Not yet established',
 };
 
-export async function buildCapacityView(
-  services: Services,
+/**
+ * The narrow slice of the container the capacity decision actually needs.
+ *
+ * Named separately from `Services` so callers that exist *before* the container is finished — the
+ * worker service, which is constructed early and needs to know whether it may hand out model work
+ * — can be given exactly these three and nothing else. Passing the whole container there would be
+ * a cycle.
+ */
+export interface CapacitySources {
+  readonly workerRepo: Pick<Services['workerRepo'], 'capacityObservations'>;
+  readonly charterService: Pick<Services['charterService'], 'authority'>;
+  readonly operatorService: Pick<Services['operatorService'], 'recentTicks'>;
+}
+
+/**
+ * What the governor would say right now.
+ *
+ * The single place the verdict is computed. Two surfaces render it and one gate enforces it, and a
+ * second computation would eventually round differently or forget the hysteresis — at which point
+ * the screen and the gate would disagree about the same account, which is the worst possible
+ * outcome for a number an owner is being asked to trust.
+ */
+export async function currentCapacityDecision(
+  sources: CapacitySources,
   now = new Date(),
-): Promise<CapacityView> {
+): Promise<{ decision: CapacityDecision; account: AccountCapacity; lastFinished: LastPass }> {
   const [observations, authority, ticks] = await Promise.all([
-    services.workerRepo.capacityObservations(),
-    services.charterService.authority(),
-    services.operatorService.recentTicks(1),
+    sources.workerRepo.capacityObservations(),
+    sources.charterService.authority(),
+    sources.operatorService.recentTicks(1),
   ]);
 
   const account: AccountCapacity = mergeAccountLimits(observations, now);
@@ -67,6 +90,17 @@ export async function buildCapacityView(
   const decision = decideCapacity(account, reserve, {
     previous: lastFinished?.capacityVerdict ?? null,
   });
+
+  return { decision, account, lastFinished };
+}
+
+type LastPass = Awaited<ReturnType<Services['operatorService']['recentTicks']>>[number] | null;
+
+export async function buildCapacityView(
+  services: Services,
+  now = new Date(),
+): Promise<CapacityView> {
+  const { decision, account, lastFinished } = await currentCapacityDecision(services, now);
 
   const windows: CapacityWindowView[] = RATE_WINDOWS.map((window) => {
     const observed = account.windows[window].utilisationPercent;

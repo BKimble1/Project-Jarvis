@@ -7,7 +7,7 @@ import type { ProjectRepository } from '@/server/repositories/types';
 import type { StatusQueryRouter } from '@/server/query/router';
 import type { ProjectProvisioningService } from '@/server/services/project-provisioning';
 import { ConversationService } from '@/server/conversation/conversation-service';
-import { UnconfiguredIdeaEvaluator } from '@/server/conversation/idea-evaluator';
+import type { ReasoningService, ThinkingState } from '@/server/conversation/reasoning-service';
 import type { ProposalRepository } from '@/server/repositories/proposal-types';
 import type { Proposal } from '@/domain/proposal';
 
@@ -118,7 +118,8 @@ function harness(
         title: input.title,
         idea: input.idea,
         summary: input.summary,
-        evaluation: input.evaluation,
+        /* Null means "nothing new to say", never "forget what you knew" — as in the real table. */
+        evaluation: input.evaluation ?? found?.evaluation ?? null,
         openQuestions: [...input.openQuestions],
         recommendedV1: [...input.recommendedV1],
         assumptions: [...input.assumptions],
@@ -132,6 +133,20 @@ function harness(
       };
       proposalRows.set(id, row);
       return row;
+    },
+    async recordEvaluation(id, evaluation, now) {
+      const row = proposalRows.get(id);
+      if (!row || row.state !== 'open') return null;
+      const next: Proposal = {
+        ...row,
+        evaluation,
+        openQuestions: [...evaluation.questions],
+        recommendedV1: [...evaluation.smallestV1],
+        assumptions: [...evaluation.assumptions],
+        updatedAt: now.toISOString(),
+      };
+      proposalRows.set(id, next);
+      return next;
     },
     async findById(id) {
       return proposalRows.get(id) ?? null;
@@ -156,10 +171,27 @@ function harness(
     },
   };
 
+  /*
+   * A reasoning service that always reports the same honest blocked state: no worker connected.
+   * That is production's behaviour before Blake starts his worker, and it is the state these
+   * tests care about — they are about routing and about what is created, not about a verdict.
+   */
+  const reasoning = {
+    async requestIdeaEvaluation(): Promise<ThinkingState> {
+      return {
+        state: 'blocked',
+        requestId: 'req-1',
+        reason: 'no_worker',
+        detail: 'No worker is connected, and the worker is where your Claude subscription lives.',
+        retryable: true,
+      };
+    },
+  } as unknown as ReasoningService;
+
   const service = new ConversationService({
     router,
     proposals,
-    evaluator: new UnconfiguredIdeaEvaluator(),
+    reasoning,
     missions,
     projects,
     provisioning,

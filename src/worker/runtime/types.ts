@@ -17,6 +17,15 @@ export interface AgentSessionRequest {
   /** Absolute path the agent is confined to. */
   readonly workspaceRoot: string;
   readonly systemPrompt: string;
+  /**
+   * Whether `systemPrompt` extends Claude Code's own preset or replaces it.
+   *
+   * `'preset'` is the default and is right for everything that touches a repository: the agent
+   * should still know it is a coding agent. `'replace'` exists for a turn that is not one — asking
+   * whether an idea is worth building is a question about judgement, and telling the model it is a
+   * coding assistant first makes it answer as one.
+   */
+  readonly systemPromptMode?: 'preset' | 'replace';
   readonly prompt: string;
   /** Continue a previous conversation rather than starting fresh. */
   readonly resumeSessionId: string | null;

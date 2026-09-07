@@ -180,6 +180,29 @@ uses, which is why that test can never reach a real repository.
 
 ---
 
+## Thinking for the dashboard
+
+The worker is where your Claude subscription lives, so it is also where the dashboard's reasoning
+happens. Alongside the mission loop it runs a fourth loop that claims short questions — "is this
+idea worth building?" — runs one bounded turn, and reports a structured answer.
+
+Three things about that loop are worth knowing.
+
+**It runs during a mission.** A question you just typed cannot wait behind a twenty-minute build,
+so this loop is separate from the work loop. It takes one question at a time, and the control plane
+decides whether there is capacity to spare — the same governor that gates mission starts.
+
+**It uses no tools and touches nothing.** Every tool call in a reasoning session is denied, and the
+session runs in an empty scratch directory. A judgement about an idea needs nothing from the
+machine it runs on.
+
+**It is bounded.** Two turns, ninety seconds, three attempts. A question that cannot be answered
+becomes a sentence the owner reads — "your Claude runtime is not usable", "the model did not answer
+in time" — rather than a spinner that never resolves.
+
+If the worker is not running, the dashboard says so and keeps the question. Starting the worker
+finishes the thought.
+
 ## What the worker will and will not do
 
 **It will:** clone into an isolated workspace, create a `jarvis/<mission-id>-<slug>` branch, make

@@ -27,6 +27,18 @@ export interface ProposalRepository {
     readonly now: Date;
   }): Promise<Proposal>;
 
+  /**
+   * Attach an evaluation to a proposal that is still open.
+   *
+   * Separate from `open` because the two happen at different moments now: the proposal is written
+   * the instant the owner describes an idea, and the assessment arrives later, from the worker.
+   * Conditional on `state = 'open'` so an answer that arrives after "go ahead" cannot rewrite the
+   * record of what was agreed to.
+   *
+   * Returns null when nothing was updated — the proposal was accepted, superseded, or gone.
+   */
+  recordEvaluation(id: string, evaluation: IdeaEvaluation, now: Date): Promise<Proposal | null>;
+
   findById(id: string): Promise<Proposal | null>;
 
   /**

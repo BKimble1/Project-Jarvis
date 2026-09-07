@@ -47,6 +47,11 @@ export const WORKER_VERSION = '2.0.0';
  * A minor difference is a worker that gained a capability the control plane does not use yet, and
  * that is fine. A major difference means the two disagree about what a report *means*, which is
  * the case where continuing quietly is worse than refusing.
+ *
+ * Purely additive endpoints therefore do not move this at all. The reasoning claim was added
+ * without a bump on purpose: an older worker simply never calls it, nothing it already reports
+ * changes meaning, and `workerProtocolVersion` is a qualification assumption — moving it would
+ * demote a working deployment to make a note of a capability that broke nothing.
  */
 export function isCompatibleWorkerVersion(version: string | null | undefined): boolean {
   if (!version) return false;
@@ -440,6 +445,21 @@ export const workerVerificationSchema = verificationInputSchema.extend({
 export const workerArtifactSchema = artifactInputSchema.extend({
   runId: z.string().uuid().nullish(),
 });
+
+/* ---------------------------------------------------------------- reasoning */
+
+/**
+ * Asking for a question to think about.
+ *
+ * Carries a heartbeat and nothing else. What the worker is able to do is already known from the
+ * heartbeat's `runtimeAvailable`, and a worker whose Claude runtime is down must not be handed a
+ * question it cannot answer — so the control plane reads that rather than taking the worker's word
+ * for it in a separate field.
+ */
+export const workerReasoningClaimSchema = z.object({
+  heartbeat: workerHeartbeatSchema,
+});
+export type WorkerReasoningClaimInput = z.infer<typeof workerReasoningClaimSchema>;
 
 export const workerCommandAckSchema = z.object({
   commandId: z.string().uuid(),

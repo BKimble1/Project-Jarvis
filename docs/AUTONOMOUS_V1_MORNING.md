@@ -13,8 +13,12 @@ Read the last section first if you only read one.
 
 > **You:** I have an idea for an app that tracks rent across my flats.
 
-Jarvis will say what it would want to know, and offer to start it. **Nothing is created.** No
-project, no repository, no mission. Then:
+Jarvis says it is thinking, and asks your worker to judge it — on **your Claude subscription**, in
+the runtime the worker already runs. A moment later the assessment appears: who would use it, the
+problem it solves, whether it looks worth building, the smallest useful V1, what is being assumed,
+and only the questions that would change that V1.
+
+**Nothing is created** while any of that happens. No project, no repository, no mission. Then:
 
 > **You:** Go ahead.
 
@@ -153,10 +157,17 @@ changes neither yet. Set them on the operations screen and they take effect imme
 have slowed down" while every mission slot stayed open would be exactly the kind of thing that makes
 the rest of what Jarvis says untrustworthy, so it does not say it.
 
-**Evaluating an idea is structured, not researched.** When you describe an idea Jarvis says what it
-would want to know and offers to start it. It has not researched the market, compared it to
-anything, or estimated the work, and it says so in as many words. Anything more confident would be
-invented.
+**Evaluating an idea is reasoned, not researched.** The judgement is a real one — a Claude turn on
+your subscription, run by your worker — but it has no internet, no market data and no competitor
+list. It reasons from what you said and says so in as many words, every time. Anything more
+confident would be invented.
+
+**Thinking needs the worker running.** The dashboard holds no Claude credential and never will; the
+subscription lives on the worker. So if the worker is not running, Jarvis says exactly that instead
+of judging the idea — and keeps the question, so starting the worker finishes the thought without
+you asking again. The same is true when your five-hour window is full: it names the window, keeps
+the question, and answers when there is room. There is no `ANTHROPIC_API_KEY` anywhere in this
+path, and you should not set one for it.
 
 **Naming is a guess, and a shallow one.** "Build me a simple rent tracker app" becomes
 `Rent Tracker` / `rent-tracker`. It is a word-list heuristic. Rename the project on its screen if it

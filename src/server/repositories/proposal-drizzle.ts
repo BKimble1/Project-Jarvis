@@ -75,7 +75,12 @@ export class DrizzleProposalRepository implements ProposalRepository {
       title: input.title,
       idea: input.idea,
       summary: input.summary,
-      evaluation: input.evaluation,
+      /*
+       * Null means "nothing new to say about it", not "forget what you knew". The assessment now
+       * arrives from the worker, minutes after the proposal is written, so re-describing an idea
+       * while its answer is in flight must not erase the answer that is about to land.
+       */
+      evaluation: input.evaluation ?? found?.evaluation ?? null,
       openQuestions: [...input.openQuestions],
       recommendedV1: [...input.recommendedV1],
       assumptions: [...input.assumptions],
@@ -95,6 +100,31 @@ export class DrizzleProposalRepository implements ProposalRepository {
 
     if (!row) throw new Error('Proposal could not be recorded.');
     return toProposal(row);
+  }
+
+  async recordEvaluation(
+    id: string,
+    evaluation: IdeaEvaluation,
+    now: Date,
+  ): Promise<Proposal | null> {
+    if (!UUID.test(id)) return null;
+    /*
+     * Conditional on still being open. An evaluation that arrives after the owner said "go ahead"
+     * is late to a decision already taken, and rewriting the proposal then would change the record
+     * of what was agreed to after the fact.
+     */
+    const [row] = await this.db
+      .update(conversationProposals)
+      .set({
+        evaluation,
+        openQuestions: [...evaluation.questions],
+        recommendedV1: [...evaluation.smallestV1],
+        assumptions: [...evaluation.assumptions],
+        updatedAt: now,
+      })
+      .where(and(eq(conversationProposals.id, id), eq(conversationProposals.state, 'open')))
+      .returning();
+    return row ? toProposal(row) : null;
   }
 
   async findById(id: string): Promise<Proposal | null> {

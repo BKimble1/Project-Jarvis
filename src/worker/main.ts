@@ -4,6 +4,7 @@ import { ControlPlaneClient, ControlPlaneError } from './client';
 import { buildWorkerConfig, describeWorkerConfig, type WorkerConfig } from './config';
 import { GitHubRestDelivery, type GitHubDelivery } from './delivery';
 import { MissionRunner } from './mission-runner';
+import { ReasoningRunner } from './reasoning-runner';
 import { TaskRunner } from './task-runner';
 import { DETERMINISTIC_ROLES, AGENT_ROLES } from '@/domain/agent-role';
 import { ClaudeAgentRuntime } from './runtime/claude-agent-sdk';
@@ -167,7 +168,86 @@ export class JarvisWorkerProcess {
     this.log(`Runtime: ${this.deps.runtime.name} — ${this.runtimeDetail}`);
     this.log(`Workspaces: ${this.workspaceDetail}`);
 
-    await Promise.all([this.pollLoop(), this.workLoop(), this.operatorLoop()]);
+    await Promise.all([
+      this.pollLoop(),
+      this.workLoop(),
+      this.operatorLoop(),
+      this.reasoningLoop(),
+    ]);
+  }
+
+  /**
+   * Answer questions the dashboard asked, on the owner's own Claude subscription.
+   *
+   * ## Why this is a fourth loop and not part of the work loop
+   *
+   * Because the work loop blocks for the length of a mission, and a mission is measured in
+   * minutes. A question Blake just typed into the dashboard cannot wait behind one — the whole
+   * point of asking is that somebody is sitting there. This loop claims at most one question at a
+   * time, so it costs one short model turn and never competes with itself, but it does run while a
+   * mission runs.
+   *
+   * ## Why it is safe to run alongside a mission
+   *
+   * The control plane decides, not the worker. `claimReasoning` returns null when the governor
+   * says the subscription window has no room, so "am I already spending capacity?" is answered
+   * where the capacity is actually known, by the same governor that gates mission starts. A worker
+   * that is draining stops asking, and a worker whose runtime is unavailable is never handed a
+   * question in the first place.
+   *
+   * ## Why failures are logged and swallowed
+   *
+   * Same reason the operator loop swallows its own: a control plane that cannot answer a claim
+   * right now must not stop a worker from finishing the mission in its hands. The question stays
+   * queued, and the conversation waiting on it says so.
+   */
+  private async reasoningLoop(): Promise<void> {
+    while (!this.stopped) {
+      try {
+        if (!this.draining && this.runtimeAvailable) {
+          await this.claimAndAnswer();
+        }
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.fatal) {
+          this.log(`The control plane rejected this worker: ${error.message}`);
+          this.stopped = true;
+          break;
+        }
+        this.log(`Reasoning failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      await this.sleep(this.deps.config.pollIntervalMs);
+    }
+  }
+
+  /** One question, start to finish. Returns whether there was anything to think about. */
+  private async claimAndAnswer(): Promise<boolean> {
+    const assignment = await this.deps.client.claimReasoning({
+      heartbeat: await this.heartbeat(),
+    });
+    if (!assignment) return false;
+
+    this.log(`Thinking about ${assignment.kind} ${assignment.requestId}.`);
+    const runner = new ReasoningRunner({
+      runtime: this.deps.runtime,
+      workspaceRoot: this.deps.config.workspaceRoot,
+    });
+
+    const outcome = await runner.run(assignment);
+    this.lastActivityAt = new Date();
+
+    /*
+     * Reported even when it failed, and especially when it failed. A question whose answer never
+     * comes back leaves somebody watching a spinner; a question that comes back as "the runtime is
+     * not available" tells them what to do about it.
+     */
+    const { applied } = await this.deps.client.reportReasoning(outcome);
+    this.log(
+      outcome.status === 'succeeded'
+        ? `Answered ${assignment.requestId}${applied ? '' : ' (no longer wanted)'}.`
+        : `Could not answer ${assignment.requestId}: ${outcome.failure}.`,
+    );
+    return true;
   }
 
   /**

@@ -110,6 +110,21 @@ caller is ingestion, which stores what it read.
 - **Audience ceilings are fixed in code.** A wallboard may see `public` and nothing else; an agent
   may see `internal`; neither can be raised by any request field. `buildScopeFilter` clamps down
   and never up.
+- **The dashboard has no model credential, and reasoning does not give it one.** When the
+  conversation needs a model — judging whether an idea is worth building — it writes a row and the
+  worker claims it over the same authenticated protocol it uses for missions. The Claude
+  subscription stays on the worker, on the owner's machine, under his login; what crosses the wire
+  is a question and an answer. The assignment type has no field for a token, a session, a database
+  URL or an account identifier, and a test asserts that neither the worker's own token nor the
+  session secret ever reaches a model prompt.
+- **A reasoning turn may not use tools.** Every tool call in that session is denied outright
+  (`P-REASON01`) and it runs in an empty scratch directory with no repository in it. `readOnly`
+  alone would not do — it disallows the editing tools and leaves the shell.
+- **A reasoning turn is metered and audited like everything else.** Tokens and duration land in
+  `usage_records` with `costBasis: 'unknown'` (a subscription turn has no price, and zero would
+  claim it was free), and `reasoning.requested` / `reasoning.answered` / `reasoning.failed` land in
+  the audit trail. The failure text the worker reports is bounded and redacted twice — once by the
+  worker before it is sent, once by the repository on the way in.
 - **A secret is never remembered, however it is asked for.** Passwords, API keys, access and
   refresh tokens, private keys, one-time and recovery codes, card and account numbers are refused
   outright — not stored privately, refused. Storing one privately still puts it in the database, in

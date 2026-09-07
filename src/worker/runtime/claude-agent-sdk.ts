@@ -342,11 +342,20 @@ export class ClaudeAgentRuntime implements AgentRuntime {
          */
         settingSources: [],
         disallowedTools: request.readOnly ? ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'] : [],
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: request.systemPrompt,
-        },
+        /*
+         * Appending to Claude Code's own preset by default, replacing it only when the caller says
+         * so. A repository session wants the preset; a reasoning turn that never touches a file
+         * does not, and inheriting "you are a coding assistant" is how a question about whether an
+         * idea is worth building comes back as an implementation plan.
+         */
+        systemPrompt:
+          request.systemPromptMode === 'replace'
+            ? request.systemPrompt
+            : {
+                type: 'preset',
+                preset: 'claude_code',
+                append: request.systemPrompt,
+              },
         /*
          * The agent inherits an environment with every credential removed, and then at most one
          * put back: the model credential it cannot work without.
