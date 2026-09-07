@@ -127,6 +127,13 @@
       "when": 1788621691035,
       "tag": "0017_conversation_proposals",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1788621692035,
+      "tag": "0018_provider_connections",
+      "breakpoints": true
     }
   ]
 }

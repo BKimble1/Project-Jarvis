@@ -81,6 +81,7 @@ import type {
 } from '@/domain/authorization';
 import type { OperatingMode } from '@/domain/operating-mode';
 import type { ProposalState } from '@/domain/proposal';
+import type { ConnectionProvider, ConnectionStatus } from '@/domain/connection';
 import type { BenefitKind, EffortSize, OutcomeVerdict } from '@/domain/outcome';
 import type {
   ObservationCoverage,
@@ -688,6 +689,62 @@ export const conversationProposals = pgTable(
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
   },
   (table) => [index('conversation_proposals_state_idx').on(table.state, table.updatedAt)],
+);
+
+/**
+ * Provider connections — Microsoft, App Store Connect, iCloud.
+ *
+ * The credential columns hold sealed records (see `AesCredentialVault`), never plaintext, so a
+ * database dump contains ciphertext bound to the row it belongs to. `account_label` is an identity
+ * the provider returned and is deliberately readable: the Connections screen has to show *who* it
+ * is connected as, and an address is not a secret.
+ *
+ * `delta_state` holds provider cursors for incremental synchronization. It is not a credential and
+ * must never be used to carry one.
+ */
+export const providerConnections = pgTable(
+  'provider_connections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').$type<ConnectionProvider>().notNull().unique(),
+    status: text('status').$type<ConnectionStatus>().notNull().default('needs_authorization'),
+    accountLabel: text('account_label'),
+    accountId: text('account_id'),
+    grantedScopes: jsonb('granted_scopes').$type<string[]>().notNull().default([]),
+    /* Sealed. See the note above. */
+    accessToken: jsonb('access_token').$type<unknown>(),
+    refreshToken: jsonb('refresh_token').$type<unknown>(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),
+    lastFailureAt: timestamp('last_failure_at', { withTimezone: true }),
+    lastFailureMessage: text('last_failure_message'),
+    deltaState: jsonb('delta_state').$type<Record<string, string>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('provider_connections_status_idx').on(table.status)],
+);
+
+/**
+ * In-flight OAuth authorizations.
+ *
+ * `state` and the PKCE verifier live here for the seconds between sending Blake to the provider
+ * and his coming back. A row is consumed on first use and expires quickly: a state value that can
+ * be replayed is a state value that does not prevent CSRF.
+ */
+export const oauthAuthorizations = pgTable(
+  'oauth_authorizations',
+  {
+    state: text('state').primaryKey(),
+    provider: text('provider').$type<ConnectionProvider>().notNull(),
+    codeVerifier: text('code_verifier').notNull(),
+    redirectUri: text('redirect_uri').notNull(),
+    requestedScopes: jsonb('requested_scopes').$type<string[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  },
+  (table) => [index('oauth_authorizations_expiry_idx').on(table.expiresAt)],
 );
 
 /* ---------------------------------------------------------------- relations */
@@ -3618,6 +3675,8 @@ export const schema = {
   appSettings,
   queryHistory,
   conversationProposals,
+  providerConnections,
+  oauthAuthorizations,
   projectRelations,
   projectSourceRelations,
   evidenceRelations,

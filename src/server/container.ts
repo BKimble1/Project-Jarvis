@@ -37,6 +37,20 @@ import {
 } from '@/server/providers/github/provisioner';
 import { ConversationService } from '@/server/conversation/conversation-service';
 import { DrizzleProposalRepository } from './repositories/proposal-drizzle';
+import {
+  DrizzleConnectionRepository,
+  DrizzleOAuthAuthorizationRepository,
+} from './repositories/connection-drizzle';
+import type {
+  ConnectionRepository,
+  OAuthAuthorizationRepository,
+} from './repositories/connection-types';
+import { ConnectionService } from './connections/connection-service';
+import {
+  AesCredentialVault,
+  UnconfiguredCredentialVault,
+  type CredentialVault,
+} from './security/credential-vault';
 import type { ProposalRepository } from './repositories/proposal-types';
 import {
   UnconfiguredIdeaEvaluator,
@@ -227,6 +241,10 @@ export interface Services {
   readonly provisioning: ProjectProvisioningService;
   readonly proposals: ProposalRepository;
   readonly ideaEvaluator: IdeaEvaluator;
+  readonly connectionRepo: ConnectionRepository;
+  readonly oauthAuthorizations: OAuthAuthorizationRepository;
+  readonly connections: ConnectionService;
+  readonly credentialVault: CredentialVault;
   readonly conversation: ConversationService;
   readonly attention: AttentionService;
   readonly router: StatusQueryRouter;
@@ -858,6 +876,26 @@ export function buildServices(
   const proposals = new DrizzleProposalRepository(db);
 
   /*
+   * The vault, or an honest refusal to be one.
+   *
+   * Without a key, `UnconfiguredCredentialVault` throws on every operation, so a provider
+   * credential cannot reach the database in plaintext through a path that forgot to check. The
+   * Connections screen reads `vaultReady()` and says so at the top rather than letting Blake start
+   * an OAuth round trip that cannot end.
+   */
+  const credentialVault: CredentialVault = config.credentialKey.active
+    ? new AesCredentialVault(config.credentialKey)
+    : new UnconfiguredCredentialVault();
+
+  const connectionRepo = new DrizzleConnectionRepository(db);
+  const oauthAuthorizations = new DrizzleOAuthAuthorizationRepository(db);
+  const connections = new ConnectionService({
+    connections: connectionRepo,
+    vault: credentialVault,
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
+
+  /*
    * The paid API, and only when the owner configured it.
    *
    * `ANTHROPIC_API_KEY` is the metered API, not the Claude subscription the worker runs on. Setting
@@ -924,6 +962,10 @@ export function buildServices(
     provisioning,
     proposals,
     ideaEvaluator,
+    connectionRepo,
+    oauthAuthorizations,
+    connections,
+    credentialVault,
     conversation,
     attention,
     router,

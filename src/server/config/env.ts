@@ -65,6 +65,22 @@ const rawSchema = z.object({
    * how an installation says "never create anything on my account", and that has to be the
    * default rather than a setting somebody has to find.
    */
+  /**
+   * The key that encrypts stored provider credentials, base64, exactly 32 bytes decoded.
+   *
+   * Deliberately not `SESSION_SECRET`. The two have different blast radii and different rotation
+   * schedules, and sharing one value means rotating it either signs the owner out of everything or
+   * destroys every stored credential. Generate with `npm run vault:key`.
+   */
+  /* Microsoft app registration. Both are needed before a connection can be started. */
+  MICROSOFT_CLIENT_ID: z.string().trim().optional(),
+  MICROSOFT_CLIENT_SECRET: z.string().trim().optional(),
+
+  JARVIS_CREDENTIAL_KEY: z.string().trim().optional(),
+  /** The key before the current one. Decrypt-only, so a rotation does not orphan stored records. */
+  JARVIS_CREDENTIAL_KEY_PREVIOUS: z.string().trim().optional(),
+  JARVIS_CREDENTIAL_KEY_VERSION: z.coerce.number().int().min(1).max(10_000).default(1),
+
   GITHUB_PROVISION_TOKEN: z.string().trim().optional(),
   /** The account new repositories are created under. Blank means the token's own user. */
   GITHUB_PROVISION_OWNER: z.string().trim().optional(),
@@ -255,6 +271,17 @@ export interface AppConfig {
   readonly githubOAuth: { readonly clientId: string; readonly clientSecret: string } | null;
   readonly githubReadToken: string | null;
   /** Set only when this installation is allowed to create repositories. */
+  /** Never logged, never returned through an API, never put in a model prompt. */
+  readonly microsoft: {
+    readonly clientId: string | null;
+    readonly clientSecret: string | null;
+  };
+  /** Never logged, never returned through an API, never put in a model prompt. */
+  readonly credentialKey: {
+    readonly active: string | null;
+    readonly previous: string | null;
+    readonly activeVersion: number;
+  };
   readonly githubProvisionToken: string | null;
   readonly githubProvisionOwner: string | null;
   readonly githubApiBaseUrl: string;
@@ -550,6 +577,15 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
         }
       : null,
     githubReadToken: env.GITHUB_READ_TOKEN ?? null,
+    microsoft: {
+      clientId: env.MICROSOFT_CLIENT_ID ?? null,
+      clientSecret: env.MICROSOFT_CLIENT_SECRET ?? null,
+    },
+    credentialKey: {
+      active: env.JARVIS_CREDENTIAL_KEY ?? null,
+      previous: env.JARVIS_CREDENTIAL_KEY_PREVIOUS ?? null,
+      activeVersion: env.JARVIS_CREDENTIAL_KEY_VERSION,
+    },
     githubProvisionToken: env.GITHUB_PROVISION_TOKEN ?? null,
     githubProvisionOwner: env.GITHUB_PROVISION_OWNER ?? null,
     githubApiBaseUrl: env.GITHUB_API_BASE_URL.replace(/\/+$/, ''),

@@ -29,6 +29,41 @@ const PATTERNS: readonly Pattern[] = [
   { id: 'github_pat', regex: /\bgithub_pat_[A-Za-z0-9_]{20,255}\b/g, replace: REDACTED },
   /* Anthropic keys. */
   { id: 'anthropic_key', regex: /\bsk-ant-[A-Za-z0-9_-]{16,}\b/g, replace: REDACTED },
+  /*
+   * Microsoft identity platform tokens.
+   *
+   * Access tokens are JWTs and refresh tokens are long opaque strings beginning `0.` or `1.` —
+   * both arrive in Graph responses and in any error body that echoes a request, which is exactly
+   * where a token reaches a log without anybody deciding it should.
+   */
+  {
+    id: 'jwt',
+    regex: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+    replace: REDACTED,
+  },
+  { id: 'ms_refresh', regex: /\b[01]\.A[A-Za-z0-9_.-]{40,}\b/g, replace: REDACTED },
+  /*
+   * Apple credentials: an App Store Connect signing key and an app-specific password.
+   *
+   * The `.p8` body is PEM, so the generic private-key block catches it; the app-specific password
+   * has a fixed and distinctive shape that nothing else in this system produces.
+   */
+  {
+    id: 'pem_private_key',
+    regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    replace: REDACTED,
+  },
+  /*
+   * Only when the surrounding text says it is one. The shape alone — four groups of four lowercase
+   * letters — is also what an ordinary branch name looks like (`fix-auth-page-load`), and a
+   * redactor that eats branch names makes logs useless in exchange for nothing: an app-specific
+   * password reaches a log through an assignment or a labelled field, both of which are matched.
+   */
+  {
+    id: 'apple_app_specific_password',
+    regex: /\b(password[\s:=]+)([a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4})\b/gi,
+    replace: `$1${REDACTED}`,
+  },
   /* Jarvis's own worker enrolment secrets. */
   { id: 'jarvis_worker', regex: /\bjarvisw_[A-Za-z0-9._-]{16,}\b/g, replace: REDACTED },
   /* Generic bearer credentials in a header or a curl line. */

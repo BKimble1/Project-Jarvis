@@ -34,7 +34,8 @@
     "worker": "tsx scripts/worker.ts",
     "worker:health": "tsx scripts/worker-health.ts",
     "worker:workspaces": "tsx scripts/workspaces.ts",
-    "qualify": "tsx scripts/qualify.ts"
+    "qualify": "tsx scripts/qualify.ts",
+    "vault:key": "tsx scripts/vault-key.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
