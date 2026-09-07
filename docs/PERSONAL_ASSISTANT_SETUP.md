@@ -224,6 +224,18 @@ already recognise PEM private keys so one cannot reach a log.
 Jarvis will never copy signing certificates or provisioning profiles, and will never
 estimate revenue — a period with no report is reported as missing.
 
+For whoever builds it, the shape is already established from Apple's documentation:
+
+|                        |                                                                                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Base URL               | `https://api.appstoreconnect.apple.com/v1`                                                                                                       |
+| Auth                   | JWT, **ES256**, header carries `kid`; claims `iss` (issuer UUID), `iat`, `exp`, `aud: appstoreconnect-v1`                                        |
+| Token lifetime         | **20 minutes maximum** (`exp - iat <= 1200`). The 6-month lifetime applies only to a short list of Xcode Cloud resources, not to apps or builds. |
+| Apps                   | `GET /v1/apps`                                                                                                                                   |
+| Builds                 | `GET /v1/builds?filter[app]={id}&include=buildBetaDetail,preReleaseVersion`                                                                      |
+| TestFlight state       | `GET /v1/builds/{id}/buildBetaDetail`                                                                                                            |
+| Version / review state | `GET /v1/apps/{id}/appStoreVersions` — there is **no** account-wide `GET /v1/appStoreVersions` list                                              |
+
 ---
 
 ## 5. Revoking everything

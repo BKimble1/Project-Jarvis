@@ -7,6 +7,7 @@ import type {
   RepositoryHandle,
   RepositoryProvisioner,
 } from '@/server/providers/github/provisioner';
+import type { getServices } from '@/server/container';
 import { createHarness, type TestHarness } from '../helpers/services';
 
 /**
@@ -339,7 +340,7 @@ const ENV: Record<string, string> = {
 
 describe('the QuickPick conversation, through the dashboard endpoint', () => {
   let close: () => Promise<void>;
-  let services: Awaited<ReturnType<typeof import('@/server/container').getServices>>;
+  let services: Awaited<ReturnType<typeof getServices>>;
   let restoreEnv: Array<[string, string | undefined]> = [];
 
   beforeEach(async () => {
