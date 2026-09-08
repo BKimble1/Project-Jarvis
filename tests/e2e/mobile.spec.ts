@@ -78,12 +78,24 @@ test.describe('the phone layout', () => {
 
     /*
      * The failure this guards: approving a mission on a dashboard that looks perfectly healthy
-     * while nothing is connected to run it. An answer that requires scrolling past the command
-     * bar — which grows once it is holding an answer — is an answer nobody reads in time.
+     * while nothing is connected to run it.
+     *
+     * It used to be answered by a permanent full-width banner under the header. That banner is
+     * gone — it restated the pill above it and cost the top of every screen — but the property it
+     * protected is not, and this is the assertion that keeps it: the answer is in the top strip,
+     * on screen before anything scrolls, and the place it is fixed is one press behind it.
      */
+    const status = page.getByRole('button', {
+      name: /No worker|All clear|Loop|Holding back|Paused/,
+    });
+    await expect(status).toBeVisible();
+    await expect(status).toBeInViewport();
+    /* No worker is enrolled in this suite, so that is the honest thing for it to say. */
+    await expect(status).toContainText('No worker');
+
+    await status.click();
     const readiness = page.getByRole('region', { name: 'Readiness' });
     await expect(readiness).toBeVisible();
-    await expect(readiness).toBeInViewport();
 
     /* Whichever way each question is answered, the screen that settles it is one tap away. */
     await expect(readiness.getByRole('link', { name: /worker/i })).toHaveAttribute(
