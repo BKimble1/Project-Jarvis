@@ -139,7 +139,12 @@ export function AppShell({
   );
 
   return (
-    <div className="min-h-dvh lg:flex">
+    /*
+      `data-shell-banner` tells the dashboard how much chrome is above it. See the rule in
+      globals.css: the immersive screen sizes itself from the viewport, and anything rendered
+      between the header and main has to be subtracted or the page scrolls by exactly that much.
+    */
+    <div className="min-h-dvh lg:flex" {...(demoMode ? { 'data-shell-banner': 'on' } : {})}>
       <PwaRegister />
 
       <aside

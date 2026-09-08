@@ -569,6 +569,20 @@
     --jx-screen-inset: 0rem;
   }
   /*
+   * Chrome above the scene counts too.
+   *
+   * The inset was the shell's own padding and nothing else, which is right until something is
+   * rendered *between* the header and the main element — and the demo banner is exactly that. Main
+   * then filled the viewport on its own, the banner sat on top of it, and the dashboard scrolled
+   * by precisely the banner's height: 32px at both 1920×1080 and 1366×768, measured.
+   *
+   * Set from the shell rather than assumed here, so a second banner would be a second attribute
+   * rather than a silent 32px of overflow nobody looks for.
+   */
+  [data-shell-banner='on'] .jx-screen {
+    --jx-screen-inset: 6rem;
+  }
+  /*
    * 1280, not 1024.
    *
    * The three-column arrangement needs about 30rem for its two side rails before the core gets
