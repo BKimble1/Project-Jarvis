@@ -102,6 +102,18 @@ export default async function DashboardPage() {
     })(),
   }));
 
+  /*
+   * The conversation the owner may already be in the middle of.
+   *
+   * Read on the server so a reload, a second device, or a tab that was closed while the worker was
+   * still thinking comes back to the same question rather than to an empty screen. Nothing here
+   * asks a model anything — it reads the row that was already written.
+   */
+  const standingProposal = await services.proposals.latestOpen();
+  const standingThinking = standingProposal
+    ? await services.reasoningService.statusForProposal(standingProposal.id)
+    : null;
+
   const finished = finishedPages[0]?.items ?? [];
   const completions: ScreenCompletion[] = [...finished]
     .sort(
@@ -133,6 +145,11 @@ export default async function DashboardPage() {
 
   return (
     <JarvisScreen
+      standingProposal={
+        standingProposal ? { id: standingProposal.id, summary: standingProposal.summary } : null
+      }
+      standingThinking={standingThinking}
+      standingEvaluation={standingProposal?.evaluation ?? null}
       ownerName={session.displayName ?? session.githubLogin ?? 'Owner'}
       timeZone={config.scheduling.defaultTimeZone}
       headline={picture.headline}

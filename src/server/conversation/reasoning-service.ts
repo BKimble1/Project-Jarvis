@@ -168,6 +168,26 @@ export class ReasoningService {
   }
 
   /** Read where a question has got to. Returns null when the id is not one of ours. */
+  /**
+   * The state of the question asked about a proposal, if one was ever asked.
+   *
+   * ## Why the dashboard needs this
+   *
+   * Because the thinking panel was pure client state. It was written by the POST that started the
+   * question and by the poll that watched it, and by nothing else — so a reload, a closed tab, or
+   * picking the phone up instead lost an in-flight evaluation entirely. The row was still there and
+   * the worker still answered it; the screen simply had no way to find out.
+   *
+   * Keyed the same way `requestIdeaEvaluation` keys it, so this reads exactly the row that call
+   * wrote rather than guessing at the newest one.
+   */
+  async statusForProposal(proposalId: string): Promise<ThinkingState | null> {
+    const request = await this.deps.reasoning.findByKey(
+      reasoningRequestKey('idea_evaluation', proposalId),
+    );
+    return request ? this.describe(request) : null;
+  }
+
   async statusFor(requestId: string): Promise<ThinkingState | null> {
     const request = await this.deps.reasoning.find(requestId);
     return request ? this.describe(request) : null;

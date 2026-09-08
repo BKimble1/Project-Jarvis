@@ -100,6 +100,17 @@ export interface JarvisScreenProps {
   } | null;
   readonly readiness: ReadinessSummary;
   readonly projectCount: number;
+  /**
+   * The standing proposal and the state of the question asked about it, read from the database.
+   *
+   * The thinking panel was pure client state, so a reload — or answering from a phone instead —
+   * lost an in-flight evaluation even though the row was still queued and the worker still
+   * answered it. These are how the screen finds its way back to a conversation it was already
+   * having, which is the reconnection the owner asked for.
+   */
+  readonly standingProposal: { readonly id: string; readonly summary: string } | null;
+  readonly standingThinking: ThinkingSnapshot | null;
+  readonly standingEvaluation: ConversationEvaluation | null;
 }
 
 /** One turn of the conversation, as it is kept on screen. */
@@ -160,7 +171,15 @@ export function JarvisScreen(props: JarvisScreenProps) {
   const [motion, setMotion] = React.useState(true);
   const [readBack, setReadBack] = React.useState(false);
   const [handsFree, setHandsFree] = React.useState(false);
-  const [expanded, setExpanded] = React.useState(false);
+  /*
+   * Open on arrival when there is a standing question or a standing assessment.
+   *
+   * Reconnecting to a conversation and then hiding it behind a closed drawer would be the same
+   * failure in a politer form.
+   */
+  const [expanded, setExpanded] = React.useState(
+    props.standingThinking !== null || props.standingEvaluation !== null,
+  );
   const [showHistory, setShowHistory] = React.useState(false);
   /*
    * The greeting depends on the hour, which the server and the browser disagree about — so the
@@ -194,7 +213,9 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * answered. It is sent back with the next message and re-read there through every gate a typed
    * sentence goes through, so it supplies the subject of a yes, never the permission for one.
    */
-  const [proposal, setProposal] = React.useState<{ id: string; summary: string } | null>(null);
+  const [proposal, setProposal] = React.useState<{ id: string; summary: string } | null>(
+    props.standingProposal,
+  );
   /*
    * The structured half of an idea assessment.
    *
@@ -202,8 +223,10 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * V1, the assumptions, and the questions Blake is being asked. Putting the questions only in
    * speech would mean the one thing he has to answer scrolls past and is gone.
    */
-  const [evaluation, setEvaluation] = React.useState<ConversationEvaluation | null>(null);
-  const [thinking, setThinking] = React.useState<ThinkingSnapshot | null>(null);
+  const [evaluation, setEvaluation] = React.useState<ConversationEvaluation | null>(
+    props.standingEvaluation,
+  );
+  const [thinking, setThinking] = React.useState<ThinkingSnapshot | null>(props.standingThinking);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
   const turnId = React.useRef(0);
@@ -509,9 +532,20 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * the worker later finishes the thought without him asking again.
    */
   React.useEffect(() => {
-    if (thinking?.state !== 'thinking') return;
+    if (thinking?.state !== 'thinking' && thinking?.state !== 'blocked') return;
     const requestId = thinking.requestId;
     let cancelled = false;
+
+    /*
+     * A blocked question is watched too, just slowly.
+     *
+     * The poll used to stop outright on `blocked`, which left the screen saying "no worker" for
+     * ever — including after the worker started. The row stays queued and really is answered
+     * later, so the copy's promise that the question "will be answered without you asking again"
+     * was true of the database and false of the screen. Watching it at a much longer interval
+     * costs one request a quarter-minute and makes the promise true in both places.
+     */
+    const period = thinking.state === 'blocked' ? BLOCKED_POLL_MS : THINKING_POLL_MS;
 
     const timer = setInterval(() => {
       void (async () => {
@@ -522,6 +556,8 @@ export function JarvisScreen(props: JarvisScreenProps) {
           if (!response.ok || cancelled) return;
           const body = (await response.json()) as { thinking: ThinkingSnapshot };
           if (cancelled || body.thinking.state === 'thinking') return;
+          /* Still blocked for the same reason is not news, and must not re-announce itself. */
+          if (body.thinking.state === 'blocked' && thinking.state === 'blocked') return;
 
           setThinking(body.thinking);
           if (body.thinking.state === 'ready') {
@@ -535,7 +571,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
           /* A missed poll is not news. The next one will say the same thing or a better one. */
         }
       })();
-    }, THINKING_POLL_MS);
+    }, period);
 
     return () => {
       cancelled = true;
@@ -602,7 +638,15 @@ export function JarvisScreen(props: JarvisScreenProps) {
       setAnswer(turn.answer);
       setAsked(text);
       setBriefing(null);
-      setExpanded(turn.answer !== null);
+      /*
+       * Open for anything there is to show.
+       *
+       * This was `turn.answer !== null`, and an `idea` turn always answers null — the assessment
+       * arrives from the worker seconds or minutes later. So the one turn that most needs the
+       * drawer, the one where Jarvis says "I am thinking about it", was the one turn that never
+       * opened it: the spoken line promised the words were on screen and nothing was.
+       */
+      setExpanded(turn.answer !== null || turn.thinking !== null || turn.evaluation !== null);
       /*
        * Carried forward only while there is something to say yes to. Clearing it on every other
        * turn is what stops a "go ahead" said ten minutes later from accepting something the person
@@ -2044,6 +2088,13 @@ function spokenBriefing(briefing: MorningBriefing): string {
 
 /** How often the browser asks whether the worker has finished thinking. */
 const THINKING_POLL_MS = 2000;
+/*
+ * How often a blocked question is re-checked.
+ *
+ * Long, because nothing about it changes until a person starts a worker or capacity returns, and
+ * short enough that when they do the screen notices without being reloaded.
+ */
+const BLOCKED_POLL_MS = 15_000;
 
 /**
  * Where a question put to the worker has got to.
