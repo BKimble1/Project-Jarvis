@@ -23,6 +23,7 @@
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "test:live": "JARVIS_LIVE_TESTS=true vitest run --project live",
+    "test:live:github": "JARVIS_LIVE_GITHUB=true vitest run --project live",
     "test:watch": "vitest",
     "test:e2e": "playwright test --project=desktop && playwright test --project=iphone",
     "test:e2e:one": "playwright test",
@@ -36,6 +37,7 @@
     "worker:think": "tsx scripts/reasoning-probe.ts",
     "worker:workspaces": "tsx scripts/workspaces.ts",
     "qualify": "tsx scripts/qualify.ts",
+    "repair:project-name": "tsx scripts/repair-project-name.ts",
     "vault:key": "tsx scripts/vault-key.ts"
   },
   "dependencies": {

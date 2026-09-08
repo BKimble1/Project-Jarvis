@@ -17,6 +17,16 @@ import path from 'node:path';
  * missing: a green "live" tick that never reached Anthropic is worse than a red one.
  */
 const LIVE_ENABLED = process.env.JARVIS_LIVE_TESTS === 'true';
+/*
+ * Real GitHub, separately.
+ *
+ * `JARVIS_LIVE_TESTS` opts into spending Claude capacity. Reaching somebody's GitHub account is a
+ * different decision with different consequences, so it has its own switch and its own file — a
+ * mocked provisioner proves the *sequence* adopts rather than duplicates, and only this proves that
+ * GitHub agrees. Requires `GITHUB_PROVISION_TOKEN` and `JARVIS_LIVE_GITHUB_REPO=owner/name`
+ * naming a repository that already exists; it reads and adopts, and creates nothing.
+ */
+const LIVE_GITHUB = process.env.JARVIS_LIVE_GITHUB === 'true';
 export default defineConfig({
   resolve: {
     alias: { '@': path.resolve(import.meta.dirname, './src') },
@@ -38,7 +48,10 @@ export default defineConfig({
         resolve: { alias: { '@': path.resolve(import.meta.dirname, './src') } },
         test: {
           name: 'live',
-          include: LIVE_ENABLED ? ['tests/live/**/*.live.test.ts'] : [],
+          include: [
+            ...(LIVE_ENABLED ? ['tests/live/**/*.live.test.ts'] : []),
+            ...(LIVE_GITHUB ? ['tests/live-github/**/*.live.test.ts'] : []),
+          ],
           environment: 'node',
           /* A real model session, on somebody's home connection. */
           testTimeout: 180_000,

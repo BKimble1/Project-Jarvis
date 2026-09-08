@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildBrief } from '@/domain/build-brief';
+import { buildBrief, readsLikeAConversation } from '@/domain/build-brief';
 import type { IdeaEvaluation, Proposal } from '@/domain/proposal';
 
 /**
@@ -149,5 +149,44 @@ describe('turning an agreed proposal into something buildable', () => {
 
     expect(brief.acceptanceCriteria.length).toBeLessThanOrEqual(10);
     expect(brief.acceptanceCriteria.filter((item) => /pick button/i.test(item))).toHaveLength(1);
+  });
+});
+
+/**
+ * Which existing missions the repair path is allowed to touch.
+ *
+ * The owner already has a mission whose request is the sentence he typed. Renaming its project is
+ * safe; rewriting a mission that has already run is not, and neither is churning one that was
+ * written properly. The predicate is what tells those apart, so it is tested on both sides.
+ */
+describe('recognising a mission that replays a conversation', () => {
+  it('knows a replayed message when it sees one', () => {
+    for (const request of [
+      'Re-evaluate my QuickPick idea using Claude. Do not build anything yet.',
+      'Give me your assessment and the smallest useful V1.',
+      "Assess the invoicing tool. Don't build it yet.",
+      'What do you think of StudySprint?',
+    ]) {
+      expect(readsLikeAConversation(request), request).toBe(true);
+    }
+  });
+
+  it('leaves an objective it wrote itself alone', () => {
+    const brief = buildBrief(proposal());
+    expect(readsLikeAConversation(brief.objective)).toBe(false);
+    /* Including the no-scope wording, which is still an instruction. */
+    expect(readsLikeAConversation(buildBrief(proposal({ evaluation: null })).objective)).toBe(
+      false,
+    );
+  });
+
+  it('leaves an ordinary work request alone', () => {
+    for (const request of [
+      'Add a retry to the sync job.',
+      'Fix the login redirect on Safari.',
+      'Write tests for the capacity governor.',
+    ]) {
+      expect(readsLikeAConversation(request), request).toBe(false);
+    }
   });
 });

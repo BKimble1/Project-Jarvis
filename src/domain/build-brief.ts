@@ -55,6 +55,9 @@ export interface BuildBrief {
 /** The most acceptance criteria a brief carries. Beyond this it is a specification, not a V1. */
 const MAX_CRITERIA = 10;
 
+/** How every composed objective starts. Named once, so the repair path can recognise its own work. */
+const OBJECTIVE_OPENING = 'Build the first working version of';
+
 /**
  * Turn an agreed proposal into something buildable.
  *
@@ -114,7 +117,7 @@ function objectiveFor(
   criteria: readonly string[],
   evaluation: IdeaEvaluation | null,
 ): string {
-  const lines = [`Build the first working version of ${name}.`];
+  const lines = [`${OBJECTIVE_OPENING} ${name}.`];
 
   if (evaluation?.problem) {
     lines.push('', `What it is for: ${evaluation.problem.trim()}`);
@@ -143,9 +146,9 @@ function objectiveFor(
 /** One line for the project's goal column. Short, because it is shown next to the project's name. */
 function goalFor(name: string, evaluation: IdeaEvaluation | null): string {
   const verdict = evaluation?.verdict.trim();
-  if (!verdict) return `Build the first working version of ${name}.`;
+  if (!verdict) return `${OBJECTIVE_OPENING} ${name}.`;
   const firstSentence = verdict.split(/(?<=[.!?])\s+/)[0]?.trim() ?? verdict;
-  return `Build the first working version of ${name}. ${firstSentence}`.slice(0, 600).trim();
+  return `${OBJECTIVE_OPENING} ${name}. ${firstSentence}`.slice(0, 600).trim();
 }
 
 /**
@@ -165,4 +168,22 @@ function descriptionFor(name: string, evaluation: IdeaEvaluation | null): string
     parts.push(`Not known: ${evaluation.uncertainties.join('; ')}`);
   }
   return parts.join('\n\n').slice(0, 4000);
+}
+
+/**
+ * Does this mission's request read like something somebody said, rather than an instruction?
+ *
+ * The tell is the vocabulary of a conversation: asking for an assessment, forbidding a build,
+ * addressing Jarvis directly. A mission written from a brief opens with "Build the first working
+ * version of" and is never a replay, so it is excluded first and cheaply.
+ *
+ * Used by the repair path to decide which missions are safe to retitle. A mission that already
+ * reads as an instruction is left exactly as it is: rewriting one that is fine is churn, and
+ * rewriting one that has run makes its own history unreadable.
+ */
+export function readsLikeAConversation(rawRequest: string): boolean {
+  if (rawRequest.startsWith(OBJECTIVE_OPENING)) return false;
+  return /\b(?:re-?evaluate|assess\w*|do not build|don'?t build|give (?:me )?your|what do you think)\b/i.test(
+    rawRequest,
+  );
 }
