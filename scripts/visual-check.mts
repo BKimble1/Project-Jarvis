@@ -120,25 +120,45 @@ async function main(): Promise<void> {
   const pages = [
     { name: 'signin', url: '/signin', auth: false },
     { name: 'dashboard', url: '/dashboard', auth: true },
+    /* The five destinations, in rail order. */
+    { name: 'work', url: '/work', auth: true },
+    { name: 'work-needs-me', url: '/work?view=needs-me', auth: true },
+    { name: 'work-history', url: '/work?view=history', auth: true },
+    { name: 'work-projects', url: '/work?view=projects', auth: true },
+    { name: 'knowledge', url: '/knowledge', auth: true },
+    { name: 'connections', url: '/connections', auth: true },
+    { name: 'operations', url: '/operations', auth: true },
+    /* The screens the rail folded, which must still be reachable and still render. */
     { name: 'projects', url: '/projects', auth: true },
     { name: 'project-detail', url: 'FIRST_PROJECT', auth: true },
     { name: 'project-new', url: '/projects/new', auth: true },
     { name: 'project-import', url: '/projects/import', auth: true },
     { name: 'missions', url: '/missions', auth: true },
     { name: 'mission-detail', url: 'FIRST_MISSION', auth: true },
+    { name: 'portfolio', url: '/portfolio', auth: true },
     { name: 'workers', url: '/workers', auth: true },
     { name: 'attention', url: '/attention', auth: true },
     { name: 'changes', url: '/changes', auth: true },
     { name: 'settings', url: '/settings', auth: true },
   ];
 
+  /*
+   * The sizes the screen is actually read at.
+   *
+   * 1920×1080 is the monitor it is watched on from across the room, 1366×768 the laptop it is
+   * driven from, 1024×768 the short window where a growing dock would squeeze the scene, and the
+   * phone the thing it has to stay usable on. The old pair was one desktop size and a phone, which
+   * measured neither of the two that matter most.
+   */
   for (const [label, viewport] of [
-    ['desktop', { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } }],
+    ['monitor', { ...devices['Desktop Chrome'], viewport: { width: 1920, height: 1080 } }],
+    ['laptop', { ...devices['Desktop Chrome'], viewport: { width: 1366, height: 768 } }],
+    ['small', { ...devices['Desktop Chrome'], viewport: { width: 1024, height: 768 } }],
     ['iphone', devices['iPhone 13']],
   ] as const) {
     const contextOptions = {
       ...viewport,
-      colorScheme: label === 'desktop' ? 'light' : 'dark',
+      colorScheme: label === 'iphone' ? 'dark' : 'light',
     } as const;
 
     /* A separate, deliberately unauthenticated context so the sign-in screen is captured
@@ -200,10 +220,25 @@ async function main(): Promise<void> {
       const overflow = await active.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         clientWidth: document.documentElement.clientWidth,
+        scrollHeight: document.documentElement.scrollHeight,
+        clientHeight: document.documentElement.clientHeight,
       }));
       if (overflow.scrollWidth > overflow.clientWidth + 1) {
         problems.push(
           `[${label}] ${entry.name} scrolls horizontally (${overflow.scrollWidth} > ${overflow.clientWidth})`,
+        );
+      }
+      /*
+       * The dashboard specifically must fit without an outer scrollbar at the two desktop sizes it
+       * is read at. Every other screen is a document and is expected to scroll.
+       */
+      if (
+        entry.name === 'dashboard' &&
+        (label === 'monitor' || label === 'laptop') &&
+        overflow.scrollHeight > overflow.clientHeight + 1
+      ) {
+        problems.push(
+          `[${label}] the dashboard scrolls vertically (${overflow.scrollHeight} > ${overflow.clientHeight})`,
         );
       }
 
