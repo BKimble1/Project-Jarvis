@@ -5,6 +5,7 @@ import {
   type Interpretation,
 } from '@/domain/interpretation';
 import { buildBrief } from '@/domain/build-brief';
+import type { OperatingEventKind, OperatingState } from '@/domain/operating-state';
 import { deriveProjectName, describesNewProject } from '@/domain/new-project';
 import type { Project } from '@/domain/project';
 import type { QueryAnswer } from '@/domain/query';
@@ -111,6 +112,36 @@ export interface ConversationDeps {
     readonly standingAuthority: boolean;
     readonly blockedReason: string | null;
   }>;
+  /**
+   * Where each idea has got to.
+   *
+   * Optional so that every existing caller — and every test that builds this service by hand —
+   * keeps working untouched. When it is absent the conversation behaves exactly as it did; when it
+   * is present each turn also records the idea's progress as events the screen can read back by
+   * proposal and speak exactly once.
+   */
+  readonly operating?: OperatingRecorder;
+}
+
+/**
+ * The narrow slice of the operating repository this service needs.
+ *
+ * An interface rather than the class, so the conversation does not depend on Drizzle and a test can
+ * hand it something that records into an array.
+ */
+export interface OperatingRecorder {
+  transition(
+    proposalId: string,
+    input: {
+      readonly to: OperatingState;
+      readonly kind: OperatingEventKind;
+      readonly message: string;
+      readonly projectId?: string | null;
+      readonly missionId?: string | null;
+      readonly detail?: string | null;
+      readonly now: Date;
+    },
+  ): Promise<unknown>;
 }
 
 export interface ConversationInput {
@@ -364,6 +395,30 @@ export class ConversationService {
       existing: proposal.evaluation,
     });
 
+    /*
+     * Captured, then evaluating — two events rather than one, because they are two different
+     * things the owner would want to hear and the second can take minutes to follow the first.
+     */
+    await this.record(proposal.id, {
+      to: 'captured',
+      kind: 'transition',
+      message: `I understood the goal: ${title}.`,
+    });
+    if (thinking.state === 'thinking') {
+      await this.record(proposal.id, {
+        to: 'evaluating',
+        kind: 'progress',
+        message: `I'm evaluating the smallest useful version of ${title}.`,
+      });
+    } else if (thinking.state === 'blocked') {
+      await this.record(proposal.id, {
+        to: 'blocked',
+        kind: 'progress',
+        message: thinking.detail,
+        detail: thinking.detail,
+      });
+    }
+
     return {
       kind: 'idea',
       understanding: interpretation.understanding,
@@ -377,6 +432,31 @@ export class ConversationService {
       noBuildYet: interpretation.noBuildYet,
       notes: [],
     };
+  }
+
+  /**
+   * Record where an idea has got to, in the words the owner will read and hear.
+   *
+   * Never throws into the conversation. A failure to record progress must not fail the turn that
+   * made the progress — the owner would lose the answer to protect the note about the answer.
+   */
+  private async record(
+    proposalId: string,
+    input: {
+      readonly to: OperatingState;
+      readonly kind: OperatingEventKind;
+      readonly message: string;
+      readonly projectId?: string | null;
+      readonly missionId?: string | null;
+      readonly detail?: string | null;
+    },
+  ): Promise<void> {
+    if (!this.deps.operating) return;
+    try {
+      await this.deps.operating.transition(proposalId, { ...input, now: this.now() });
+    } catch {
+      /* Progress is a narration of the work, not the work. */
+    }
   }
 
   /* ------------------------------------------------------------ follow-ups */
@@ -525,6 +605,54 @@ export class ConversationService {
     const authority = await this.deps.authority();
     const projectName = provisioned.project.shortName ?? provisioned.project.name;
     const planning = !created.refusal && created.questions.length === 0;
+
+    /*
+     * Approved, and then what actually happened next.
+     *
+     * Both carry the project and mission ids, which is what lets the screen show this idea's
+     * progress rather than the newest progress of anything — and what lets a reload find the same
+     * two rows rather than re-deriving a sentence from whatever is current.
+     */
+    await this.record(proposal.id, {
+      to: 'approved',
+      kind: 'transition',
+      message: `You agreed to ${brief.name}. I'm creating the project and workspace.`,
+      projectId: provisioned.project.id,
+      missionId: created.mission.id,
+    });
+    if (created.questions.length > 0) {
+      const first = created.questions[0]?.question;
+      await this.record(proposal.id, {
+        to: 'waiting_for_input',
+        kind: 'question',
+        /* The same sentence the transcript shows, so what is heard and what is read cannot drift. */
+        message: first
+          ? `I need one decision before I can continue: ${first}`
+          : 'I need one decision before I can continue.',
+        projectId: provisioned.project.id,
+        missionId: created.mission.id,
+        detail: first ?? null,
+      });
+    } else if (planning) {
+      await this.record(proposal.id, {
+        to: 'planning',
+        kind: 'progress',
+        message: `I'm planning the first version of ${brief.name}.`,
+        projectId: provisioned.project.id,
+        missionId: created.mission.id,
+      });
+    } else {
+      await this.record(proposal.id, {
+        to: 'needs_decision',
+        kind: 'question',
+        message: `${brief.name} is set up and waiting for you to approve the plan${
+          authority.blockedReason ? ` — ${authority.blockedReason}` : ''
+        }.`,
+        projectId: provisioned.project.id,
+        missionId: created.mission.id,
+        detail: authority.blockedReason,
+      });
+    }
 
     return {
       kind: 'follow_up',

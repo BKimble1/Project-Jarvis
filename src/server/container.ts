@@ -37,6 +37,7 @@ import {
 } from '@/server/providers/github/provisioner';
 import { ConversationService } from '@/server/conversation/conversation-service';
 import { DrizzleProposalRepository } from './repositories/proposal-drizzle';
+import { DrizzleOperatingRepository } from './repositories/operating-drizzle';
 import {
   DrizzleConnectionRepository,
   DrizzleOAuthAuthorizationRepository,
@@ -242,6 +243,7 @@ export interface Services {
   readonly imports: GithubImportService;
   readonly provisioning: ProjectProvisioningService;
   readonly proposals: ProposalRepository;
+  readonly operating: DrizzleOperatingRepository;
   readonly reasoningRepo: ReasoningRepository;
   readonly reasoningService: ReasoningService;
   readonly connectionRepo: ConnectionRepository;
@@ -898,6 +900,7 @@ export function buildServices(
    * happens next.
    */
   const proposals = new DrizzleProposalRepository(db);
+  const operating = new DrizzleOperatingRepository(db);
 
   /*
    * Queues questions for the worker and reads the answers back. Declared here, after the proposal
@@ -961,6 +964,7 @@ export function buildServices(
   const conversation = new ConversationService({
     router,
     proposals,
+    operating,
     reasoning: reasoningService,
     missions,
     projects,
@@ -1011,6 +1015,7 @@ export function buildServices(
     imports,
     provisioning,
     proposals,
+    operating,
     reasoningRepo,
     reasoningService,
     connectionRepo,

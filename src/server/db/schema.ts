@@ -80,6 +80,7 @@ import type {
   CapabilityVerdict,
 } from '@/domain/authorization';
 import type { OperatingMode } from '@/domain/operating-mode';
+import type { OperatingEventKind, OperatingState } from '@/domain/operating-state';
 import type { IdeaEvaluation, ProposalState } from '@/domain/proposal';
 import type {
   ReasoningFailure,
@@ -764,6 +765,78 @@ export const reasoningRequests = pgTable(
   (table) => [
     index('reasoning_requests_claim_idx').on(table.state, table.leaseExpiresAt),
     index('reasoning_requests_proposal_idx').on(table.proposalId),
+  ],
+);
+
+/**
+ * Where one idea has got to, and every step it took.
+ *
+ * ## Why this is not the missions table
+ *
+ * Because a mission starts at `draft`, which is already past the interesting part. The owner says a
+ * sentence; between that sentence and a mission there is an evaluation, possibly a question, an
+ * approval, and the creation of the project and repository the mission requires. A mission state
+ * cannot describe any of it, because for most of it there is no mission.
+ *
+ * One row per proposal, so the screen asks "where is *this* idea" rather than "what happened most
+ * recently" — which is the query that let two ideas in flight show each other's progress.
+ */
+export const operatingStates = pgTable(
+  'operating_states',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** One operating state per idea. The unique constraint is the whole of that guarantee. */
+    proposalId: uuid('proposal_id')
+      .notNull()
+      .unique()
+      .references(() => conversationProposals.id, { onDelete: 'cascade' }),
+    state: text('state').$type<OperatingState>().notNull().default('captured'),
+    /** Filled in as they come into existence, rather than required up front. */
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    /** Why it stopped, when it has. One sentence, in the words the owner reads. */
+    detail: text('detail'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('operating_states_state_idx').on(table.state, table.updatedAt)],
+);
+
+/**
+ * Every step, as a row with an id of its own.
+ *
+ * ## Why speaking needs this
+ *
+ * A spoken update must happen exactly once — not again on the next poll, and not again after a
+ * refresh. A sentence derived from current state cannot manage that, because current state is
+ * re-derived on every render and has no memory of having been said. A row with a stable id and a
+ * `spoken_at` watermark is spoken once by construction.
+ *
+ * `proposal_id` is denormalised onto the event deliberately: the dashboard asks for one idea's
+ * updates by that id, and making it a join through `operating_states` would put the isolation
+ * guarantee one query further away from the thing that depends on it.
+ */
+export const operatingEvents = pgTable(
+  'operating_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    operatingStateId: uuid('operating_state_id')
+      .notNull()
+      .references(() => operatingStates.id, { onDelete: 'cascade' }),
+    proposalId: uuid('proposal_id').notNull(),
+    projectId: uuid('project_id'),
+    missionId: uuid('mission_id'),
+    kind: text('kind').$type<OperatingEventKind>().notNull(),
+    fromState: text('from_state').$type<OperatingState>(),
+    toState: text('to_state').$type<OperatingState>().notNull(),
+    /** The exact words, shown and spoken unchanged. Stored once so the two cannot drift. */
+    message: text('message').notNull(),
+    spokenAt: timestamp('spoken_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('operating_events_proposal_idx').on(table.proposalId, table.createdAt),
+    index('operating_events_unspoken_idx').on(table.spokenAt, table.createdAt),
   ],
 );
 
