@@ -124,6 +124,18 @@ interface Turn {
 
 const GRAPHICS_KEY = 'jarvis-graphics';
 const MOTION_KEY = 'jarvis-motion';
+/**
+ * Reading answers aloud, remembered.
+ *
+ * Defaults to on for somebody who has never chosen, which is the opposite of what it did. A screen
+ * meant to be worked through from across a room that says nothing until a setting is found is a
+ * silent screen for everybody who never went looking.
+ *
+ * Stored as the string the owner chose rather than as "not off", so turning it off survives a
+ * reload — a default-on preference that cannot be turned off permanently is worse than one that
+ * starts silent.
+ */
+const READ_ALOUD_KEY = 'jarvis-read-aloud';
 
 /**
  * The immersive Jarvis screen.
@@ -172,7 +184,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
   const [openWorkId, setOpenWorkId] = React.useState<string | null>(null);
   const [graphics, setGraphics] = React.useState<'full' | 'lite'>('full');
   const [motion, setMotion] = React.useState(true);
-  const [readBack, setReadBack] = React.useState(false);
+  const [readBack, setReadBack] = React.useState(true);
   const [handsFree, setHandsFree] = React.useState(false);
   /*
    * Open on arrival when there is a standing question or a standing assessment.
@@ -262,6 +274,10 @@ export function JarvisScreen(props: JarvisScreenProps) {
     try {
       const storedGraphics = window.localStorage.getItem(GRAPHICS_KEY);
       if (storedGraphics === 'lite' || storedGraphics === 'full') setGraphics(storedGraphics);
+      const storedAloud = window.localStorage.getItem(READ_ALOUD_KEY);
+      /* Only an explicit "off" turns it off. Anything else — including nothing — leaves it on. */
+      if (storedAloud === 'off') setReadBack(false);
+
       const storedMotion = window.localStorage.getItem(MOTION_KEY);
       if (storedMotion === 'off') setMotion(false);
       else if (
@@ -859,6 +875,58 @@ export function JarvisScreen(props: JarvisScreenProps) {
   const listening = speech.phase === 'listening';
   const speaking = speech.phase === 'speaking';
 
+  /**
+   * Say what has happened since the last time anything was said.
+   *
+   * ## Why the server decides what is unspoken
+   *
+   * Because a browser cannot. Two tabs are two browsers, and a refresh is a third with no memory of
+   * the other two — so any list of "already spoken" kept in the page is lost by exactly the event
+   * this requirement is about. The claim endpoint returns only the rows whose `spoken_at` this
+   * request won, so what comes back is safe to speak without asking whether it already was.
+   *
+   * Nothing is claimed while read-aloud is off or while the microphone is open: claiming marks a
+   * sentence spoken, and marking one spoken without speaking it loses it for good.
+   */
+  React.useEffect(() => {
+    if (!mounted || !readBack || listening) return;
+    let cancelled = false;
+
+    const say = async () => {
+      try {
+        const response = await fetch('/api/operating/events', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ limit: 3 }),
+        });
+        if (!response.ok || cancelled) return;
+        const body = (await response.json()) as {
+          events: readonly { id: string; message: string }[];
+        };
+        for (const event of body.events) {
+          if (cancelled) break;
+          /* The words in the transcript and the words spoken are the same string, stored once. */
+          setTurns((current) => [
+            ...current,
+            { id: Date.now() + Math.random(), who: 'jarvis', text: event.message },
+          ]);
+          speech.speak(event.message);
+        }
+      } catch {
+        /* A missed round says the same thing a moment later. The rows are still unspoken. */
+      }
+    };
+
+    void say();
+    const timer = setInterval(() => void say(), NARRATION_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    /* `speech` is stable for the life of the screen; re-subscribing on it would restart the timer. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, readBack, listening]);
+
   /* What was recognised becomes an editable draft in the same box everything else is typed in. */
   React.useEffect(() => {
     if (speech.phase === 'idle' && speech.transcript.trim().length > 0) {
@@ -1121,7 +1189,15 @@ export function JarvisScreen(props: JarvisScreenProps) {
                 <input
                   type="checkbox"
                   checked={readBack}
-                  onChange={(event) => setReadBack(event.target.checked)}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    setReadBack(next);
+                    try {
+                      window.localStorage.setItem(READ_ALOUD_KEY, next ? 'on' : 'off');
+                    } catch {
+                      /* A preference that cannot be stored still applies for this session. */
+                    }
+                  }}
                 />
                 Read answers aloud
               </label>
@@ -2168,6 +2244,13 @@ function spokenBriefing(briefing: MorningBriefing): string {
 
 /** How often the browser asks whether the worker has finished thinking. */
 const THINKING_POLL_MS = 2000;
+/**
+ * How often the screen asks whether there is anything new to say.
+ *
+ * Slower than the thinking poll, because these are sentences a person listens to rather than a
+ * spinner they watch, and a narrator that interrupts itself every two seconds is not company.
+ */
+const NARRATION_POLL_MS = 6000;
 /*
  * How often a blocked question is re-checked.
  *
