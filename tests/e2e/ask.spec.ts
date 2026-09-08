@@ -381,11 +381,14 @@ test.describe('asking Jarvis', () => {
   });
 
   test('reaches Ask from the dashboard and from a project', async ({ page, scenario }) => {
+    /*
+     * Asking folded into the dashboard dock, so the dashboard no longer carries a link *named*
+     * "Ask Jarvis" — it carries the asking itself. What it still has to carry is the way into the
+     * full workspace, where an answer is read with its citations and its earlier questions, and
+     * that is the property this half was always protecting.
+     */
     await page.goto('/dashboard');
-    await page
-      .getByRole('link', { name: /Ask Jarvis/ })
-      .first()
-      .click();
+    await page.getByRole('link', { name: 'Full conversation' }).first().click();
     await expect(page).toHaveURL(/\/ask/);
 
     await page.goto(`/projects/${scenario.manual.id}`);

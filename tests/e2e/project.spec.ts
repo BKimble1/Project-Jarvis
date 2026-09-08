@@ -119,7 +119,7 @@ test.describe('a project without a repository', () => {
     const field = ask.getByLabel('Ask Jarvis about your projects');
 
     await field.fill(`Where are we on ${name}?`);
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
 
     await expect(ask.getByRole('heading', { name, level: 3 })).toBeVisible();
     await expect(ask.getByRole('link', { name: 'Open full view' })).toHaveAttribute(
@@ -134,7 +134,7 @@ test.describe('a project without a repository', () => {
     ).total;
 
     await field.fill('build a new feature');
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
 
     /*
      * Work asked for in the answer box is read as a mission and previewed — and previewing is all
@@ -159,7 +159,7 @@ test.describe('a project without a repository', () => {
     await page.goto('/dashboard');
     const ask = page.getByRole('region', { name: 'Ask Jarvis' });
     await ask.getByLabel('Ask Jarvis about your projects').fill(request);
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
 
     const missionsBefore = (
       (await (await page.request.get('/api/missions')).json()) as { total: number }
@@ -191,7 +191,7 @@ test.describe('a project without a repository', () => {
     await page.goto('/dashboard');
     const ask = page.getByRole('region', { name: 'Ask Jarvis' });
     await ask.getByLabel('Ask Jarvis about your projects').fill(request);
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
 
     await expect(ask.getByRole('heading', { name: 'Which project did you mean?' })).toBeVisible();
 

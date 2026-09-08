@@ -1906,6 +1906,21 @@ function CommandDock({
           </DockButton>
         ) : null}
 
+        {/*
+          The way into the full workspace.
+
+          Asking folded into this dock, and the standalone page stopped being a rail destination —
+          but it did not stop being the place a long answer is read with its citations, its earlier
+          questions and a readable width. The dock is where a conversation happens; that page is
+          where one is studied. Without this link the second was reachable only by typing its URL.
+        */}
+        <Link
+          href="/ask"
+          className="inline-flex min-h-11 items-center rounded-sm px-2.5 text-xs text-[var(--jx-ink-dim)] transition-colors hover:text-[var(--jx-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
+        >
+          Full conversation
+        </Link>
+
         {speaking ? (
           <DockButton type="button" tone="quiet" onClick={onSilence} aria-label="Stop speaking">
             <VolumeX className="h-4 w-4" aria-hidden />
