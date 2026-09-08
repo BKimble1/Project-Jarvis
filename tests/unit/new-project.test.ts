@@ -78,6 +78,59 @@ describe('naming the thing', () => {
   it('says it does not know rather than inventing something confident', () => {
     expect(deriveProjectName('build something')).toBe('New project');
     expect(deriveProjectName('')).toBe('New project');
+    /* Evaluative words refer to a thing; they do not name it. */
+    expect(deriveProjectName('go ahead with the best idea')).toBe('New project');
+  });
+
+  /**
+   * The sentence that named a project "Yet".
+   *
+   * "Re-evaluate my QuickPick idea … Do not build anything yet." produced a project called Yet, a
+   * private repository called `yet`, and a mission to re-evaluate something. All of it came from
+   * mining a sentence about the *request* for the name of the *product*: the last clause is an
+   * instruction not to build, and the only word left in it after the fillers was "yet".
+   */
+  it('does not take a name out of a sentence telling it what not to do', () => {
+    expect(
+      deriveProjectName(
+        'Re-evaluate my QuickPick idea using Claude: two choices, one randomly selected with a ' +
+          'clean animation. Give your assessment and the smallest useful V1. Do not build anything yet.',
+      ),
+    ).toBe('QuickPick');
+
+    for (const message of [
+      'Have another look at LedgerLite. Do not build anything yet.',
+      'What do you make of my StudySprint idea? Do not create anything yet.',
+      'Think about my rent tracker app. Do not build it yet.',
+      "Assess the invoicing tool. Don't start building.",
+    ]) {
+      expect(deriveProjectName(message), message).not.toMatch(/\b(?:Yet|Anything|Building)\b/);
+    }
+  });
+
+  it('keeps the name the owner gave a thing, across re-evaluations and follow-ups', () => {
+    /* The same product, said four ways. All four have to reach the same project. */
+    for (const message of [
+      'I have an idea for a tiny app called QuickPick that lets someone enter two choices.',
+      'Re-evaluate my QuickPick idea using Claude. Do not build anything yet.',
+      'What do you think of QuickPick now?',
+      'Take another pass at the QuickPick app.',
+    ]) {
+      expect(deriveProjectName(message), message).toBe('QuickPick');
+    }
+  });
+
+  it("reads a name in a possessive frame, and keeps the owner's casing", () => {
+    expect(deriveProjectName('Have a look at my LedgerLite idea')).toBe('LedgerLite');
+    expect(deriveProjectName('what about the rent tracker app')).toBe('Rent Tracker');
+    expect(deriveProjectName('assess our invoicing tool')).toBe('Invoicing');
+  });
+
+  it('does not mistake a tool the owner mentioned for the thing being built', () => {
+    /* "using Claude" says how to think about it, not what to call it. */
+    expect(deriveProjectName('Evaluate my StudySprint idea using Claude')).toBe('StudySprint');
+    /* And a client named after a dashboard is still a dashboard. */
+    expect(deriveProjectName('Create a dashboard for CoreCredit')).toBe('Dashboard');
   });
 });
 

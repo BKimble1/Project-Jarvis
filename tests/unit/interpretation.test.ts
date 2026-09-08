@@ -115,6 +115,29 @@ describe('negation constrains the verb it negates, and nothing else', () => {
     }
   });
 
+  /**
+   * A judgement asked for in an inflected word.
+   *
+   * The test for "did this message also ask for something?" matched `assess` and not `assessment`,
+   * so "Give me your assessment and the smallest useful V1. Do not build anything yet." was read as
+   * asking for nothing at all and answered with "Understood — not building anything yet." The
+   * negation was doing its job; the word next to it was too literal to see the request.
+   */
+  it('hears a request for a judgement however the owner inflects the word', () => {
+    for (const message of [
+      'Take a look at my LedgerLite idea. Give me your assessment and the smallest useful V1. Do not build anything yet.',
+      'Re-evaluate my QuickPick idea using Claude. Give your assessment. Do not build anything yet.',
+      "Your thoughts on the rent tracker app? Don't build it yet.",
+      'I would value your opinion on StudySprint. Do not build anything yet.',
+      'Have a look at the invoicing tool. Do not build anything yet.',
+    ]) {
+      const result = interpretMessage(message);
+      expect(result.kind, message).not.toBe('decline');
+      /* The constraint still travels — it is a request *and* a refusal to build. */
+      expect(result.noBuildYet, message).toBe(true);
+    }
+  });
+
   it('keeps the rest of the message when the refusal is only part of it', () => {
     /*
      * This is the regression Blake hit. "Don't make it yet — let's talk about it first." is a

@@ -4,6 +4,7 @@ import {
   type ConversationContext,
   type Interpretation,
 } from '@/domain/interpretation';
+import { buildBrief } from '@/domain/build-brief';
 import { deriveProjectName, describesNewProject } from '@/domain/new-project';
 import type { Project } from '@/domain/project';
 import type { QueryAnswer } from '@/domain/query';
@@ -456,10 +457,21 @@ export class ConversationService {
     /* Already done. Return what it produced rather than producing it again. */
     if (proposal.state === 'accepted') return this.alreadyBuilt(proposal, interpretation);
 
+    /*
+     * What was agreed, composed rather than quoted.
+     *
+     * `proposal.idea` is the sentence the owner typed, and it is kept on the row for audit — but it
+     * describes a *request*, not a product. Handing it on as the objective is what produced a
+     * mission to "Re-evaluate my QuickPick idea … Do not build anything yet", and then a question
+     * about whether that should be researched or implemented. The brief is built from the parts
+     * that describe the thing: its name, its assessed problem, and the smallest version agreed to.
+     */
+    const brief = buildBrief(proposal);
+
     const provisioned = await this.deps.provisioning.provision({
-      name: proposal.title,
-      goal: proposal.idea,
-      description: null,
+      name: brief.name,
+      goal: brief.goal,
+      description: brief.description,
     });
 
     /*
@@ -472,12 +484,20 @@ export class ConversationService {
 
     const created = await this.deps.missions.create(
       {
-        rawRequest: proposal.idea,
+        rawRequest: brief.objective,
+        title: `Build the first version of ${brief.name}`,
+        description: brief.description,
+        /*
+         * Stated, not inferred. Saying yes to a build proposal decides the mode; leaving the type
+         * to be guessed from prose is what let a sentence containing both "evaluate" and "build"
+         * reopen a question the owner had already answered.
+         */
+        type: 'code_change',
         projectId: provisioned.project.id,
         priority: 'medium',
         constraints: [],
         doNotTouch: [],
-        acceptanceCriteria: [...proposal.recommendedV1],
+        acceptanceCriteria: [...brief.acceptanceCriteria],
       },
       ownerLogin,
       { createdBy: 'owner' },
@@ -496,13 +516,12 @@ export class ConversationService {
 
     const authority = await this.deps.authority();
     const projectName = provisioned.project.shortName ?? provisioned.project.name;
+    const planning = !created.refusal && created.questions.length === 0;
 
     return {
       kind: 'follow_up',
-      understanding: `Going ahead with ${proposal.title}.`,
-      said: created.refusal
-        ? created.refusal
-        : `Started ${proposal.title}. ${authority.standingAuthority ? 'I am planning it now' : `It will wait for you at the plan — ${authority.blockedReason ?? ''}`}`.trim(),
+      understanding: `Going ahead with ${brief.name}.`,
+      said: created.refusal ?? outcomeSentence(brief.name, created.questions, authority, planning),
       href: `/missions/${created.mission.id}`,
       answer: null,
       started: {
@@ -511,7 +530,7 @@ export class ConversationService {
         projectId: provisioned.project.id,
         projectName,
         repositoryUrl: provisioned.repository?.url ?? null,
-        planning: !created.refusal && created.questions.length === 0,
+        planning,
       },
       proposal: null,
       evaluation: accepted.evaluation,
@@ -639,4 +658,41 @@ function spokenIdea(proposal: Proposal, thinking: ThinkingState, noBuildYet: boo
   );
 
   return parts.join(' ');
+}
+
+/**
+ * What actually happened, said without overstating it.
+ *
+ * "Started" was printed whether or not anything had started — including when the mission was
+ * sitting on a clarifying question, and including when the deployment's own mode meant nothing
+ * would run until the owner approved a plan. Three different situations, one sentence, and the one
+ * word in it that mattered was wrong in two of them.
+ *
+ * Each branch below says the thing that is true, and names the actual blocker when there is one.
+ * The project and the repository really were created in every branch, so that part is stated
+ * plainly; what varies is whether any work is under way, which is the part that was being fudged.
+ */
+function outcomeSentence(
+  name: string,
+  questions: readonly { readonly question: string }[],
+  authority: { standingAuthority: boolean; blockedReason: string | null },
+  planning: boolean,
+): string {
+  if (questions.length > 0) {
+    const first = questions[0]?.question;
+    const count = questions.length === 1 ? 'one question' : `${questions.length} questions`;
+    return `${name} is set up and the mission is written. Nothing is being planned yet — I have ${count} first${first ? `: ${first}` : '.'}`;
+  }
+
+  if (!planning) {
+    return `${name} is set up and the mission is written. Nothing is running yet.`;
+  }
+
+  if (authority.standingAuthority) {
+    return `${name} is set up and I am planning the first version now. I will tell you when there is something to see.`;
+  }
+
+  return `${name} is set up and the plan is being prepared. Nothing will run until you approve it${
+    authority.blockedReason ? ` — ${authority.blockedReason}` : ''
+  }.`;
 }

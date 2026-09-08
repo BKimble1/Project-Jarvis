@@ -107,51 +107,147 @@ export function describesNewProject(raw: string): boolean {
  */
 const NAME_BETWEEN = new RegExp(
   `\\b(?:${CREATION_VERBS.join('|')})\\b\\s+(?:me\\s+|us\\s+)?(?:(?:an?|the|some)\\s+)?([a-z0-9][a-z0-9 '-]{0,60}?)\\s*(?:\\b(?:${ARTEFACTS.join('|')})\\b|$)`,
+  'i',
 );
 
 /** "…called wrenchy", "…named Holograph" — an explicit name always wins over an inferred one. */
 const NAMED =
-  /\b(?:called|named)\s+([a-z0-9][a-z0-9 '-]{0,60}?)(?:\s+(?:that|which|to|for|so|and|with)\b|$)/;
+  /\b(?:called|named)\s+([a-z0-9][a-z0-9 '-]{0,60}?)(?:\s+(?:that|which|to|for|so|and|with)\b|$)/i;
+
+/**
+ * "my QuickPick idea", "the rent tracker app", "our invoicing tool".
+ *
+ * A possessive or article, one to three words, then a noun for the *kind* of thing. This is how
+ * people refer to something they have already named, which is exactly what a follow-up message
+ * does — and the previous rules could not see it, because they only looked between a creation verb
+ * and an artefact noun and a follow-up has neither.
+ */
+const NAME_FRAME =
+  /\b(?:my|our|your|the|this|that|an?)\s+((?:[\w'-]+\s+){0,2}[\w'-]+)\s+(?:idea|concept|app|application|project|tool|site|website|service|product|prototype|bot|game|dashboard|extension|plugin|thing)\b/i;
+
+/**
+ * A word with a capital inside it — QuickPick, CoreCredit, TestFlight.
+ *
+ * Nobody writes a word that way by accident, so it is nearly always a product name. Restricted to
+ * an *internal* capital on purpose: an ordinary capitalised word is just a word at the start of a
+ * sentence, or a person, or a tool the owner mentioned in passing.
+ */
+const CAMEL_CASE = /(\S+\s+)?\b([A-Za-z][a-z0-9]*[A-Z][A-Za-z0-9]*)\b/g;
+
+/**
+ * Sentences that instruct Jarvis rather than describe the thing.
+ *
+ * "Do not build anything yet." is a constraint on what to do with an idea. Read as a description of
+ * the idea it produced a project called "Yet", a private repository called `yet`, and a mission to
+ * re-evaluate something — which is what happens when a sentence about the *request* is mined for
+ * the name of the *product*. Sentence-scoped, like the interpreter's own negation test, so a
+ * refusal in the last sentence cannot reach back over the whole message.
+ */
+const INSTRUCTION_SENTENCE =
+  /\b(?:do ?n(?:o|')t|dont|never|no need to|hold off|rather not|no rush to)\b[^.!?]*\b(?:build\w*|make|making|start\w*|creat\w*|implement\w*|writ\w*|cod\w*|ship\w*|deploy\w*|do it|anything)\b|\b(?:build|make|start|create|implement)\w*\b[^.!?]*\bnot yet\b/i;
+
+/** What is left of a message once the sentences telling Jarvis what *not* to do are removed. */
+function describingSentences(raw: string): string {
+  const sentences = raw.split(/(?<=[.!?])\s+/).filter((sentence) => sentence.trim().length > 0);
+  const kept = sentences.filter((sentence) => !INSTRUCTION_SENTENCE.test(sentence));
+  /* If every sentence was an instruction there is nothing to describe, so use what there is. */
+  return (kept.length > 0 ? kept : sentences).join(' ');
+}
 
 /**
  * A project name from the sentence that asked for it.
  *
- * The rule is to keep the descriptive words between the verb and the artefact noun — "build me a
- * simple rent tracker app" gives "Rent Tracker" — and to fall back to something obviously
- * placeholder-ish rather than to something confidently wrong. A name is cheap to change on the
- * project screen; a name that reads as though Jarvis understood more than it did is not.
+ * Four readings, in descending order of how sure they are, and a placeholder rather than a
+ * confident guess when none of them fires:
+ *
+ * 1. A name the owner stated — "called wrenchy", "named Holograph".
+ * 2. A name in a possessive frame — "my QuickPick idea", "a simple rent tracker app".
+ * 3. A word with a capital inside it, unless it follows a joining word: "for CoreCredit" names the
+ *    client of a dashboard, not the dashboard.
+ * 4. The descriptive middle between a creation verb and an artefact noun.
+ *
+ * All four run on the message with its instruction sentences removed, and all four are
+ * case-insensitive against the original text so the owner's own casing survives: QuickPick stays
+ * QuickPick rather than becoming Quickpick and quietly renaming somebody's app.
  */
 export function deriveProjectName(raw: string): string {
-  const text = normalise(raw);
-  /*
-   * Matching is done on lower-cased text, but the name the owner wrote is the one that should
-   * survive: "QuickPick" becomes the project name and, slugged, the repository name. Recovering
-   * the original casing from the source beats title-casing a lower-cased word, which turns
-   * QuickPick into Quickpick and quietly renames somebody's app.
-   */
-  const asWritten = (word: string): string => {
-    const found = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').exec(raw);
-    return found?.[0] ?? word;
-  };
+  const described = describingSentences(raw);
 
-  const explicit = NAMED.exec(text);
-  const source = explicit?.[1] ?? NAME_BETWEEN.exec(text)?.[1] ?? '';
+  const stated = NAMED.exec(described)?.[1];
+  if (stated) {
+    const name = tidy(stated);
+    if (name) return name;
+  }
 
-  /*
-   * Cut at the first joining word. "A dashboard for CoreCredit" names a dashboard; carrying the
-   * whole phrase into the name produces "Dashboard For Corecredit", which is a sentence fragment
-   * wearing a project's clothes.
-   */
+  const framed = NAME_FRAME.exec(described)?.[1];
+  if (framed) {
+    const name = tidy(framed);
+    if (name) return name;
+  }
+
+  const camel = distinctiveWord(described);
+  if (camel) return camel;
+
+  const between = NAME_BETWEEN.exec(described)?.[1];
+  if (between) {
+    const name = tidy(between);
+    if (name) return name;
+  }
+
+  return 'New project';
+}
+
+/**
+ * The first word with an internal capital that is not introduced by a joining word.
+ *
+ * "A dashboard for CoreCredit" is a dashboard; "my QuickPick idea" is QuickPick. The difference is
+ * entirely the word in front, which is why the preceding token is part of the match.
+ */
+function distinctiveWord(text: string): string | null {
+  CAMEL_CASE.lastIndex = 0;
+  for (let found = CAMEL_CASE.exec(text); found; found = CAMEL_CASE.exec(text)) {
+    const before =
+      found[1]
+        ?.trim()
+        .toLowerCase()
+        .replace(/[^a-z]/g, '') ?? '';
+    const word = found[2];
+    if (!word || CLAUSE_BREAK.has(before)) continue;
+    return word;
+  }
+  return null;
+}
+
+/**
+ * A captured phrase reduced to the words that are actually a name.
+ *
+ * Cut at the first joining word, drop the fillers, keep at most four. Returns null when nothing
+ * survives — "the best idea" and "build something" are not names, and a placeholder is a better
+ * answer than "Best" or "Something".
+ */
+function tidy(phrase: string): string | null {
   const untilClause: string[] = [];
-  for (const word of source.split(/\s+/)) {
+  for (const word of normalise(phrase).split(/\s+/)) {
     if (CLAUSE_BREAK.has(word)) break;
     untilClause.push(word);
   }
 
   const words = untilClause.filter((word) => word.length > 0 && !FILLER.has(word)).slice(0, 4);
+  if (words.length === 0) return null;
+  return words.map((word) => capitalise(asWritten(word, phrase))).join(' ');
+}
 
-  if (words.length === 0) return 'New project';
-  return words.map((word) => capitalise(asWritten(word))).join(' ');
+/**
+ * The word as the owner wrote it.
+ *
+ * Matching happens on lower-cased text, but the casing the owner chose is the one that should
+ * survive. Recovering it from the source beats title-casing a lower-cased word.
+ */
+function asWritten(word: string, source: string): string {
+  const found = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').exec(
+    source,
+  );
+  return found?.[0] ?? word;
 }
 
 /** Words that begin a clause about the thing rather than continuing its name. */
@@ -195,8 +291,35 @@ const FILLER = new Set([
   'anything',
   'version',
   'of',
+  /*
+   * Evaluative words. "The best idea" and "my next project" are ways of referring to a thing, not
+   * names for it, and a project called "Best" is worse than one called "New project".
+   */
+  'best',
+  'better',
+  'good',
+  'great',
+  'next',
+  'last',
+  'other',
+  'same',
+  'whole',
+  'main',
+  'real',
+  'only',
+  'original',
+  'current',
+  'previous',
+  'idea',
+  'yet',
 ]);
 
+/**
+ * A leading capital, without flattening one the owner already chose.
+ *
+ * `QuickPick` keeps its inner capital; `wrenchy` becomes `Wrenchy`. Upper-casing the first letter
+ * of a word that already has capitals is safe; lower-casing the rest of it is not.
+ */
 const capitalise = (word: string): string =>
   word.length === 0 ? word : `${word[0]?.toUpperCase() ?? ''}${word.slice(1)}`;
 

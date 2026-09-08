@@ -107,8 +107,15 @@ export function buildClarificationQuestions(
     });
   }
 
-  /* 3 — research or implementation? The two produce completely different work. */
-  if (isAmbiguousMode(text, mission.type)) {
+  /*
+   * 3 — research or implementation? The two produce completely different work.
+   *
+   * Not asked when the mission already carries acceptance criteria. A list of things the first
+   * version must do *is* the answer to this question, written down before it was asked, and asking
+   * anyway is how "Go ahead" to an assessed build proposal came back as "did you want this
+   * researched or implemented?" — of a mission whose definition of done was already agreed.
+   */
+  if (mission.acceptanceCriteria.length === 0 && isAmbiguousMode(text, mission.type)) {
     candidates.push({
       id: 'mode',
       topic: 'mode',

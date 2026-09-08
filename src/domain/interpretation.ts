@@ -270,7 +270,16 @@ const ADVICE =
  * it yet." asks for a great deal and is not.
  */
 const ASKS_FOR_SOMETHING =
-  /\?|\b(?:tell me|show me|explain|describe|list|suggest|recommend|what|which|who|why|how|when|where|whether|should|would|could|can you|talk about|discuss|think about|advise|evaluate|assess|questions?)\b/;
+  /\?|\b(?:tell me|show me|give me|give your|explain|describe|list|suggest|recommend|what|which|who|why|how|when|where|whether|should|would|could|can you|talk about|discuss|think about|advise|evaluat\w*|assess\w*|review|reaction|opinions?|thoughts?|verdict|feedback|worth|(?:take|have) a look|look at|questions?)\b/;
+
+/*
+ * Word *stems*, not whole words, for the ones people inflect.
+ *
+ * `assess` matched "assess" and not "assessment", so "Give me your assessment and the smallest
+ * useful V1. Do not build anything yet." was read as asking for nothing — and a message that asked
+ * for a judgement came back as "Understood — not building anything yet." The negation was doing
+ * its job; the test for whether anything had *also* been asked for was too literal.
+ */
 
 /**
  * Work.
