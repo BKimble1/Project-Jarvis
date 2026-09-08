@@ -14,6 +14,19 @@ test.describe('the phone layout', () => {
     await page.goto('/dashboard');
     await expect(page.getByRole('heading', { name: scenario.manual.name, level: 3 })).toBeVisible();
 
+    /*
+     * The development server's own error indicator sits bottom-left, on top of the application.
+     *
+     * It is a Next dev-mode artifact rather than product chrome — it does not exist in a build —
+     * and under whole-suite load it accumulates the deliberate 404s other specs assert on and then
+     * covers the second tab. The old bar had six tabs and this test clicked the fifth, well clear
+     * of it; the rail now has five and Work is the second, directly underneath. Removing the
+     * overlay is removing the test harness's own furniture, not working around a real obstruction.
+     */
+    await page.evaluate(() => {
+      for (const portal of Array.from(document.querySelectorAll('nextjs-portal'))) portal.remove();
+    });
+
     /* Both navigations carry the same label; the tab bar is the one with the short labels. */
     const tabs = page
       .getByRole('navigation', { name: 'Main' })
@@ -34,7 +47,8 @@ test.describe('the phone layout', () => {
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await expect(tabs).toBeInViewport();
 
-    await tabs.getByRole('link', { name: 'Work' }).click();
+    /* The badge count is part of the tab's accessible name, so match on the href instead. */
+    await tabs.locator('a[href="/work"]').click();
     await expect(page).toHaveURL(/\/work$/);
     await expect(page.getByRole('heading', { name: 'Work', level: 1 })).toBeVisible();
   });
