@@ -98,7 +98,17 @@ const EXISTING =
 export function describesNewProject(raw: string): boolean {
   const text = normalise(raw);
   if (ASKING.test(text) || EXISTING.test(text)) return false;
-  return CREATION_VERB.test(text) && ARTEFACT.test(text);
+  /*
+   * Instruction sentences are removed first, for the same reason `deriveProjectName` removes them.
+   *
+   * "Do not build an app yet" carries a creation verb and an artefact noun and means the opposite
+   * of both. Naming was fixed by dropping those sentences before reading a name out of them; this
+   * is the same sentence, read by the guard that stands in front of the irreversible act, and it
+   * has to answer the same way. A guard that reads a refusal as a request is the one place in this
+   * module where being wrong costs a repository on somebody's account.
+   */
+  const asking = normalise(describingSentences(raw));
+  return CREATION_VERB.test(asking) && ARTEFACT.test(asking);
 }
 
 /**
@@ -195,6 +205,44 @@ export function deriveProjectName(raw: string): string {
   }
 
   return 'New project';
+}
+
+/**
+ * A name the owner actually wrote, or null when they did not write one.
+ *
+ * ## Why this exists beside `deriveProjectName`
+ *
+ * They answer different questions. `deriveProjectName` answers "what should this be called?" and
+ * must always answer something, so it ends at the placeholder `New project`. This answers "did the
+ * owner name a product?", and `null` is a real answer — which is what makes it usable as an
+ * *identity*.
+ *
+ * `proposalSubjectKey` keys an idea on the product it names, so that the same idea described twice
+ * in different words lands on one proposal row rather than two things "go ahead" could mean. Keyed
+ * on `deriveProjectName` instead, every unnamed idea would collide on the single key "New project"
+ * — every stray thought the owner ever had, filed as one proposal.
+ *
+ * The three readings below are exactly the ones that indicate a name was written down. The fourth
+ * reading `deriveProjectName` uses — the descriptive middle between a creation verb and an artefact
+ * noun — is deliberately absent: "build me a rent tracker app" describes a thing without naming it,
+ * and inferring an identity from a description is how two different ideas become one row.
+ */
+export function statedProductName(raw: string): string | null {
+  const described = describingSentences(raw);
+
+  const stated = NAMED.exec(described)?.[1];
+  if (stated) {
+    const name = tidy(stated);
+    if (name) return name;
+  }
+
+  const framed = NAME_FRAME.exec(described)?.[1];
+  if (framed) {
+    const name = tidy(framed);
+    if (name) return name;
+  }
+
+  return distinctiveWord(described);
 }
 
 /**

@@ -242,18 +242,33 @@
   .jarvis-surface,
   html[data-jarvis-scope='on'] body {
     /* --- the surface's own vocabulary ------------------------------------ */
-    --jx-void: #030916;
-    --jx-deep: #071a38;
-    --jx-panel: #0a2041;
-    --jx-line: #16406f;
-    --jx-line-soft: #10305a;
-    --jx-blue: #278cff;
-    --jx-cyan: #79e8ff;
-    --jx-ink: #e5f5ff;
-    --jx-ink-dim: #9cc2e8;
-    --jx-ink-faint: #6e92bc;
+    /*
+     * The owner's palette, verbatim.
+     *
+     * These seven hexes were specified rather than sampled, so they are written here as given and
+     * everything else on the surface is mixed from them. The previous values were a near miss in
+     * every channel — a bluer line, a lighter cyan, a more saturated panel — and "near" is what
+     * makes a screen look almost right, which is worse than looking different.
+     */
+    --jx-void: #030a14;
+    --jx-deep: #061120;
+    --jx-panel: #081627;
+    --jx-line: #183449;
+    --jx-line-soft: #112536;
+    --jx-blue: #3c8dff;
+    --jx-cyan: #5ee7ff;
+    --jx-ink: #e9f7ff;
+    --jx-ink-dim: #96b4c8;
+    --jx-ink-faint: #6b8598;
+    /* Amber means a decision or a capacity restriction. Red means a real fault. Nothing else. */
     --jx-amber: #ffb84d;
     --jx-red: #ff6b7e;
+    /*
+     * Not in the owner's palette, and kept to one job: "this finished".
+     *
+     * It is the completion accent and the "worker connected" tick, both of which are moments rather
+     * than states. Everything that is merely healthy is blue.
+     */
     --jx-green: #4fe0a8;
 
     /*

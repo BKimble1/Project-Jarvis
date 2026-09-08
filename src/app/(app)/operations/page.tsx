@@ -143,6 +143,40 @@ export default async function OperationsPage() {
       </header>
 
       {/*
+        The utility controls this destination absorbed.
+
+        Workers, Setting up and Settings each had their own place in the rail and no longer do, so
+        this is now the only navigation to two of them. Without it, folding the rail to five would
+        have quietly removed a feature — which is the one thing the change was not allowed to do.
+      */}
+      <nav
+        aria-label="Configuration"
+        className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-[var(--color-text-subtle)]"
+      >
+        <Link
+          href="/workers"
+          className="underline underline-offset-2 hover:text-[var(--color-text)]"
+        >
+          Workers
+        </Link>
+        <Link href="/setup" className="underline underline-offset-2 hover:text-[var(--color-text)]">
+          Setting up
+        </Link>
+        <Link
+          href="/settings"
+          className="underline underline-offset-2 hover:text-[var(--color-text)]"
+        >
+          Settings
+        </Link>
+        <Link
+          href="/operations/qualification"
+          className="underline underline-offset-2 hover:text-[var(--color-text)]"
+        >
+          Qualification
+        </Link>
+      </nav>
+
+      {/*
        * Placed above everything, because it is the sentence that qualifies every other number on
        * this page. "Four agents working" means something different when nothing beyond the test
        * suite has been proved.

@@ -43,9 +43,15 @@ test.describe('the Jarvis screen', () => {
     await expect(page.getByRole('heading', { name: scenario.manual.name, level: 3 })).toBeVisible();
 
     /*
-     * The detailed portfolio moved rather than disappearing. This is the link that keeps the
-     * old landing page one click away instead of stranding it.
+     * The detailed portfolio moved rather than disappearing.
+     *
+     * It used to be linked from this screen directly. It is now reached through Work, which is the
+     * destination that gathers portfolio, projects and missions — so the walk is one hop longer and
+     * the property being protected is unchanged: the old landing page is still reachable from the
+     * screen that replaced it, and has not been stranded by the rail folding to five.
      */
+    await page.getByRole('link', { name: 'Work', exact: true }).first().click();
+    await expect(page).toHaveURL(/\/work$/);
     await page.getByRole('link', { name: 'Portfolio', exact: true }).first().click();
     await expect(page).toHaveURL(/\/portfolio$/);
     await expect(page.getByRole('heading', { name: 'Portfolio', level: 1 })).toBeVisible();
@@ -56,7 +62,7 @@ test.describe('the Jarvis screen', () => {
 
     const ask = page.getByRole('region', { name: 'Ask Jarvis' });
     await ask.getByLabel('Ask Jarvis about your projects').fill('Where are we?');
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
 
     /* The answer arrives inside the command region, and the screen is still the screen. */
     await expect(ask.getByRole('heading', { name: 'Where we are' })).toBeVisible();
@@ -69,7 +75,7 @@ test.describe('the Jarvis screen', () => {
 
     const ask = page.getByRole('region', { name: 'Ask Jarvis' });
     await ask.getByLabel('Ask Jarvis about your projects').fill('What needs me?');
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
     await expect(ask.getByRole('button', { name: 'Recent conversation' })).toBeVisible();
 
     /* Folded away by default: the centre shows the last thing said and nothing more. */

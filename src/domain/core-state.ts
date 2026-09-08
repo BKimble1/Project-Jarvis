@@ -37,8 +37,17 @@ export const CORE_STATES = [
   'working',
   /** Something needs the owner. */
   'attention',
-  /** Capacity withheld, or Jarvis paused. Quieter motion. */
+  /** Capacity is genuinely withheld by the governor. Quieter motion, amber. */
   'limited',
+  /**
+   * Deliberately stopped by the owner.
+   *
+   * Calm rather than amber: a paused deployment is doing exactly what it was told to do, and
+   * painting it as a problem trains the owner to ignore the colour that means one.
+   */
+  'paused',
+  /** Work ended badly and has not been dealt with. */
+  'failed',
   /** Nothing can run. Unmistakable. */
   'disconnected',
   /** One brief accent after something finished, then back to the truth. */
@@ -55,6 +64,8 @@ export const CORE_STATE_LABELS: Record<CoreState, string> = {
   working: 'Working.',
   attention: 'Waiting for you.',
   limited: 'Holding back.',
+  paused: 'Paused.',
+  failed: 'Something failed.',
   disconnected: 'Not connected.',
   complete: 'Done.',
 };
@@ -73,6 +84,9 @@ export const CORE_STATE_TONE: Record<CoreState, 'blue' | 'cyan' | 'amber' | 'red
   working: 'blue',
   attention: 'amber',
   limited: 'amber',
+  /* Intentional, not wrong. See the state's own note. */
+  paused: 'blue',
+  failed: 'red',
   disconnected: 'red',
   complete: 'green',
 };
@@ -88,8 +102,19 @@ export interface CoreInput {
   readonly workingCount: number;
   /** True when something is genuinely waiting on the owner. */
   readonly needsOwner: boolean;
-  /** True when the governor is withholding capacity, or Jarvis is paused or off. */
+  /**
+   * True when the governor is withholding capacity.
+   *
+   * Capacity only. This used to also carry "not running on standing authority", which meant every
+   * deployment that was merely *supervised* — the ordinary, correct, deliberate setting — painted
+   * the whole screen amber: amber core, amber dot, amber mode pill. Supervised is not a fault, and
+   * a screen that cannot tell a restriction from a preference has no way left to report a real one.
+   */
   readonly limited: boolean;
+  /** True when the owner has stopped Jarvis. Deliberate, and shown as such. */
+  readonly paused: boolean;
+  /** True when work ended badly and nobody has dealt with it yet. */
+  readonly failed: boolean;
   /** True when nothing can run: no worker, or the loop has stopped. */
   readonly disconnected: boolean;
   /** Set briefly after something really finished. */
@@ -104,12 +129,18 @@ export interface CoreInput {
  */
 export function coreState(input: CoreInput): CoreState {
   if (input.disconnected) return 'disconnected';
+  if (input.failed) return 'failed';
   if (input.listening) return 'listening';
   if (input.thinking) return 'thinking';
   if (input.speaking) return 'speaking';
   if (input.justCompleted) return 'complete';
   if (input.limited) return 'limited';
   if (input.needsOwner) return 'attention';
+  /*
+   * Paused outranks working because a paused deployment with something still running is a fact
+   * worth leading with — the run is finishing, and nothing new will start behind it.
+   */
+  if (input.paused) return 'paused';
   if (input.workingCount > 0) return 'working';
   return 'ready';
 }
@@ -128,6 +159,8 @@ export function coreStatusLine(
     readonly waitingCount: number;
     readonly limitReason: string | null;
     readonly disconnectedReason: string | null;
+    readonly pausedReason?: string | null;
+    readonly failedReason?: string | null;
   },
 ): string {
   switch (state) {
@@ -135,6 +168,10 @@ export function coreStatusLine(
       return input.disconnectedReason ?? CORE_STATE_LABELS.disconnected;
     case 'limited':
       return input.limitReason ?? CORE_STATE_LABELS.limited;
+    case 'paused':
+      return input.pausedReason ?? CORE_STATE_LABELS.paused;
+    case 'failed':
+      return input.failedReason ?? CORE_STATE_LABELS.failed;
     case 'working':
       return `Working on ${input.workingCount} mission${input.workingCount === 1 ? '' : 's'}.`;
     case 'attention':
@@ -182,6 +219,10 @@ export const CORE_MOTION: Record<CoreState, CoreMotion> = {
   working: { spin: 0.018, glow: 0.8, agitation: 0.09, reactivity: 0 },
   attention: { spin: 0.01, glow: 0.75, agitation: 0.06, reactivity: 0 },
   limited: { spin: 0.005, glow: 0.5, agitation: 0.03, reactivity: 0 },
+  /* Held, not stopped: slow and even, so it reads as waiting rather than as broken. */
+  paused: { spin: 0.004, glow: 0.55, agitation: 0.02, reactivity: 0 },
+  /* Interrupted rather than calm — the one quiet state that should not look restful. */
+  failed: { spin: 0.008, glow: 0.6, agitation: 0.11, reactivity: 0 },
   disconnected: { spin: 0.002, glow: 0.42, agitation: 0.01, reactivity: 0 },
   complete: { spin: 0.016, glow: 1, agitation: 0.12, reactivity: 0 },
 };

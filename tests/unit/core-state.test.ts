@@ -26,6 +26,8 @@ const CALM: CoreInput = {
   workingCount: 0,
   needsOwner: false,
   limited: false,
+  paused: false,
+  failed: false,
   disconnected: false,
   justCompleted: false,
 };
@@ -138,8 +140,48 @@ describe('how the core is allowed to move', () => {
     expect(CORE_STATE_TONE.attention).toBe('amber');
     expect(CORE_STATE_TONE.limited).toBe('amber');
     expect(CORE_STATE_TONE.disconnected).toBe('red');
+    expect(CORE_STATE_TONE.failed).toBe('red');
     for (const state of ['ready', 'thinking', 'working'] as const) {
       expect(CORE_STATE_TONE[state], `${state} is an ordinary state`).toBe('blue');
     }
+  });
+
+  /**
+   * The regression that painted a healthy screen amber.
+   *
+   * `limited` used to be fed `capacityWithheld || !standingAuthority`, and standing authority is
+   * only ever true in operator mode. So Supervised — the ordinary, deliberate, correct setting —
+   * resolved to `limited`, which is amber: amber core, amber dot, amber mode pill, on a deployment
+   * with nothing whatsoever wrong with it. A screen that cannot tell a preference from a
+   * restriction has no colour left to report a real one.
+   */
+  it('does not treat a healthy supervised deployment as a restriction', () => {
+    const supervisedAndWell = { ...CALM, limited: false, paused: false, failed: false };
+    expect(coreState(supervisedAndWell)).toBe('ready');
+    expect(CORE_STATE_TONE[coreState(supervisedAndWell)]).toBe('blue');
+  });
+
+  it('tells being paused apart from being held back, and neither from having failed', () => {
+    expect(coreState({ ...CALM, paused: true })).toBe('paused');
+    expect(coreState({ ...CALM, limited: true })).toBe('limited');
+    expect(coreState({ ...CALM, failed: true })).toBe('failed');
+
+    /* Paused is deliberate. Only a genuine restriction or fault earns a warning colour. */
+    expect(CORE_STATE_TONE.paused).toBe('blue');
+    expect(CORE_STATE_TONE.limited).toBe('amber');
+    expect(CORE_STATE_TONE.failed).toBe('red');
+  });
+
+  it('says why, in the words the server gave it, for each stopped state', () => {
+    const quiet = { workingCount: 0, waitingCount: 0, limitReason: null, disconnectedReason: null };
+    expect(coreStatusLine('paused', { ...quiet, pausedReason: 'You paused it at 9:40.' })).toBe(
+      'You paused it at 9:40.',
+    );
+    expect(coreStatusLine('failed', { ...quiet, failedReason: 'The last pass errored.' })).toBe(
+      'The last pass errored.',
+    );
+    /* And falls back to the label rather than to an empty line. */
+    expect(coreStatusLine('paused', quiet)).toBe(CORE_STATE_LABELS.paused);
+    expect(coreStatusLine('failed', quiet)).toBe(CORE_STATE_LABELS.failed);
   });
 });

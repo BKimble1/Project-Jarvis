@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
   CornerDownLeft,
+  ExternalLink,
   Loader2,
   Maximize2,
   Mic,
@@ -23,6 +24,7 @@ import { CORE_STATE_TONE, coreState, coreStatusLine, type CoreState } from '@/do
 import { AnswerPanel } from '@/components/answer-panel';
 import { ReadinessStrip, type ReadinessSummary } from '@/components/readiness-strip';
 import { JarvisCore } from '@/components/jarvis/core';
+import { RelativeTime } from '@/components/relative-time';
 import { CapacityDial, Clock, Panel, Pill } from '@/components/jarvis/chrome';
 import { useMicLevel } from '@/components/jarvis/use-mic-level';
 import { useSpeech } from '@/components/voice/use-speech';
@@ -49,6 +51,19 @@ export interface ScreenCompletion {
   readonly title: string;
   readonly detail: string;
   readonly href: string;
+  /** Which project it belongs to. Shown, because "what finished" is meaningless without it. */
+  readonly projectName: string | null;
+  /** What it was supposed to produce, in the words agreed when the work was authorised. */
+  readonly deliverable: string | null;
+  /**
+   * A real pull request, or null.
+   *
+   * Never fabricated and never inferred from a branch name. A card that offers "View pull request"
+   * when there is no pull request is worse than a card that offers nothing.
+   */
+  readonly pullRequestUrl: string | null;
+  /** ISO, formatted in the browser — the server's clock must not reach the HTML. */
+  readonly finishedAt: string | null;
 }
 
 export interface ScreenCapacityWindow {
@@ -63,6 +78,8 @@ export interface JarvisScreenProps {
   readonly headline: string;
   readonly modeLabel: string;
   readonly modeMeaning: string;
+  /** The raw operating mode, so the screen can tell "paused" from "supervised" without parsing a label. */
+  readonly mode: string;
   readonly loopState: string;
   readonly loopExplanation: string;
   readonly standingAuthority: boolean;
@@ -83,6 +100,17 @@ export interface JarvisScreenProps {
   } | null;
   readonly readiness: ReadinessSummary;
   readonly projectCount: number;
+  /**
+   * The standing proposal and the state of the question asked about it, read from the database.
+   *
+   * The thinking panel was pure client state, so a reload — or answering from a phone instead —
+   * lost an in-flight evaluation even though the row was still queued and the worker still
+   * answered it. These are how the screen finds its way back to a conversation it was already
+   * having, which is the reconnection the owner asked for.
+   */
+  readonly standingProposal: { readonly id: string; readonly summary: string } | null;
+  readonly standingThinking: ThinkingSnapshot | null;
+  readonly standingEvaluation: ConversationEvaluation | null;
 }
 
 /** One turn of the conversation, as it is kept on screen. */
@@ -138,11 +166,20 @@ export function JarvisScreen(props: JarvisScreenProps) {
   const [selected, setSelected] = React.useState<string | null>(null);
   const [immersive, setImmersive] = React.useState(false);
   const [showSettings, setShowSettings] = React.useState(false);
+  const [showStatus, setShowStatus] = React.useState(false);
   const [graphics, setGraphics] = React.useState<'full' | 'lite'>('full');
   const [motion, setMotion] = React.useState(true);
   const [readBack, setReadBack] = React.useState(false);
   const [handsFree, setHandsFree] = React.useState(false);
-  const [expanded, setExpanded] = React.useState(false);
+  /*
+   * Open on arrival when there is a standing question or a standing assessment.
+   *
+   * Reconnecting to a conversation and then hiding it behind a closed drawer would be the same
+   * failure in a politer form.
+   */
+  const [expanded, setExpanded] = React.useState(
+    props.standingThinking !== null || props.standingEvaluation !== null,
+  );
   const [showHistory, setShowHistory] = React.useState(false);
   /*
    * The greeting depends on the hour, which the server and the browser disagree about — so the
@@ -168,6 +205,22 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * `isSecureContext` is a browser fact.
    */
   const [voiceNote, setVoiceNote] = React.useState<string | null>(null);
+  /**
+   * Whether what is in the composer arrived through the microphone.
+   *
+   * ## Why one Send needs this
+   *
+   * The dock used to carry two: "Ask", and "Send as spoken". They are genuinely different — speech
+   * goes through the voice gate, which refuses to treat spoken words as approval — so the second
+   * button was not decoration, and deleting it to satisfy "one Send" would have quietly removed a
+   * required authorisation step.
+   *
+   * So the routing follows the words instead of the button. A transcript lands in the composer as
+   * an editable draft, and that draft stays *spoken* while it is edited: correcting what was heard
+   * is still answering by voice, and downgrading it on the first keystroke would be exactly the
+   * silent removal being avoided. Typing from scratch is typing, and takes the ordinary path.
+   */
+  const [fromMic, setFromMic] = React.useState(false);
   /*
    * The thing Jarvis last offered to do, kept so "go ahead" means something.
    *
@@ -176,7 +229,9 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * answered. It is sent back with the next message and re-read there through every gate a typed
    * sentence goes through, so it supplies the subject of a yes, never the permission for one.
    */
-  const [proposal, setProposal] = React.useState<{ id: string; summary: string } | null>(null);
+  const [proposal, setProposal] = React.useState<{ id: string; summary: string } | null>(
+    props.standingProposal,
+  );
   /*
    * The structured half of an idea assessment.
    *
@@ -184,8 +239,10 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * V1, the assumptions, and the questions Blake is being asked. Putting the questions only in
    * speech would mean the one thing he has to answer scrolls past and is gone.
    */
-  const [evaluation, setEvaluation] = React.useState<ConversationEvaluation | null>(null);
-  const [thinking, setThinking] = React.useState<ThinkingSnapshot | null>(null);
+  const [evaluation, setEvaluation] = React.useState<ConversationEvaluation | null>(
+    props.standingEvaluation,
+  );
+  const [thinking, setThinking] = React.useState<ThinkingSnapshot | null>(props.standingThinking);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
   const turnId = React.useRef(0);
@@ -491,9 +548,20 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * the worker later finishes the thought without him asking again.
    */
   React.useEffect(() => {
-    if (thinking?.state !== 'thinking') return;
+    if (thinking?.state !== 'thinking' && thinking?.state !== 'blocked') return;
     const requestId = thinking.requestId;
     let cancelled = false;
+
+    /*
+     * A blocked question is watched too, just slowly.
+     *
+     * The poll used to stop outright on `blocked`, which left the screen saying "no worker" for
+     * ever — including after the worker started. The row stays queued and really is answered
+     * later, so the copy's promise that the question "will be answered without you asking again"
+     * was true of the database and false of the screen. Watching it at a much longer interval
+     * costs one request a quarter-minute and makes the promise true in both places.
+     */
+    const period = thinking.state === 'blocked' ? BLOCKED_POLL_MS : THINKING_POLL_MS;
 
     const timer = setInterval(() => {
       void (async () => {
@@ -504,6 +572,8 @@ export function JarvisScreen(props: JarvisScreenProps) {
           if (!response.ok || cancelled) return;
           const body = (await response.json()) as { thinking: ThinkingSnapshot };
           if (cancelled || body.thinking.state === 'thinking') return;
+          /* Still blocked for the same reason is not news, and must not re-announce itself. */
+          if (body.thinking.state === 'blocked' && thinking.state === 'blocked') return;
 
           setThinking(body.thinking);
           if (body.thinking.state === 'ready') {
@@ -517,7 +587,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
           /* A missed poll is not news. The next one will say the same thing or a better one. */
         }
       })();
-    }, THINKING_POLL_MS);
+    }, period);
 
     return () => {
       cancelled = true;
@@ -584,7 +654,15 @@ export function JarvisScreen(props: JarvisScreenProps) {
       setAnswer(turn.answer);
       setAsked(text);
       setBriefing(null);
-      setExpanded(turn.answer !== null);
+      /*
+       * Open for anything there is to show.
+       *
+       * This was `turn.answer !== null`, and an `idea` turn always answers null — the assessment
+       * arrives from the worker seconds or minutes later. So the one turn that most needs the
+       * drawer, the one where Jarvis says "I am thinking about it", was the one turn that never
+       * opened it: the spoken line promised the words were on screen and nothing was.
+       */
+      setExpanded(turn.answer !== null || turn.thinking !== null || turn.evaluation !== null);
       /*
        * Carried forward only while there is something to say yes to. Clearing it on every other
        * turn is what stops a "go ahead" said ten minutes later from accepting something the person
@@ -666,6 +744,12 @@ export function JarvisScreen(props: JarvisScreenProps) {
     const text = raw.trim();
     if (text.length === 0) return;
     heard(text);
+    /*
+     * The routing was decided by the caller from the origin of these words. Once they are gone the
+     * composer is empty and holding nothing that was heard, so the next thing typed into it is
+     * typed, not spoken.
+     */
+    setFromMic(false);
 
     const boundTo = boundList.current;
     boundList.current = null;
@@ -775,7 +859,11 @@ export function JarvisScreen(props: JarvisScreenProps) {
   /* What was recognised becomes an editable draft in the same box everything else is typed in. */
   React.useEffect(() => {
     if (speech.phase === 'idle' && speech.transcript.trim().length > 0) {
-      setReply((current) => (current.length > 0 ? current : speech.transcript.trim()));
+      setReply((current) => {
+        if (current.length > 0) return current;
+        setFromMic(true);
+        return speech.transcript.trim();
+      });
       mic.release();
     }
   }, [speech.phase, speech.transcript, mic]);
@@ -806,8 +894,16 @@ export function JarvisScreen(props: JarvisScreenProps) {
 
   /* ---------------------------------------------------------------- what the core shows */
 
-  const disconnected =
-    !props.workerReady || props.loopState === 'stalled' || props.loopState === 'failing';
+  /*
+   * Three different bad states, told apart.
+   *
+   * `failing` used to be folded into `disconnected`, which reported a loop whose last pass errored
+   * as though nothing were connected at all. They need different words and a different recovery,
+   * so they are now different states.
+   */
+  const disconnected = !props.workerReady || props.loopState === 'stalled';
+  const failing = props.loopState === 'failing';
+  const paused = props.mode === 'paused' || props.mode === 'emergency_stop';
   const needsOwner = props.actions.some((action) => action.requiresOwner);
 
   const state: CoreState = coreState({
@@ -816,7 +912,13 @@ export function JarvisScreen(props: JarvisScreenProps) {
     speaking,
     workingCount: props.running.length,
     needsOwner,
-    limited: props.capacityWithheld || !props.standingAuthority,
+    /*
+     * Capacity only. Supervised is a setting, not a restriction: including it here painted every
+     * healthy supervised screen amber, which is the one thing the palette must not do.
+     */
+    limited: props.capacityWithheld,
+    paused,
+    failed: failing,
     disconnected,
     justCompleted,
   });
@@ -824,11 +926,49 @@ export function JarvisScreen(props: JarvisScreenProps) {
   const statusLine = coreStatusLine(state, {
     workingCount: props.running.length,
     waitingCount: props.actions.filter((action) => action.requiresOwner).length,
-    limitReason: props.capacityWithheld ? props.capacityReason : props.blockedReason,
+    limitReason: props.capacityReason,
     disconnectedReason: !props.workerReady ? props.workerDetail : props.loopExplanation,
+    pausedReason: props.blockedReason,
+    failedReason: props.loopExplanation,
   });
 
   const tone = CORE_STATE_TONE[state];
+
+  /*
+   * One sentence about the system, and a count of what is unresolved.
+   *
+   * Deliberately about the *deployment* rather than about the conversation: the core already says
+   * what Jarvis is doing this second, and repeating it here is what produced four pills saying one
+   * thing. This answers the different question — can it do anything at all, and how many things
+   * are standing in the way.
+   *
+   * Supervised is not counted. It is a setting the owner chose, and an issue count that includes
+   * the owner's own preferences is a count nobody reads twice.
+   */
+  const issues: readonly string[] = [
+    !props.workerReady ? props.workerDetail : null,
+    props.loopState === 'stalled' || props.loopState === 'failing' ? props.loopExplanation : null,
+    props.capacityWithheld ? (props.capacityReason ?? 'Capacity is being withheld.') : null,
+  ].filter((issue): issue is string => issue !== null);
+  const issueCount = issues.length;
+
+  const systemLabel = !props.workerReady
+    ? 'No worker'
+    : props.loopState === 'stalled'
+      ? 'Loop stopped'
+      : props.loopState === 'failing'
+        ? 'Loop failing'
+        : props.capacityWithheld
+          ? 'Holding back'
+          : paused
+            ? 'Paused'
+            : 'All clear';
+  const systemTone =
+    !props.workerReady || props.loopState === 'stalled' || props.loopState === 'failing'
+      ? 'red'
+      : props.capacityWithheld
+        ? 'amber'
+        : 'green';
 
   /*
    * A level only where one is genuinely measured.
@@ -883,19 +1023,47 @@ export function JarvisScreen(props: JarvisScreenProps) {
             </div>
           </div>
 
+          {/*
+            One mode control and one status indicator.
+
+            There used to be four pills here, and on a default install they said "Off", "No
+            worker", "Autonomy off" and "No mission running" — which is the same fact four times,
+            in four colours, above a banner that said two of them again and a status line under the
+            core that said them a third time. The count of ways to learn one thing is not a measure
+            of how well it is communicated.
+
+            The mode is a link to the control that changes it rather than a new control; the status
+            is a button that opens the detail, so the whole readiness picture stays one press away
+            instead of occupying the top of the screen permanently.
+          */}
           <div className="order-last flex min-w-0 basis-full flex-wrap items-center gap-2 xl:order-none xl:basis-auto">
-            <Pill tone={tone === 'blue' ? 'blue' : tone}>{props.modeLabel}</Pill>
-            <Pill tone={props.workerReady ? 'green' : 'amber'}>
-              {props.workerReady ? 'Worker connected' : 'No worker'}
-            </Pill>
-            <Pill tone={disconnected ? 'red' : props.standingAuthority ? 'green' : 'dim'}>
-              {props.standingAuthority ? 'Autonomy on' : 'Autonomy off'}
-            </Pill>
-            <Pill tone={props.running.length > 0 ? 'cyan' : 'dim'}>
-              {props.running.length === 0
-                ? 'No mission running'
-                : `${props.running.length} mission${props.running.length === 1 ? '' : 's'} running`}
-            </Pill>
+            <Link
+              href="/operations"
+              title={props.modeMeaning}
+              className="rounded-full border border-[color-mix(in_srgb,var(--jx-line)_75%,transparent)] px-2.5 py-1 text-[0.6875rem] tracking-[0.08em] text-[var(--jx-ink-dim)] uppercase transition-colors hover:border-[var(--jx-blue)] hover:text-[var(--jx-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
+            >
+              {props.modeLabel}
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => setShowStatus((open) => !open)}
+              aria-expanded={showStatus}
+              aria-controls="jx-status-details"
+              className="flex items-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--jx-line)_75%,transparent)] px-2.5 py-1 text-[0.75rem] text-[var(--jx-ink-dim)] transition-colors hover:border-[var(--jx-blue)] hover:text-[var(--jx-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
+            >
+              <span
+                aria-hidden
+                className="h-2 w-2 rounded-full"
+                style={{ background: `var(--jx-${systemTone})` }}
+              />
+              <span>{systemLabel}</span>
+              {issueCount > 0 ? (
+                <span className="rounded-full bg-[color-mix(in_srgb,var(--jx-amber)_22%,transparent)] px-1.5 text-[0.6875rem] font-semibold text-[var(--jx-amber)]">
+                  {issueCount}
+                </span>
+              ) : null}
+            </button>
           </div>
 
           <div className="ml-auto flex items-center gap-3">
@@ -978,14 +1146,19 @@ export function JarvisScreen(props: JarvisScreenProps) {
         ) : null}
 
         {/*
-          Whether Jarvis can actually do anything, immediately under the system strip rather than
-          at the foot of the page. It is the qualifier on everything below it — approving work on
-          a deployment with no worker is the failure it exists to prevent — and on a phone an
-          answer that needs scrolling past the core is an answer nobody reads in time.
+          The readiness detail, on request.
+
+          It used to be a permanent full-width two-tile banner between the strip and the columns,
+          restating the worker fact the pill above had already given. The fact itself has not moved
+          further away — it is in the status indicator, which is on screen before anything scrolls —
+          but the diagnostics behind it now open when they are asked for.
         */}
-        <div className="shrink-0">
-          <ReadinessStrip readiness={props.readiness} />
-        </div>
+        {showStatus ? (
+          <div id="jx-status-details" className="shrink-0">
+            <ReadinessStrip readiness={props.readiness} />
+            <p className="mt-2 text-[0.75rem] text-[var(--jx-ink-dim)]">{props.modeMeaning}</p>
+          </div>
+        ) : null}
 
         {/* ------------------------------------------------------------ the three columns */}
         {/*
@@ -1017,7 +1190,6 @@ export function JarvisScreen(props: JarvisScreenProps) {
           <MattersPanel
             className="xl:col-start-3 xl:row-start-1"
             actions={props.actions}
-            actionSummary={props.actionSummary}
             completions={props.completions}
             focused={focusedProject}
             running={props.running}
@@ -1038,6 +1210,8 @@ export function JarvisScreen(props: JarvisScreenProps) {
           onChange={(next) => {
             bind();
             setReply(next);
+            /* Cleared by hand means the transcript is gone, and with it the reason to gate it. */
+            if (next.trim().length === 0) setFromMic(false);
           }}
           inputRef={inputRef}
           busy={busy}
@@ -1046,9 +1220,9 @@ export function JarvisScreen(props: JarvisScreenProps) {
           supported={mounted && speech.supported}
           onSubmit={() => {
             const typed = inputRef.current?.value ?? reply;
-            void send(typed, false);
+            void send(typed, fromMic);
           }}
-          onSpeakSend={() => void send(inputRef.current?.value ?? reply, true)}
+          spoken={fromMic}
           onStartListening={startListening}
           onStopListening={stopListening}
           onSilence={() => speech.silence()}
@@ -1290,10 +1464,16 @@ function CoreStage({
       )}
     >
       {/*
-        The core takes whatever room is left after the words below it, rather than the other way
-        round. On a 1366×768 laptop a core sized from the viewport width overflows its row and
-        pushes the status line under the command dock — so the wrapper flexes, the core fills it,
-        and the sentence that says what Jarvis is doing is the part that never moves.
+        A diameter with a floor and a ceiling, rather than whatever was left over.
+
+        The core used to be capped at 272px below `xl` and then sized purely by leftover row height
+        above it — about 300px on a 1366×768 laptop and well past 600px on a 1920×1080 monitor. The
+        same interface therefore had a small, apologetic core on the machine it is used on and an
+        overbearing one on the machine it is watched on.
+
+        `clamp` gives it the band it was asked for: 48vh is 369px at 768 tall and 518px at 1080,
+        which the 30rem ceiling brings back to 480. The 72vw term is what keeps it sane on a phone,
+        and the 14rem floor is what stops it collapsing in a short landscape window.
       */}
       <div className="flex min-h-0 w-full flex-1 items-center justify-center">
         <JarvisCore
@@ -1302,7 +1482,7 @@ function CoreStage({
           graphics={graphics}
           motion={motion}
           {...(levelSource ? { levelSource } : {})}
-          className="h-auto w-full max-w-[min(64vw,17rem)] sm:max-w-[min(56vw,22rem)] xl:h-full xl:w-auto xl:max-w-full"
+          className="h-auto w-[clamp(14rem,min(72vw,48vh),30rem)] max-w-full"
         />
       </div>
 
@@ -1325,9 +1505,17 @@ function CoreStage({
             {interim.trim().length > 0 ? interim : 'The microphone is open.'}
           </p>
         ) : latest ? (
+          /*
+            Clamped, not scrollable.
+
+            A 96px-tall scroll region under the core is one of the nested scrollbars the redesign is
+            meant to remove: it puts a second, hidden scroll axis inside the one panel that must
+            stay whole. Two lines here, and the full exchange in the dock's history where there is
+            room to read it.
+          */
           <p
             className={cn(
-              'max-h-24 overflow-y-auto text-sm',
+              'line-clamp-2 text-sm',
               latest.who === 'you' ? 'text-[var(--jx-ink-faint)] italic' : 'text-[var(--jx-ink)]',
             )}
           >
@@ -1353,43 +1541,67 @@ function CoreStage({
 
 function MattersPanel({
   actions,
-  actionSummary,
   completions,
   focused,
   running,
   className,
 }: {
   actions: readonly NextAction[];
-  actionSummary: string;
   completions: readonly ScreenCompletion[];
   focused: ScreenProject | null;
   running: readonly { missionId: string; title: string; state: string }[];
   className?: string;
 }) {
+  /*
+   * One decision, then the rest.
+   *
+   * The owner asked for "one focused card with its relevant choices" rather than a numbered list of
+   * everything at once. The first thing genuinely requiring a person is that card; anything else
+   * that needs them is listed under it, quietly, so nothing is hidden and nothing shouts.
+   */
+  const decision = actions.find((action) => action.requiresOwner) ?? null;
+  const rest = actions.filter((action) => action.id !== decision?.id);
+
   return (
     <div className={cn('flex min-h-0 flex-col gap-3', className)}>
-      <Panel
-        label="What needs me"
-        className="min-h-0 flex-1"
-        bodyClassName="jx-scroll p-3"
-        right={
-          <Link href="/attention" className="jx-label text-[var(--jx-cyan)] hover:underline">
-            All
-          </Link>
-        }
-      >
-        {focused ? (
-          <p className="mb-2 rounded-sm border border-[color-mix(in_srgb,var(--jx-blue)_45%,transparent)] px-2 py-1 text-[0.6875rem] text-[var(--jx-ink-dim)]">
-            Focused on <span className="text-[var(--jx-ink)]">{focused.name}</span>. This changes
-            what is shown, not what a command does.
-          </p>
-        ) : null}
+      {focused ? (
+        <p className="shrink-0 rounded-sm border border-[color-mix(in_srgb,var(--jx-blue)_45%,transparent)] px-2 py-1 text-[0.6875rem] text-[var(--jx-ink-dim)]">
+          Focused on <span className="text-[var(--jx-ink)]">{focused.name}</span>. This changes what
+          is shown, not what a command does.
+        </p>
+      ) : null}
 
-        {actions.length === 0 ? (
-          <p className="text-sm text-[var(--jx-ink-dim)]">Nothing needs you right now.</p>
-        ) : (
+      {/* ---------------------------------------------------------- the decision */}
+      {decision ? (
+        <section
+          aria-label="Needs a decision"
+          className="shrink-0 rounded-sm border border-[color-mix(in_srgb,var(--jx-amber)_55%,transparent)] bg-[color-mix(in_srgb,var(--jx-amber)_8%,transparent)] p-3"
+        >
+          <p className="jx-label text-[var(--jx-amber)]">Needs a decision</p>
+          <p className="mt-1 text-sm text-[var(--jx-ink)]">{decision.label}</p>
+          <p className="mt-0.5 text-xs text-[var(--jx-ink-dim)]">{decision.detail}</p>
+          <Link
+            href={decision.href}
+            className="mt-2 inline-flex min-h-11 items-center text-sm text-[var(--jx-cyan)] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
+          >
+            Open it
+          </Link>
+        </section>
+      ) : (
+        /*
+         * Calm, and one line of it.
+         *
+         * This used to be a flex-1 framed panel holding a single negative sentence, stretched to
+         * the full height of the column — an empty box the size of the work it was reporting the
+         * absence of.
+         */
+        <p className="shrink-0 text-sm text-[var(--jx-ink-dim)]">Nothing needs you.</p>
+      )}
+
+      {rest.length > 0 ? (
+        <Panel label="Also waiting" className="min-h-0 shrink-0" bodyClassName="p-3">
           <ol className="flex flex-col gap-2">
-            {actions.map((action, index) => (
+            {rest.map((action, index) => (
               <li key={action.id} className="flex gap-2 text-sm">
                 <span className="jx-num text-[var(--jx-cyan)]">{index + 1}</span>
                 <span className="flex min-w-0 flex-col">
@@ -1401,14 +1613,12 @@ function MattersPanel({
               </li>
             ))}
           </ol>
-        )}
-        <p className="mt-2 text-[0.6875rem] text-[var(--jx-ink-faint)]">{actionSummary}</p>
-      </Panel>
+        </Panel>
+      ) : null}
 
-      <Panel label="Running now" className="min-h-0 shrink-0" bodyClassName="p-3">
-        {running.length === 0 ? (
-          <p className="text-sm text-[var(--jx-ink-dim)]">Nothing is running.</p>
-        ) : (
+      {/* ---------------------------------------------------------- what is running */}
+      {running.length > 0 ? (
+        <Panel label="Running now" className="min-h-0 shrink-0" bodyClassName="p-3">
           <ul className="flex flex-col gap-1.5">
             {running.slice(0, 4).map((entry) => (
               <li key={entry.missionId} className="text-sm">
@@ -1421,29 +1631,61 @@ function MattersPanel({
               </li>
             ))}
           </ul>
-        )}
-      </Panel>
+        </Panel>
+      ) : null}
 
-      <Panel
-        label="Recently finished"
-        className="min-h-0 shrink-0"
-        bodyClassName="jx-scroll max-h-40 p-3"
-      >
-        {completions.length === 0 ? (
-          <p className="text-sm text-[var(--jx-ink-dim)]">Nothing has finished yet.</p>
-        ) : (
-          <ul className="flex flex-col gap-1.5">
-            {completions.map((entry) => (
-              <li key={entry.id} className="text-sm">
-                <Link href={entry.href} className="hover:underline">
+      {/* ---------------------------------------------------------- what it produced */}
+      {completions.length > 0 ? (
+        <section aria-label="Results" className="flex min-h-0 flex-col gap-2">
+          <p className="jx-label shrink-0 text-[var(--jx-ink-faint)]">Results</p>
+          <ul className="flex flex-col gap-2">
+            {completions.slice(0, 4).map((entry) => (
+              <li
+                key={entry.id}
+                className="rounded-sm border border-[color-mix(in_srgb,var(--jx-line)_70%,transparent)] bg-[color-mix(in_srgb,var(--jx-panel)_60%,transparent)] p-2.5"
+              >
+                {entry.projectName ? (
+                  <p className="jx-label truncate text-[var(--jx-cyan)]">{entry.projectName}</p>
+                ) : null}
+                <Link
+                  href={entry.href}
+                  className="mt-0.5 block truncate text-sm text-[var(--jx-ink)] hover:underline"
+                >
                   {entry.title}
                 </Link>
-                <span className="ml-1 text-xs text-[var(--jx-ink-faint)]">{entry.detail}</span>
+                {entry.deliverable ? (
+                  <p className="mt-0.5 line-clamp-2 text-xs text-[var(--jx-ink-dim)]">
+                    {entry.deliverable}
+                  </p>
+                ) : null}
+                <p className="mt-1 flex flex-wrap items-center gap-x-3 text-[0.6875rem] text-[var(--jx-ink-faint)]">
+                  <span>{entry.detail}</span>
+                  {entry.finishedAt ? <RelativeTime iso={entry.finishedAt} /> : null}
+                </p>
+                {/*
+                  A real action, or none.
+
+                  `pullRequestUrl` is a row the worker wrote after GitHub answered, so the button is
+                  offered only where one genuinely exists. There is deliberately no Preview and no
+                  screenshot here: artifacts in this system are text, and inventing a preview URL to
+                  fill the card is the kind of thing that makes a draft PR look like a deployment.
+                */}
+                {entry.pullRequestUrl ? (
+                  <a
+                    href={entry.pullRequestUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1.5 inline-flex min-h-11 items-center gap-1 text-xs text-[var(--jx-cyan)] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
+                  >
+                    View pull request
+                    <ExternalLink className="h-3 w-3" aria-hidden />
+                  </a>
+                ) : null}
               </li>
             ))}
           </ul>
-        )}
-      </Panel>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -1469,7 +1711,7 @@ function CommandDock({
   speaking,
   supported,
   onSubmit,
-  onSpeakSend,
+  spoken,
   onStartListening,
   onStopListening,
   onSilence,
@@ -1490,7 +1732,8 @@ function CommandDock({
   speaking: boolean;
   supported: boolean;
   onSubmit: () => void;
-  onSpeakSend: () => void;
+  /** True when the composer is holding words that arrived through the microphone. */
+  spoken: boolean;
   onStartListening: () => void;
   onStopListening: () => void;
   onSilence: () => void;
@@ -1593,23 +1836,21 @@ function CommandDock({
         ) : null}
 
         {/*
-          A spoken message and a typed one take different server paths — speech goes through the
-          voice gate that refuses to treat words as approval — so the person is told which one
-          they are sending rather than having it inferred from how the text got into the box.
-        */}
-        {supported && value.trim().length > 0 && !listening ? (
-          <DockButton type="button" tone="quiet" onClick={onSpeakSend} disabled={busy}>
-            Send as spoken
-          </DockButton>
-        ) : null}
+          One Send, and it says which path it will take.
 
+          A spoken message and a typed one still reach different server paths — speech goes through
+          the voice gate that refuses to treat words as approval — but which one is a fact about
+          where the words came from, not a choice to put to the person mid-sentence. So the button
+          reads the origin and labels itself, and the person is still told, which was the whole
+          point of having had two.
+        */}
         <DockButton type="submit" tone="primary" disabled={busy}>
           {busy ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           ) : (
             <CornerDownLeft className="h-4 w-4" aria-hidden />
           )}
-          Ask
+          {spoken ? 'Send as spoken' : 'Send'}
         </DockButton>
 
         <DockButton type="button" tone="quiet" onClick={onBrief} disabled={busy}>
@@ -1636,22 +1877,39 @@ function CommandDock({
       </form>
 
       <div className="flex flex-wrap items-end gap-x-6 gap-y-2 border-t border-[color-mix(in_srgb,var(--jx-line)_45%,transparent)] px-3 py-2">
-        {capacity && capacity.applicable ? (
-          capacity.windows.map((window) => (
-            <CapacityDial
-              key={window.label}
-              label={window.label}
-              percentUsed={window.percentUsed}
-              quality={window.qualityLabel}
-            />
-          ))
-        ) : (
-          <p className="text-[0.6875rem] text-[var(--jx-ink-faint)]">
-            {capacity
-              ? `${capacity.authModeLabel} — no shared capacity window to report.`
-              : 'Capacity is not available yet.'}
-          </p>
-        )}
+        {/*
+          Three dials, or one sentence.
+
+          The dials were honest about each value — "—" and "Not measured", never a fabricated 0% —
+          but drawing three of them for a subscription that reports no window at all is a picture of
+          instrumentation rather than of usage. When nothing is measured, the screen now says so
+          once, in the words the owner asked for, and keeps the space.
+        */}
+        {(() => {
+          const measured =
+            capacity && capacity.applicable
+              ? capacity.windows.filter((window) => window.percentUsed !== null)
+              : [];
+          if (measured.length > 0) {
+            return measured.map((window) => (
+              <CapacityDial
+                key={window.label}
+                label={window.label}
+                percentUsed={window.percentUsed}
+                quality={window.qualityLabel}
+              />
+            ));
+          }
+          return (
+            <p className="text-[0.6875rem] text-[var(--jx-ink-faint)]">
+              {capacity && capacity.applicable
+                ? 'Usage unavailable · one task at a time'
+                : capacity
+                  ? `${capacity.authModeLabel} — no shared capacity window to report.`
+                  : 'Capacity is not available yet.'}
+            </p>
+          );
+        })()}
         <p className="jx-label basis-full truncate sm:basis-auto">{workerDetail}</p>
         {voiceNote ? (
           <p className="basis-full text-[0.6875rem] text-[var(--jx-ink-faint)]">{voiceNote}</p>
@@ -1663,14 +1921,18 @@ function CommandDock({
 
 /* ------------------------------------------------------------------ small parts */
 
+/**
+ * Where else to go, from the screen a phone lands on.
+ *
+ * The same five destinations the rail carries, deliberately. This used to be a hand-kept second
+ * copy of a thirteen-item list that had to be updated in step with two others; a list of five that
+ * matches the rail exactly is one an owner can check at a glance instead of one that silently rots.
+ */
 const ELSEWHERE = [
-  ['/portfolio', 'Portfolio'],
-  ['/missions', 'Missions'],
-  ['/ask', 'Ask Jarvis'],
-  ['/changes', 'What changed'],
-  ['/knowledge', 'What Jarvis knows'],
+  ['/work', 'Work'],
+  ['/knowledge', 'Knowledge'],
+  ['/connections', 'Connections'],
   ['/operations', 'Operations'],
-  ['/workers', 'Workers'],
 ] as const;
 
 function IconButton({
@@ -1691,7 +1953,8 @@ function IconButton({
       aria-label={label}
       aria-pressed={pressed}
       className={cn(
-        'flex h-9 w-9 items-center justify-center rounded-sm border transition-colors',
+        /* 44px: the touch target the accessibility pass asks for, not the 36px it was. */
+        'flex h-11 w-11 items-center justify-center rounded-sm border transition-colors',
         'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]',
         pressed
           ? 'border-[var(--jx-blue)] bg-[color-mix(in_srgb,var(--jx-blue)_20%,transparent)] text-[var(--jx-cyan)]'
@@ -1852,6 +2115,13 @@ function spokenBriefing(briefing: MorningBriefing): string {
 
 /** How often the browser asks whether the worker has finished thinking. */
 const THINKING_POLL_MS = 2000;
+/*
+ * How often a blocked question is re-checked.
+ *
+ * Long, because nothing about it changes until a person starts a worker or capacity returns, and
+ * short enough that when they do the screen notices without being reloaded.
+ */
+const BLOCKED_POLL_MS = 15_000;
 
 /**
  * Where a question put to the worker has got to.

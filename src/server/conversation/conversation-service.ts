@@ -16,7 +16,7 @@ import type { ProjectProvisioningService } from '@/server/services/project-provi
 import type { ProposalRepository } from '@/server/repositories/proposal-types';
 import {
   NO_RESEARCH_NOTICE,
-  proposalFingerprint,
+  proposalSubjectKey,
   type IdeaEvaluation,
   type Proposal,
 } from '@/domain/proposal';
@@ -321,7 +321,7 @@ export class ConversationService {
      * does not erase the answer that is about to land.
      */
     const proposal = await this.deps.proposals.open({
-      fingerprint: proposalFingerprint(raw),
+      fingerprint: proposalSubjectKey(raw),
       title,
       idea: raw.trim(),
       summary: `Start ${title} and build the smallest useful version.`,
@@ -497,6 +497,14 @@ export class ConversationService {
         priority: 'medium',
         constraints: [],
         doNotTouch: [],
+        /*
+         * Stated, so the result card on the dashboard has something true to show.
+         *
+         * The column was never written on this path, and the deliverable card reads it — a mission
+         * that finished would have shown its title and nothing about what it produced. The brief
+         * already knows the answer; it just was not being written down.
+         */
+        deliverable: `A working first version of ${brief.name} in its repository.`,
         acceptanceCriteria: [...brief.acceptanceCriteria],
       },
       ownerLogin,

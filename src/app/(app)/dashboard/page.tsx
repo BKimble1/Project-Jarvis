@@ -102,6 +102,18 @@ export default async function DashboardPage() {
     })(),
   }));
 
+  /*
+   * The conversation the owner may already be in the middle of.
+   *
+   * Read on the server so a reload, a second device, or a tab that was closed while the worker was
+   * still thinking comes back to the same question rather than to an empty screen. Nothing here
+   * asks a model anything — it reads the row that was already written.
+   */
+  const standingProposal = await services.proposals.latestOpen();
+  const standingThinking = standingProposal
+    ? await services.reasoningService.statusForProposal(standingProposal.id)
+    : null;
+
   const finished = finishedPages[0]?.items ?? [];
   const completions: ScreenCompletion[] = [...finished]
     .sort(
@@ -118,17 +130,30 @@ export default async function DashboardPage() {
        * date would render the server's clock into HTML the browser then disagrees with. Times on
        * this screen come from the clock in the top strip, which runs in the browser.
        */
-      detail: [MISSION_STATE_LABELS[entry.mission.state] ?? entry.mission.state, entry.projectName]
-        .filter(Boolean)
-        .join(' · '),
+      detail: MISSION_STATE_LABELS[entry.mission.state] ?? entry.mission.state,
       href: `/missions/${entry.mission.id}`,
+      projectName: entry.projectName ?? null,
+      /* What it was meant to produce, as agreed when the work was authorised. */
+      deliverable: entry.mission.deliverable,
+      /*
+       * The row the worker wrote once GitHub answered, or null. Never derived from a branch name:
+       * the card offers "View pull request" only where there is one to view.
+       */
+      pullRequestUrl: entry.mission.pullRequestUrl,
+      finishedAt: entry.mission.finishedAt ?? entry.mission.updatedAt,
     }));
 
   return (
     <JarvisScreen
+      standingProposal={
+        standingProposal ? { id: standingProposal.id, summary: standingProposal.summary } : null
+      }
+      standingThinking={standingThinking}
+      standingEvaluation={standingProposal?.evaluation ?? null}
       ownerName={session.displayName ?? session.githubLogin ?? 'Owner'}
       timeZone={config.scheduling.defaultTimeZone}
       headline={picture.headline}
+      mode={picture.mode}
       modeLabel={picture.modeLabel}
       modeMeaning={picture.modeMeaning}
       loopState={picture.loop.state}

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { statedProductName } from './new-project';
 
 /**
  * Something Jarvis offered to do, kept so that "go ahead" has something to mean.
@@ -114,11 +115,39 @@ export function proposalFingerprint(idea: string): string {
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+  return `idea-${hashed(normalised)}`;
+}
+
+/**
+ * The identity an idea is stored under.
+ *
+ * ## Why a word fingerprint is not enough
+ *
+ * Because word-normalisation only survives punctuation and casing, and the owner does not repeat
+ * himself verbatim. "Re-evaluate my QuickPick idea …" and "Can you look at QuickPick again — two
+ * choices, one picked at random?" are one idea described twice, and a fingerprint over the words
+ * makes them two rows. Two rows are two things "go ahead" could mean and, once both are accepted,
+ * two missions against one project.
+ *
+ * So when the idea names a product, the *product* is the identity. Everything the owner has ever
+ * said about QuickPick as an idea lands on the QuickPick row, and accepting it twice — in any
+ * words, from any device, a day apart — accepts the same thing.
+ *
+ * When no product is named there is nothing better to key on and the word fingerprint stands, which
+ * is exactly the behaviour that was there before.
+ */
+export function proposalSubjectKey(idea: string): string {
+  const product = statedProductName(idea);
+  return product ? `idea-of-${hashed(product.toLowerCase())}` : proposalFingerprint(idea);
+}
+
+/** FNV-1a over the given text. Stable across processes, which a runtime hash seed is not. */
+function hashed(text: string): string {
   let hash = 0n;
   const prime = 1099511628211n;
   const mask = (1n << 64n) - 1n;
-  for (const char of normalised) {
+  for (const char of text) {
     hash = ((hash ^ BigInt(char.codePointAt(0) ?? 0)) * prime) & mask;
   }
-  return `idea-${hash.toString(36)}`;
+  return hash.toString(36);
 }
