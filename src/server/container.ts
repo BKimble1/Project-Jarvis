@@ -39,6 +39,12 @@ import { ConversationService } from '@/server/conversation/conversation-service'
 import { DrizzleProposalRepository } from './repositories/proposal-drizzle';
 import { DrizzleOperatingRepository } from './repositories/operating-drizzle';
 import {
+  APPROVAL_POLICY_KEY,
+  categoriesForWork,
+  decideAutoApproval,
+  parseApprovalPolicy,
+} from '@/domain/approval-policy';
+import {
   DrizzleConnectionRepository,
   DrizzleOAuthAuthorizationRepository,
 } from './repositories/connection-drizzle';
@@ -489,6 +495,36 @@ export function buildServices(
      */
     confirmStandingAuthority: (decisionId, missionId) =>
       charterService.confirmDecision(decisionId, missionId),
+
+    /*
+     * Whether the owner already decided about work of this kind.
+     *
+     * Read from settings on every call rather than captured at construction, so turning the policy
+     * off takes effect on the next plan rather than on the next restart — which is the behaviour
+     * anybody would expect of a control described as a kill switch.
+     */
+    autoApproval: async ({ mission, plan }) => {
+      const policy = parseApprovalPolicy(await settings.get(APPROVAL_POLICY_KEY));
+      return decideAutoApproval({
+        policy,
+        riskLevel: mission.riskLevel,
+        categories: categoriesForWork({
+          /*
+           * The parts of the plan that describe what will happen — never `outOfScope`, which is a
+           * list of what will not. Handing the whole plan JSON to a rule that reads prose made it
+           * conclude that ordinary work would merge and deploy, because the plan had promised in
+           * writing that it would do neither.
+           */
+          text: [
+            mission.rawRequest,
+            mission.description ?? '',
+            plan.content.summary,
+            plan.content.approach,
+          ].join('\n'),
+          missionType: mission.type,
+        }),
+      });
+    },
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

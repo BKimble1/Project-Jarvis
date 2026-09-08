@@ -100,6 +100,18 @@ export interface MissionServiceDeps {
    * one security-relevant behaviour trivially substitutable in a test. Required, not optional: a
    * missing verifier must be a type error, never a silently unverified approval.
    */
+  /**
+   * Whether a stored plan may be approved without asking, and why.
+   *
+   * Optional, so every existing caller and every test that builds this service by hand keeps
+   * working unchanged — and so that a deployment with no policy behaves exactly as it did, which
+   * is to stop and ask. A missing hook is not "approve"; it is "the owner never said otherwise".
+   */
+  readonly autoApproval?: (input: {
+    readonly mission: Mission;
+    readonly plan: MissionPlan;
+  }) => Promise<{ readonly approve: boolean; readonly reason: string }>;
+
   readonly confirmStandingAuthority: (
     decisionId: string,
     missionId: string,
@@ -126,8 +138,18 @@ export interface MissionServiceDeps {
  * plan. A standing-authority approval must name the recorded decision that permitted it, and the
  * decision is re-read rather than trusted — an id is a string until somebody looks it up.
  */
+/**
+ * Who approved a plan.
+ *
+ * `policy` is the owner having decided in advance rather than at the moment — a standing rule he
+ * wrote down, applied to work that matched it. It is deliberately its own kind rather than being
+ * recorded as `owner`: an approval nobody was present for should never be indistinguishable in the
+ * record from one somebody read.
+ */
 export type ApprovalAuthority =
-  { readonly kind: 'owner' } | { readonly kind: 'charter'; readonly decisionId: string };
+  | { readonly kind: 'owner' }
+  | { readonly kind: 'charter'; readonly decisionId: string }
+  | { readonly kind: 'policy'; readonly reason: string };
 
 export interface MissionDetail {
   readonly mission: Mission;
@@ -589,7 +611,78 @@ export class MissionService {
     }
 
     const current = await this.require(mission.id);
-    return this.tryMove(current, 'awaiting_plan_approval', 'system', {});
+    const awaiting = await this.tryMove(current, 'awaiting_plan_approval', 'system', {});
+    return this.maybeApproveByPolicy(awaiting, version);
+  }
+
+  /**
+   * Approve a plan the owner already decided about, in advance.
+   *
+   * ## Why this goes through `approvePlan` rather than around it
+   *
+   * Because every check that makes an approval safe lives in `approvePlan`: the plan version must
+   * still be current, the risk level must be the one that was classified, the queue guard must
+   * pass, and the approval is written as a row with an author. Skipping the state and moving
+   * straight to `queued` would skip all of it, and the first thing anybody would ask after an
+   * unexpected run is which of those had been checked.
+   *
+   * So the mission still reaches `awaiting_plan_approval`, and is then approved a moment later by
+   * a recorded authority whose kind says plainly that nobody was present. What changes is that the
+   * owner is not required to be awake for routine work; what does not change is a single guard.
+   */
+  private async maybeApproveByPolicy(mission: Mission, planVersion: number): Promise<Mission> {
+    if (!this.deps.autoApproval) return mission;
+    if (mission.state !== 'awaiting_plan_approval') return mission;
+
+    const plan = await this.deps.plans.byVersion(mission.id, planVersion);
+    if (!plan) return mission;
+
+    let decision: { approve: boolean; reason: string };
+    try {
+      decision = await this.deps.autoApproval({ mission, plan });
+    } catch {
+      /* A policy that cannot be read is a policy that has not authorised anything. */
+      return mission;
+    }
+
+    if (!decision.approve) {
+      /*
+       * Said out loud on the mission's own timeline, because "it is sitting there waiting" is a
+       * fact the owner has to be able to explain, and a silent refusal is indistinguishable from
+       * a system that simply stopped.
+       */
+      await this.deps.events.record(mission.id, {
+        type: 'info',
+        actor: 'system',
+        level: 'notice',
+        summary: `Waiting for you to approve the plan. ${decision.reason}`,
+        detail: { planVersion, reason: decision.reason },
+      });
+      return mission;
+    }
+
+    try {
+      return await this.approvePlan(
+        mission.id,
+        {
+          planVersion,
+          acknowledgedRiskLevel: mission.riskLevel,
+          /*
+           * Never overrides a paused project. That override exists so a person can say "yes, even
+           * though", and a standing policy is not a person saying that about this project today.
+           */
+          pausedProjectOverride: false,
+        },
+        'policy',
+        { kind: 'policy', reason: decision.reason },
+      );
+    } catch {
+      /*
+       * A guard inside `approvePlan` said no. That is the guard doing its job, and the mission
+       * stays where it is for a person to look at — never forced past it from here.
+       */
+      return mission;
+    }
   }
 
   async editPlan(missionId: string, content: MissionPlanContent): Promise<Mission> {
