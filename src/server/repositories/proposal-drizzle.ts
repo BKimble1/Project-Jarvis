@@ -81,9 +81,23 @@ export class DrizzleProposalRepository implements ProposalRepository {
        * while its answer is in flight must not erase the answer that is about to land.
        */
       evaluation: input.evaluation ?? found?.evaluation ?? null,
-      openQuestions: [...input.openQuestions],
-      recommendedV1: [...input.recommendedV1],
-      assumptions: [...input.assumptions],
+      /*
+       * The same rule as `evaluation` above, for the three lists that are *part* of an evaluation.
+       *
+       * They were being overwritten unconditionally, and `proposeIdea` writes all three empty
+       * because the assessment has not arrived yet. So re-describing an idea — or a double submit,
+       * or the owner saying it again because nothing looked like it happened — silently emptied the
+       * recommended V1 that the worker had already produced. Acceptance then created a mission with
+       * no acceptance criteria, which is exactly the "it forgot what we agreed" failure.
+       *
+       * An empty list from the caller means "nothing new to say", never "forget what you knew".
+       */
+      openQuestions:
+        input.openQuestions.length > 0 ? [...input.openQuestions] : (found?.openQuestions ?? []),
+      recommendedV1:
+        input.recommendedV1.length > 0 ? [...input.recommendedV1] : (found?.recommendedV1 ?? []),
+      assumptions:
+        input.assumptions.length > 0 ? [...input.assumptions] : (found?.assumptions ?? []),
       state: 'open' as const,
       updatedAt: input.now,
     };

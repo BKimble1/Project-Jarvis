@@ -15,7 +15,8 @@ import type { ProjectProvisioningService } from '@/server/services/project-provi
 import type { ProposalRepository } from '@/server/repositories/proposal-types';
 import {
   NO_RESEARCH_NOTICE,
-  proposalFingerprint,
+  implementationObjective,
+  proposalSubjectKey,
   type IdeaEvaluation,
   type Proposal,
 } from '@/domain/proposal';
@@ -320,7 +321,7 @@ export class ConversationService {
      * does not erase the answer that is about to land.
      */
     const proposal = await this.deps.proposals.open({
-      fingerprint: proposalFingerprint(raw),
+      fingerprint: proposalSubjectKey(raw),
       title,
       idea: raw.trim(),
       summary: `Start ${title} and build the smallest useful version.`,
@@ -470,14 +471,29 @@ export class ConversationService {
     const current = await this.deps.proposals.findById(proposal.id);
     if (current?.state === 'accepted') return this.alreadyBuilt(current, interpretation);
 
+    /*
+     * The mission is created against an objective written for the build, not against the sentence
+     * that asked for an assessment. See `implementationObjective` for why that distinction is the
+     * whole of this fix.
+     */
+    const objective = implementationObjective(proposal);
     const created = await this.deps.missions.create(
       {
-        rawRequest: proposal.idea,
+        rawRequest: objective.rawRequest,
+        title: objective.title,
+        description: objective.description,
+        /*
+         * Stated rather than inferred. `inferMissionType` reads the request text, and "go ahead"
+         * on an assessed idea means build it — a decision the owner has already made, which should
+         * not be re-derived from wording at this point.
+         */
+        type: 'code_change',
+        deliverable: objective.deliverable,
         projectId: provisioned.project.id,
         priority: 'medium',
         constraints: [],
         doNotTouch: [],
-        acceptanceCriteria: [...proposal.recommendedV1],
+        acceptanceCriteria: [...objective.acceptanceCriteria],
       },
       ownerLogin,
       { createdBy: 'owner' },
