@@ -40,6 +40,12 @@ const MESSAGE_ONE =
   'randomly selects one with a clean animation. Is this worth building? Ask only questions that ' +
   'materially affect a simple V1. Do not build it yet.';
 
+/** A second, unmistakably different idea, so one answer cannot pass for the other. */
+const MESSAGE_TWO =
+  'I have an idea for a small tool called Pomodoro that runs a twenty-five minute timer and logs ' +
+  'what I worked on. Is this worth building? Ask only questions that materially affect a simple ' +
+  'V1. Do not build it yet.';
+
 const cookieStore = new Map<string, string>();
 
 vi.mock('next/headers', () => ({
@@ -245,13 +251,104 @@ describe('a real dashboard question, answered by a real model', () => {
     TURN_TIMEOUT_MS,
   );
 
+  it(
+    'carries two ideas through the real model, keeps them apart, and says each thing once',
+    async () => {
+      expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+
+      const enrolment = await services.workerService.enrol('live-two-idea-worker', 1);
+      workerToken = enrolment.token;
+      await services.workerService.poll(enrolment.worker.id, {
+        heartbeat: HEARTBEAT,
+        wantsWork: true,
+        acknowledgedCommandIds: [],
+      });
+
+      const { POST } = await import('@/app/api/conversation/route');
+      const ask = async (message: string) => {
+        const response = await POST(
+          new Request(`${BASE}/api/conversation`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: BASE },
+            body: JSON.stringify({ message }),
+          }),
+        );
+        expect(response.status).toBe(200);
+        return (await response.json()) as Record<string, unknown>;
+      };
+
+      /* Both described before either is answered, so both are genuinely in flight at once. */
+      const first = await ask(MESSAGE_ONE);
+      const second = await ask(MESSAGE_TWO);
+      const firstId = (first.proposal as { id: string }).id;
+      const secondId = (second.proposal as { id: string }).id;
+      expect(secondId).not.toBe(firstId);
+
+      /* One real model turn each, over the real worker routes. */
+      await runRealWorkerUntilReported(2);
+
+      const storedFirst = await services.proposals.findById(firstId);
+      const storedSecond = await services.proposals.findById(secondId);
+
+      /* Both judged by the model rather than by a fallback sentence. */
+      for (const proposal of [storedFirst, storedSecond]) {
+        expect(proposal?.evaluation?.basis).toBe('reasoned');
+        expect(proposal?.evaluation?.verdict).not.toMatch(/no model is configured/i);
+      }
+      /* And judged separately: two questions, two answers, not one answer shown twice. */
+      expect(storedFirst?.evaluation?.verdict).not.toBe(storedSecond?.evaluation?.verdict);
+      expect(storedFirst?.title).toBe('QuickPick');
+      expect(storedSecond?.title).toBe('Pomodoro');
+
+      /* Each idea has its own operating trail, naming only itself. */
+      for (const [id, mine, theirs] of [
+        [firstId, 'QuickPick', 'Pomodoro'],
+        [secondId, 'Pomodoro', 'QuickPick'],
+      ] as const) {
+        const events = await services.operating.events(id);
+        expect(events.length, `${mine} has a trail`).toBeGreaterThan(0);
+        expect(events.every((event) => event.proposalId === id)).toBe(true);
+        expect(events.some((event) => event.message.includes(mine))).toBe(true);
+        expect(events.every((event) => !event.message.includes(theirs))).toBe(true);
+      }
+
+      /*
+       * The speech event, through the route the browser posts to. Everything it hands back is
+       * something nobody has said yet; asking again — which is what a refresh does — hands back
+       * nothing, because the claim marked them spoken.
+       */
+      const events = await import('@/app/api/operating/events/route');
+      const claim = async () => {
+        const response = await events.POST(
+          new Request(`${BASE}/api/operating/events`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: BASE },
+            body: JSON.stringify({ limit: 10 }),
+          }),
+        );
+        expect(response.status).toBe(200);
+        return ((await response.json()) as { events: readonly { id: string }[] }).events;
+      };
+
+      const spoken = await claim();
+      expect(spoken.length).toBeGreaterThan(0);
+      const afterRefresh = await claim();
+      expect(afterRefresh, 'a refresh must not repeat what was already said').toEqual([]);
+
+      /* Still nothing built: both messages said not to. */
+      expect(await services.projects.listAllForAssessment(true)).toHaveLength(0);
+      expect(await services.missionRepo.listOpen()).toHaveLength(0);
+    },
+    TURN_TIMEOUT_MS * 2,
+  );
+
   /**
    * The real worker process, with the real Claude runtime, over the real routes.
    *
    * Bounded on ticks as well as on time: a worker that never claims should fail this test rather
    * than hold the suite until the runner gives up on it.
    */
-  async function runRealWorkerUntilReported(): Promise<void> {
+  async function runRealWorkerUntilReported(expectedReports = 1): Promise<void> {
     const { JarvisWorkerProcess } = await import('@/worker/main');
     const { ClaudeAgentRuntime } = await import('@/worker/runtime/claude-agent-sdk');
 
@@ -264,7 +361,7 @@ describe('a real dashboard question, answered by a real model', () => {
     });
 
     let worker: InstanceType<typeof JarvisWorkerProcess> | null = null;
-    let reported = false;
+    let reports = 0;
 
     const post = async (route: string, body: unknown) => {
       const headers = new Headers({ 'content-type': 'application/json' });
@@ -294,8 +391,9 @@ describe('a real dashboard question, answered by a real model', () => {
         const { POST } = await import('@/app/api/worker/reasoning/route');
         const response = await POST(await post('/api/worker/reasoning', input));
         expect(response.status).toBe(200);
-        reported = true;
-        worker?.stop();
+        reports += 1;
+        /* Stop only once every question this test asked has been answered by the real model. */
+        if (reports >= expectedReports) worker?.stop();
         return response.json();
       },
       async claim() {
@@ -323,7 +421,9 @@ describe('a real dashboard question, answered by a real model', () => {
     });
 
     await worker.run();
-    expect(reported, 'the worker never reported an answer').toBe(true);
+    expect(reports, 'the worker did not report every answer').toBeGreaterThanOrEqual(
+      expectedReports,
+    );
   }
 });
 
