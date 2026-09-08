@@ -43,9 +43,15 @@ test.describe('the Jarvis screen', () => {
     await expect(page.getByRole('heading', { name: scenario.manual.name, level: 3 })).toBeVisible();
 
     /*
-     * The detailed portfolio moved rather than disappearing. This is the link that keeps the
-     * old landing page one click away instead of stranding it.
+     * The detailed portfolio moved rather than disappearing.
+     *
+     * It used to be linked from this screen directly. It is now reached through Work, which is the
+     * destination that gathers portfolio, projects and missions — so the walk is one hop longer and
+     * the property being protected is unchanged: the old landing page is still reachable from the
+     * screen that replaced it, and has not been stranded by the rail folding to five.
      */
+    await page.getByRole('link', { name: 'Work', exact: true }).first().click();
+    await expect(page).toHaveURL(/\/work$/);
     await page.getByRole('link', { name: 'Portfolio', exact: true }).first().click();
     await expect(page).toHaveURL(/\/portfolio$/);
     await expect(page.getByRole('heading', { name: 'Portfolio', level: 1 })).toBeVisible();
