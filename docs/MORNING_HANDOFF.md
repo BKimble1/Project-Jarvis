@@ -163,6 +163,50 @@ npx tsx scripts/repair-project-name.ts --project="QuickPick" --name="QuickPick" 
 A mission that has already run is left alone: changing its objective underneath its own history
 would make the record a lie.
 
+## The autonomous operating mode
+
+Four pieces were built on top of the screen work. Each is verified by the repository's own gate;
+none of them is the whole brief, and what is missing is named at the end.
+
+**A persisted operating state machine.** One row per idea, from the sentence to the thing it
+produced: `captured → evaluating → waiting_for_input → approved → planning → executing → verifying
+→ delivered`, plus `blocked`, `needs_decision`, `paused`, `failed` and `cancelled`. It exists
+because a mission state starts at `draft`, which is already past the part you ask about — between
+your sentence and a mission there is an evaluation, possibly a question, an approval, and the
+project and repository the mission needs. Every step is a row carrying the proposal, project and
+mission ids, so the screen asks "where is _this_ idea" rather than "what happened most recently".
+
+**Two ideas never mix.** `operating_states.proposal_id` is unique, and every answer is routed by the
+request's own proposal id rather than by recency. `tests/integration/two-ideas.test.ts` runs
+QuickPick and Pomodoro in both orders through the real queue, lease and worker claim-and-report
+pair, including across a worker restart.
+
+**Progress is said once.** The page cannot decide what it has already spoken — two tabs are two
+pages and a refresh is a third with no memory — so `POST /api/operating/events` returns only the
+rows whose `spoken_at` this request won. Nothing is claimed while read-aloud is off or the
+microphone is open, because a sentence marked spoken but never said is lost. Reading aloud now
+defaults to on and is remembered.
+
+**An approval policy you can configure.** Eight categories at `GET`/`PUT /api/operating/policy`,
+each carrying the sentence saying what pre-authorising it permits, with `spend`,
+`credential_change` and `destructive_delete` marked irreversible. Off by default. When routine
+plans are allowed, low-risk work is approved through `approvePlan` rather than around it — the
+version check, the risk acknowledgement and the queue guard all still run — and the approval is
+recorded under a `policy` authority so it is never mistaken for one you read.
+
+### What the live test proves
+
+`npm run test:live` runs two tests against the real Claude subscription with no API key set. The
+second one puts two ideas in through the route the browser posts to, has a real worker process
+answer both with the real runtime, and asserts that the two judgements differ, that each idea's
+trail names only itself, and that claiming the spoken events a second time returns nothing.
+
+### What it does not prove
+
+The GitHub leg. `GITHUB_PROVISION_TOKEN` is not set in the environment this was built in, so no
+real repository was created by these tests. `tests/live-github/provisioning.live.test.ts` covers it
+and needs your credential.
+
 ## What was not done, and why
 
 - **No running or completed state was photographed.** The demo seed deliberately refuses to fabricate
@@ -182,6 +226,17 @@ would make the record a lie.
 - **Voice was not tested on hardware.** No microphone, speaker or browser speech engine exists in
   the sandbox. The contracts around them are tested; the devices are not.
 - **`/display` was not re-tested by hand.** It was not modified, and its boundary tests still pass.
+- **No worker supervisor.** Nothing restarts a dead worker, there is no worker pool, and there is no
+  mission-level lease — a worker that dies holding a mission leaves it claimed. `scripts/jarvis-live.mts`
+  is a foreground development launcher that dies with its terminal.
+- **No reminders, and no scheduler.** There is no reminder model at all. The `schedules`,
+  `schedule_executions`, `briefings` and `notifications` tables exist and have no callers, so this is
+  wiring rather than building from nothing.
+- **Outlook write and Apple are not connected.** Outlook _read_ is real. Apple calendar and reminders
+  cannot work through an Apple API from Windows or WSL — the connection catalogue documents this and
+  designs an inbound bridge instead — so nothing was built that would claim otherwise.
+- **Memory is not read during planning**, tool actions are not written to `audit_events`, and App
+  Store Connect still shows a Connect button that leads nowhere.
 
 ## What was proved, and by what
 
