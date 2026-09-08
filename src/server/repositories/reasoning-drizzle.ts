@@ -263,6 +263,13 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
             then 'The worker stopped before it answered, and there are no attempts left.'
             else r.failure_detail
           end,
+          /*
+           * Cleared, because a reclaim is precisely the case where nobody knows how far it got.
+           * The stage left behind belongs to an attempt that stopped reporting, and carrying it
+           * onto "the worker stopped before it answered" would put a confident "it got as far as
+           * the model answered" under a sentence that says the opposite.
+           */
+          stage = null,
           lease_owner = null,
           lease_expires_at = null,
           finished_at = case

@@ -66,8 +66,10 @@ function probeConfig(): ReturnType<typeof buildWorkerConfig> {
 
 async function main(): Promise<void> {
   const config = probeConfig();
-  const idea = argValue('idea') ?? DEFAULT_IDEA;
-  const timeoutMs = Number(argValue('timeout') ?? REASONING_TIMEOUT_MS);
+  const idea = argValue('idea') || DEFAULT_IDEA;
+  /* A diagnostic that silently misbehaves on a typo is worse than one that refuses. */
+  const requested = Number(argValue('timeout') ?? REASONING_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : REASONING_TIMEOUT_MS;
   const showAnswer = process.argv.includes('--show-answer');
 
   const runtime = new ClaudeAgentRuntime({
