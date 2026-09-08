@@ -24,6 +24,7 @@ import { CORE_STATE_TONE, coreState, coreStatusLine, type CoreState } from '@/do
 import { AnswerPanel } from '@/components/answer-panel';
 import { ReadinessStrip, type ReadinessSummary } from '@/components/readiness-strip';
 import { JarvisCore } from '@/components/jarvis/core';
+import { WorkDrawer } from '@/components/jarvis/work-drawer';
 import { RelativeTime } from '@/components/relative-time';
 import { CapacityDial, Clock, Panel, Pill } from '@/components/jarvis/chrome';
 import { useMicLevel } from '@/components/jarvis/use-mic-level';
@@ -167,6 +168,8 @@ export function JarvisScreen(props: JarvisScreenProps) {
   const [immersive, setImmersive] = React.useState(false);
   const [showSettings, setShowSettings] = React.useState(false);
   const [showStatus, setShowStatus] = React.useState(false);
+  /** The mission whose drawer is open, or null. One at a time, by design. */
+  const [openWorkId, setOpenWorkId] = React.useState<string | null>(null);
   const [graphics, setGraphics] = React.useState<'full' | 'lite'>('full');
   const [motion, setMotion] = React.useState(true);
   const [readBack, setReadBack] = React.useState(false);
@@ -1195,12 +1198,34 @@ export function JarvisScreen(props: JarvisScreenProps) {
             running={props.running}
           />
 
+          {openWorkId ? (
+            <div className="xl:col-start-1 xl:row-start-2">
+              <WorkDrawer
+                missionId={openWorkId}
+                onClose={() => {
+                  setOpenWorkId(null);
+                  /*
+                   * Focus goes back where it was typed from.
+                   *
+                   * Closing a drawer used to drop focus onto the document, which for anyone
+                   * navigating by keyboard means starting again at the top of the screen.
+                   */
+                  inputRef.current?.focus();
+                }}
+              />
+            </div>
+          ) : null}
+
           <ProjectRail
             className="xl:col-start-1 xl:row-start-1"
             projects={props.projects}
             projectCount={props.projectCount}
             selected={selected}
             onSelect={(id) => setSelected((current) => (current === id ? null : id))}
+            onOpenWork={(missionId) =>
+              setOpenWorkId((current) => (current === missionId ? null : missionId))
+            }
+            openWorkId={openWorkId}
           />
         </div>
 
@@ -1331,12 +1356,16 @@ function ProjectRail({
   projectCount,
   selected,
   onSelect,
+  onOpenWork,
+  openWorkId,
   className,
 }: {
   projects: readonly ScreenProject[];
   projectCount: number;
   selected: string | null;
   onSelect: (id: string) => void;
+  onOpenWork: (missionId: string) => void;
+  openWorkId: string | null;
   className?: string;
 }) {
   const attention = projects.filter((project) => project.needsAttention).length;
@@ -1395,12 +1424,21 @@ function ProjectRail({
                     {project.needsAttention ? <Pill tone="amber">Needs you</Pill> : null}
                   </div>
                   {project.work ? (
-                    <Link
-                      href={`/missions/${project.work.missionId}`}
-                      className="truncate text-xs text-[var(--jx-cyan)] hover:underline"
+                    /*
+                      Opens the drawer rather than leaving the screen.
+
+                      The row used to be a link to the mission page, which answered "what is it
+                      doing" by navigating away from the screen the owner was watching it from.
+                      The drawer keeps the core, the conversation and the composer where they are.
+                    */
+                    <button
+                      type="button"
+                      onClick={() => onOpenWork(project.work!.missionId)}
+                      aria-expanded={openWorkId === project.work.missionId}
+                      className="truncate rounded-sm text-left text-xs text-[var(--jx-cyan)] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
                     >
                       {project.work.title} · {project.work.state.replace(/_/g, ' ')}
-                    </Link>
+                    </button>
                   ) : null}
                   {active ? (
                     <Link
