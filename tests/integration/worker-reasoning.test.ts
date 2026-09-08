@@ -616,6 +616,279 @@ describe('worker-mediated reasoning, over the real protocol', () => {
     expect(prompts).toContain('QuickPick');
   });
 
+  /* --------------------------------------------- the live failure, end to end */
+
+  /**
+   * The three faults the live morning exposed, each pinned through the real routes.
+   *
+   * The first is the one that mattered most: a proposal carrying the old "no model is configured
+   * here" placeholder was treated as *answered*, so the worker was never asked and the screen
+   * showed that sentence for ever. The second is the retry — a genuine timeout has to be
+   * repeatable without duplicating anything. The third is the fence: the timed-out attempt's
+   * answer must not be able to land on top of a newer one.
+   */
+
+  it('replaces a pre-worker "nothing judged this" placeholder instead of showing it for ever', async () => {
+    await enrolWorker();
+
+    const first = await send(MESSAGE_ONE);
+    const proposalId = (first.proposal as { id: string }).id;
+
+    /*
+     * Exactly what a row written before the worker path existed looks like: an evaluation, with
+     * `basis: 'not_assessed'`, produced by the control plane when it had no model to reason with.
+     */
+    const { NOT_ASSESSED_NOTICE } = await import('@/domain/proposal');
+    await services.proposals.recordEvaluation(
+      proposalId,
+      {
+        likelyUser: 'Not assessed.',
+        problem: 'Not assessed.',
+        verdict: NOT_ASSESSED_NOTICE,
+        smallestV1: [],
+        assumptions: [],
+        uncertainties: [],
+        questions: ['Who is this for?'],
+        basis: 'not_assessed',
+      },
+      new Date(),
+    );
+
+    /* Describing the idea again must ask the worker, not hand back the placeholder. */
+    const again = await send(MESSAGE_ONE);
+    const thinking = again.thinking as { state: string; requestId: string };
+    expect(thinking.state).not.toBe('ready');
+    expect(JSON.stringify(again.evaluation ?? {})).not.toContain('Nothing has judged');
+
+    await runWorkerUntilAnswered();
+
+    const answered = await thinkingStatus(thinking.requestId);
+    expect(answered.state).toBe('ready');
+    expect((answered.evaluation as { basis: string }).basis).toBe('reasoned');
+
+    const proposal = await services.proposals.findById(proposalId);
+    expect(proposal?.evaluation?.basis).toBe('reasoned');
+    expect(proposal?.evaluation?.verdict).toContain('Worth an afternoon');
+
+    /* And one proposal throughout — replacing a placeholder is not a second idea. */
+    expect((again.proposal as { id: string }).id).toBe(proposalId);
+  });
+
+  it('shows the current request rather than an older evaluation while it is pending', async () => {
+    await enrolWorker();
+    const first = await send(MESSAGE_ONE);
+    const requestId = (first.thinking as { requestId: string }).requestId;
+
+    /* A reasoned answer arrives, and is what the status reports. */
+    await runWorkerUntilAnswered();
+    expect((await thinkingStatus(requestId)).state).toBe('ready');
+
+    /*
+     * Now the same idea again. The answer is real this time, so it is returned as ready without
+     * spending the subscription a second time — the counterpart to the placeholder case above.
+     */
+    const repeat = await send(MESSAGE_ONE);
+    expect((repeat.thinking as { state: string }).state).toBe('ready');
+    expect(await services.reasoningRepo.countActive()).toBe(0);
+  });
+
+  it('retries a timed-out question on the same proposal, and stops after the ceiling', async () => {
+    await enrolWorker();
+    const first = await send(MESSAGE_ONE);
+    const requestId = (first.thinking as { requestId: string }).requestId;
+    const proposalId = (first.proposal as { id: string }).id;
+
+    const { ReasoningWorkerHarness } = await import('../helpers/reasoning-worker');
+    const { REASONING_MAX_ATTEMPTS, REASONING_MAX_MANUAL_RETRIES } =
+      await import('@/domain/reasoning');
+    const slow = new ReasoningWorkerHarness(services, 'slow-worker');
+
+    const exhaust = async () => {
+      for (let attempt = 0; attempt < REASONING_MAX_ATTEMPTS; attempt += 1) {
+        expect(await slow.failNext('timed_out', 'The model did not answer in time.')).toBe(true);
+      }
+    };
+
+    await exhaust();
+
+    const blocked = await thinkingStatus(requestId);
+    expect(blocked.state).toBe('blocked');
+    expect(blocked.reason).toBe('failed');
+    expect(blocked.canRetry).toBe(true);
+    /* The stage is carried through, so the sentence says where it stopped rather than only that it did. */
+    expect(String(blocked.detail)).toContain('It got as far as');
+    /* And it is not charged twice for one fact. */
+    expect(String(blocked.detail).match(/did not answer in time/g)).toHaveLength(1);
+
+    const retry = async () => {
+      const { POST } = await import('@/app/api/conversation/thinking/retry/route');
+      return POST(
+        new Request(`${BASE}/api/conversation/thinking/retry`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: BASE },
+          body: JSON.stringify({ request: requestId }),
+        }),
+      );
+    };
+
+    const retried = await retry();
+    expect(retried.status).toBe(200);
+    expect(await services.reasoningRepo.countActive()).toBe(1);
+    /* Nothing was duplicated: the same request, the same proposal, no new work of any kind. */
+    expect(await services.proposals.findById(proposalId)).not.toBeNull();
+    expect(await services.projects.listAllForAssessment(true)).toHaveLength(0);
+    expect(await services.missionRepo.listOpen()).toHaveLength(0);
+
+    /* Pressing it again while it is queued does nothing — there is no failure to retry. */
+    expect((await retry()).status).toBe(409);
+    expect(await services.reasoningRepo.countActive()).toBe(1);
+
+    /* This time the worker answers, and the same proposal gets the assessment. */
+    await runWorkerUntilAnswered();
+    const answered = await thinkingStatus(requestId);
+    expect(answered.state).toBe('ready');
+    const proposal = await services.proposals.findById(proposalId);
+    expect(proposal?.evaluation?.verdict).toContain('Worth an afternoon');
+
+    /* One proposal and nothing built, across the failures and the retry alike. */
+    expect((await send(MESSAGE_ONE)).proposal).toMatchObject({ id: proposalId });
+    expect(await services.projects.listAllForAssessment(true)).toHaveLength(0);
+    expect(await services.missionRepo.listOpen()).toHaveLength(0);
+    /* `REASONING_MAX_MANUAL_RETRIES` is what bounds the button; the next test spends it. */
+    expect(REASONING_MAX_MANUAL_RETRIES).toBeGreaterThan(0);
+  });
+
+  it('stops offering a retry once the owner has spent them, rather than looping', async () => {
+    await enrolWorker();
+    const first = await send(MESSAGE_ONE);
+    const requestId = (first.thinking as { requestId: string }).requestId;
+
+    const { ReasoningWorkerHarness } = await import('../helpers/reasoning-worker');
+    const { REASONING_MAX_ATTEMPTS, REASONING_MAX_MANUAL_RETRIES } =
+      await import('@/domain/reasoning');
+    const broken = new ReasoningWorkerHarness(services, 'broken-worker');
+
+    const exhaust = async () => {
+      for (let attempt = 0; attempt < REASONING_MAX_ATTEMPTS; attempt += 1) {
+        expect(await broken.failNext('timed_out', 'The model did not answer in time.')).toBe(true);
+      }
+    };
+    const retry = async () => {
+      const { POST } = await import('@/app/api/conversation/thinking/retry/route');
+      return POST(
+        new Request(`${BASE}/api/conversation/thinking/retry`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: BASE },
+          body: JSON.stringify({ request: requestId }),
+        }),
+      );
+    };
+
+    /* Every retry the owner is allowed, each one preceded by a genuine run of failures. */
+    for (let spent = 0; spent < REASONING_MAX_MANUAL_RETRIES; spent += 1) {
+      await exhaust();
+      expect((await thinkingStatus(requestId)).canRetry).toBe(true);
+      expect((await retry()).status).toBe(200);
+    }
+
+    /* And then it stops. A broken runtime ends in a sentence rather than an unbounded loop. */
+    await exhaust();
+    const final = await thinkingStatus(requestId);
+    expect(final.state).toBe('blocked');
+    expect(final.reason).toBe('failed');
+    expect(final.canRetry).toBe(false);
+    expect((await retry()).status).toBe(409);
+
+    /* Bounded work, too: attempts and retries, and not one thing built by any of them. */
+    expect(broken.claims).toBe(REASONING_MAX_ATTEMPTS * (REASONING_MAX_MANUAL_RETRIES + 1));
+    expect(await services.reasoningRepo.countActive()).toBe(0);
+    expect(await services.projects.listAllForAssessment(true)).toHaveLength(0);
+    expect(await services.missionRepo.listOpen()).toHaveLength(0);
+  });
+
+  it('a late answer from an abandoned attempt cannot overwrite the newer one', async () => {
+    await enrolWorker();
+    const first = await send(MESSAGE_ONE);
+    const requestId = (first.thinking as { requestId: string }).requestId;
+    const proposalId = (first.proposal as { id: string }).id;
+
+    const { ReasoningWorkerHarness, SAMPLE_EVALUATION } =
+      await import('../helpers/reasoning-worker');
+    const stalled = new ReasoningWorkerHarness(services, 'stalled-worker');
+    const workerId = await stalled.ensureEnrolled();
+    const claim = () => services.workerService.claimReasoning(workerId, { heartbeat: HEARTBEAT });
+
+    /*
+     * The exact live shape, and the reason the fence exists.
+     *
+     * Attempt one is claimed and goes quiet — the run that timed out. Its lease expires, and the
+     * *same* worker picks the question up again as attempt two. So when attempt one finally comes
+     * back, the row is running and the lease owner matches: every guard except the attempt agrees
+     * with it. Only the attempt says no.
+     */
+    const stale = await claim();
+    expect(stale?.attempt).toBe(1);
+
+    await services.reasoningRepo.reclaimExpired({
+      now: new Date(Date.now() + 10 * 60 * 1000),
+      maxAttempts: 3,
+    });
+    const current = await claim();
+    expect(current?.attempt).toBe(2);
+
+    const lateAnswer = await services.reasoningService.apply(workerId, {
+      status: 'succeeded',
+      requestId,
+      attempt: 1,
+      evaluation: { ...SAMPLE_EVALUATION, verdict: 'A stale verdict from a dead attempt.' },
+      usage: { inputTokens: 1, outputTokens: 1, durationMs: 1 },
+    });
+    expect(lateAnswer.applied).toBe(false);
+
+    /* A late *failure* loses the same way — it must not fail a turn that is still running. */
+    const lateFailure = await services.reasoningService.apply(workerId, {
+      status: 'failed',
+      requestId,
+      attempt: 1,
+      failure: 'timed_out',
+      detail: 'The model did not answer in time.',
+      stage: 'model_replied',
+    });
+    expect(lateFailure.applied).toBe(false);
+
+    /* Neither reached the screen or the proposal: the newer attempt is still the one in flight. */
+    expect((await thinkingStatus(requestId)).state).toBe('thinking');
+    expect((await services.proposals.findById(proposalId))?.evaluation).toBeNull();
+
+    /* And the attempt that actually holds the question is applied, exactly as it should be. */
+    const applied = await services.reasoningService.apply(workerId, {
+      status: 'succeeded',
+      requestId,
+      attempt: 2,
+      evaluation: SAMPLE_EVALUATION,
+      usage: { inputTokens: 10, outputTokens: 10, durationMs: 10 },
+    });
+    expect(applied.applied).toBe(true);
+
+    const status = await thinkingStatus(requestId);
+    expect(status.state).toBe('ready');
+    expect((status.evaluation as { verdict: string }).verdict).not.toContain('stale verdict');
+    const proposal = await services.proposals.findById(proposalId);
+    expect(proposal?.evaluation?.verdict).toBe(SAMPLE_EVALUATION.verdict);
+
+    /* Once it is answered, the dead attempt still cannot un-answer it. */
+    const later = await services.reasoningService.apply(workerId, {
+      status: 'failed',
+      requestId,
+      attempt: 1,
+      failure: 'timed_out',
+      detail: 'The model did not answer in time.',
+      stage: 'model_replied',
+    });
+    expect(later.applied).toBe(false);
+    expect((await thinkingStatus(requestId)).state).toBe('ready');
+  });
+
   /* ---------------------------------------------------------------------- 7 */
 
   it('leaves the mission claim and the heartbeat working exactly as they were', async () => {

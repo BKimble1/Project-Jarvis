@@ -2,7 +2,7 @@
   "name": "project-jarvis",
   "version": "0.1.0",
   "private": true,
-  "description": "Jarvis \u2014 a private, single-user project registry and evidence-based portfolio status brain.",
+  "description": "Jarvis — a private, single-user project registry and evidence-based portfolio status brain.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -33,6 +33,7 @@
     "jarvis:live": "tsx scripts/jarvis-live.mts",
     "worker": "tsx scripts/worker.ts",
     "worker:health": "tsx scripts/worker-health.ts",
+    "worker:think": "tsx scripts/reasoning-probe.ts",
     "worker:workspaces": "tsx scripts/workspaces.ts",
     "qualify": "tsx scripts/qualify.ts",
     "vault:key": "tsx scripts/vault-key.ts"

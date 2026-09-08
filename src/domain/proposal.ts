@@ -61,9 +61,20 @@ export type IdeaEvaluation = z.infer<typeof ideaEvaluationSchema>;
 export const NO_RESEARCH_NOTICE =
   'This is reasoning about what you described, not market research — nothing external was consulted.';
 
-/** What is said when there is no model to reason with, instead of inventing a judgement. */
+/**
+ * What older rows say, kept only so they still render.
+ *
+ * This was the fallback when the control plane held the model and no key was set. It is no longer
+ * produced: judging an idea is a Claude turn on the owner's subscription, run by the worker, and
+ * when that cannot happen the conversation names the actual condition — no worker, no runtime, no
+ * capacity — rather than blaming a configuration that is not the problem.
+ *
+ * Rows written before that change still carry `basis: 'not_assessed'`, and the reasoning service
+ * treats them as *unanswered* rather than as answers, so they are replaced the next time the idea
+ * comes up instead of being shown for ever.
+ */
 export const NOT_ASSESSED_NOTICE =
-  'No model is configured here, so Jarvis has not judged whether this is worth building. ' +
+  'Nothing has judged whether this is worth building yet. ' +
   'The questions below are the ones that would change the shape of a first version either way.';
 
 export interface Proposal {

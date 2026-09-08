@@ -60,6 +60,40 @@ describe('reading a model reply as an evaluation', () => {
     expect(parsed?.basis).toBe('reasoned');
   });
 
+  /**
+   * The second live failure, and the one the timeout fix uncovered.
+   *
+   * The worker sees the same answer twice: once through the `message` stream, which the runtime
+   * bounds to 2000 characters for display, and once as the final result. The bounded copy ends
+   * mid-string with an unterminated code fence — and a lazy fenced-block regex then pairs that
+   * orphan fence with the *next* block's opening fence, swallows the complete answer inside the
+   * match, and calls a perfectly good evaluation unreadable. That is exactly what a real QuickPick
+   * turn did once it stopped timing out.
+   */
+  it('reads the complete answer even when a truncated copy of it came first', () => {
+    const complete = fenced(GOOD);
+    const cut = `${complete.slice(0, 60)}\n… [truncated]`;
+    const parsed = parseIdeaEvaluation(`${cut}\n${complete}\n`);
+
+    expect(parsed?.verdict).toBe('Worth an afternoon.');
+  });
+
+  it('is not confused by an unterminated code fence anywhere in the reply', () => {
+    const reply = ['```json', '{ "likelyUser": "cut off here', '', fenced(GOOD)].join('\n');
+    expect(parseIdeaEvaluation(reply)?.verdict).toBe('Worth an afternoon.');
+  });
+
+  it('ignores a brace inside a string rather than losing the object it is in', () => {
+    const withBraces = { ...GOOD, problem: 'Templating: {{name}} is never filled in.' };
+    expect(parseIdeaEvaluation(fenced(withBraces))?.problem).toContain('{{name}}');
+  });
+
+  it('skips a complete but invalid object to find a valid one', () => {
+    /* A model that answers, notices a missing field, and answers again. The good one wins. */
+    const reply = [fenced(GOOD), fenced({ verdict: 'Only a verdict.' })].join('\n\n');
+    expect(parseIdeaEvaluation(reply)?.verdict).toBe('Worth an afternoon.');
+  });
+
   it('refuses everything that is not the shape asked for', () => {
     for (const reply of [
       '',
@@ -220,5 +254,140 @@ describe('the worker running one thought', () => {
     expect(outcome.status).toBe('failed');
     if (outcome.status !== 'failed') throw new Error('unreachable');
     expect(outcome.failure).toBe('timed_out');
+  });
+
+  it('reports the attempt it was answering, so a late report cannot win', async () => {
+    const runtime = new ScriptedRuntime({ steps: [{ kind: 'done', result: fenced(GOOD) }] });
+    const outcome = await new ReasoningRunner({ runtime, workspaceRoot }).run({
+      ...assignment,
+      attempt: 2,
+    });
+
+    expect(outcome.attempt).toBe(2);
+  });
+});
+
+/**
+ * The bug a live morning found and every scripted test missed.
+ *
+ * The Claude Agent SDK is driven with an async-iterable prompt, which puts it in streaming
+ * input/output mode: the query stays open for more input and does *not* end when the turn does.
+ * The runner used to drain `session.events` to completion, so on the real runtime the model
+ * answered, `done` arrived, and the loop kept waiting for a stream end that could never come —
+ * until the deadline fired and reported a timeout that had not happened.
+ *
+ * `keepOpen` makes the scripted runtime behave the same way. Every test below would have failed
+ * before the fix, and the first one is the live failure reproduced in a hundred milliseconds.
+ */
+describe('a runtime whose stream never ends on its own', () => {
+  let workspaceRoot: string;
+
+  const assignment: ReasoningAssignment = {
+    requestId: '22222222-2222-4222-8222-222222222222',
+    kind: 'idea_evaluation',
+    input: ideaEvaluationInput({ idea: 'A tiny app called QuickPick.', title: 'QuickPick' }),
+    attempt: 1,
+    leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+
+  beforeEach(async () => {
+    workspaceRoot = await mkdtemp(path.join(tmpdir(), 'jarvis-reason-open-'));
+  });
+
+  afterEach(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it('stops at the end of the turn rather than the end of the stream', async () => {
+    const runtime = new ScriptedRuntime({
+      keepOpen: true,
+      steps: [{ kind: 'done', result: fenced(GOOD) }],
+    });
+
+    /*
+     * A deadline far shorter than the turn would take if it waited for the stream. Passing this is
+     * the whole proof: the answer is read from `done` and the session closed, rather than drained.
+     */
+    const outcome = await new ReasoningRunner({ runtime, workspaceRoot, timeoutMs: 2_000 }).run(
+      assignment,
+    );
+
+    expect(outcome.status).toBe('succeeded');
+    if (outcome.status !== 'succeeded') throw new Error('unreachable');
+    expect(outcome.evaluation.verdict).toBe('Worth an afternoon.');
+  });
+
+  it('reads a message-then-done turn without waiting for the stream to close', async () => {
+    const runtime = new ScriptedRuntime({
+      keepOpen: true,
+      steps: [
+        { kind: 'message', text: 'Thinking about it.' },
+        { kind: 'done', result: fenced(GOOD) },
+      ],
+    });
+    const outcome = await new ReasoningRunner({ runtime, workspaceRoot, timeoutMs: 2_000 }).run(
+      assignment,
+    );
+
+    expect(outcome.status).toBe('succeeded');
+  });
+
+  it('says how far it got when the model really does go quiet', async () => {
+    /* Open, and nothing after the session event. This is a genuine hang, not the old false one. */
+    const runtime = new ScriptedRuntime({ keepOpen: true, steps: [] });
+    const stages: string[] = [];
+    const outcome = await new ReasoningRunner({
+      runtime,
+      workspaceRoot,
+      timeoutMs: 50,
+      closeTimeoutMs: 200,
+      onStage: (stage) => stages.push(stage),
+    }).run(assignment);
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status !== 'failed') throw new Error('unreachable');
+    expect(outcome.failure).toBe('timed_out');
+    /*
+     * `first_event` and not `model_replied`: the session started and produced its own `session`
+     * event, and the model never spoke. That distinction is the diagnostic the live failure
+     * lacked — the same symptom, reported at `model_replied`, would have named the real bug.
+     */
+    expect(outcome.stage).toBe('first_event');
+    expect(outcome.detail).toContain('first_event');
+    expect(stages).toEqual(['claimed', 'runtime_checked', 'session_started', 'first_event']);
+  });
+
+  it('a timed-out turn is stopped, not left running', async () => {
+    const runtime = new ScriptedRuntime({ keepOpen: true, steps: [{ kind: 'wait_for_message' }] });
+    const outcome = await new ReasoningRunner({
+      runtime,
+      workspaceRoot,
+      timeoutMs: 30,
+      closeTimeoutMs: 500,
+    }).run(assignment);
+
+    expect(outcome.status).toBe('failed');
+    /*
+     * `close()` finishes the scripted queue and awaits the script, so returning at all proves the
+     * session was torn down rather than abandoned to keep spending the subscription.
+     */
+    expect(runtime.prompts).toHaveLength(1);
+  });
+
+  it('does not report a timeout when the worker itself was stopped', async () => {
+    const runtime = new ScriptedRuntime({ keepOpen: true, steps: [{ kind: 'wait_for_message' }] });
+    const stopping = new AbortController();
+    setTimeout(() => stopping.abort(), 20);
+
+    const outcome = await new ReasoningRunner({
+      runtime,
+      workspaceRoot,
+      timeoutMs: 10_000,
+      closeTimeoutMs: 500,
+    }).run(assignment, stopping.signal);
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status !== 'failed') throw new Error('unreachable');
+    expect(outcome.failure).toBe('interrupted');
   });
 });

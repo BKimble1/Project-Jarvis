@@ -8,6 +8,7 @@ import {
   type ReasoningInput,
   type ReasoningKind,
   type ReasoningRequest,
+  type ReasoningStage,
 } from '@/domain/reasoning';
 import type { Database } from '../db/client';
 import { reasoningRequests } from '../db/schema';
@@ -132,6 +133,7 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
   async succeed(input: {
     requestId: string;
     workerId: string;
+    attempt: number;
     evaluation: IdeaEvaluation;
     usage: {
       inputTokens: number | null;
@@ -151,6 +153,7 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
         inputTokens: input.usage?.inputTokens ?? null,
         outputTokens: input.usage?.outputTokens ?? null,
         durationMs: input.usage?.durationMs ?? null,
+        stage: 'parsed',
         leaseOwner: null,
         leaseExpiresAt: null,
         finishedAt: input.now,
@@ -161,6 +164,8 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
           eq(reasoningRequests.id, input.requestId),
           eq(reasoningRequests.state, 'running'),
           eq(reasoningRequests.leaseOwner, input.workerId),
+          /* The fence. A report from an older attempt does not apply. */
+          eq(reasoningRequests.attempt, input.attempt),
         ),
       )
       .returning({ id: reasoningRequests.id });
@@ -170,8 +175,10 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
   async fail(input: {
     requestId: string;
     workerId: string;
+    attempt: number;
     failure: ReasoningFailure;
     detail: string | null;
+    stage: ReasoningStage | null;
     maxAttempts: number;
     now: Date;
   }): Promise<boolean> {
@@ -192,6 +199,7 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
            * event and audit writers already follow.
            */
           failure_detail = ${input.detail === null ? null : boundText(redactSecrets(input.detail), 300)}::text,
+          stage = ${input.stage}::text,
           lease_owner = null,
           lease_expires_at = null,
           /*
@@ -207,9 +215,42 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
       where r.id = ${input.requestId}
         and r.state = 'running'
         and r.lease_owner = ${input.workerId}
+        and r.attempt = ${input.attempt}
       returning r.id
     `);
     return firstId(updated) !== null;
+  }
+
+  async requeue(input: {
+    requestId: string;
+    maxManualRetries: number;
+    now: Date;
+  }): Promise<ReasoningRequest | null> {
+    if (!UUID.test(input.requestId)) return null;
+    /*
+     * One statement, conditional on the row still being failed and on the ceiling. Two presses of
+     * the button in the same second therefore produce one requeue, and a runtime that is broken
+     * rather than slow runs out of retries and stays failed.
+     */
+    const requeued = await this.db.execute(sql`
+      update ${reasoningRequests} as r
+      set state = 'queued',
+          attempt = 0,
+          manual_retries = r.manual_retries + 1,
+          failure = null,
+          failure_detail = null,
+          stage = null,
+          lease_owner = null,
+          lease_expires_at = null,
+          started_at = null,
+          finished_at = null,
+          updated_at = ${input.now}::timestamptz
+      where r.id = ${input.requestId}
+        and r.state = 'failed'
+        and r.manual_retries < ${input.maxManualRetries}
+      returning r.id
+    `);
+    return firstId(requeued) ? this.find(input.requestId) : null;
   }
 
   async reclaimExpired(input: { now: Date; maxAttempts: number }): Promise<number> {
@@ -274,6 +315,8 @@ function toRequest(row: Row): ReasoningRequest {
     result: result?.success ? result.data : null,
     failure: row.failure,
     failureDetail: row.failureDetail,
+    stage: row.stage,
+    manualRetries: row.manualRetries,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     finishedAt: row.finishedAt?.toISOString() ?? null,

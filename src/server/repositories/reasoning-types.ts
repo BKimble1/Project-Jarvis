@@ -5,6 +5,7 @@ import type {
   ReasoningInput,
   ReasoningKind,
   ReasoningRequest,
+  ReasoningStage,
 } from '@/domain/reasoning';
 
 /**
@@ -61,6 +62,14 @@ export interface ReasoningRepository {
   succeed(input: {
     readonly requestId: string;
     readonly workerId: string;
+    /**
+     * The attempt this answer belongs to.
+     *
+     * The fence. A lease-owner check alone does not catch a late report from the *same* worker
+     * after its turn was abandoned and the question handed out again — it would still own the
+     * lease. Requiring the attempt to match means the older answer loses and is told it lost.
+     */
+    readonly attempt: number;
     readonly evaluation: IdeaEvaluation;
     readonly usage: {
       readonly inputTokens: number | null;
@@ -80,11 +89,31 @@ export interface ReasoningRepository {
   fail(input: {
     readonly requestId: string;
     readonly workerId: string;
+    /** Fenced exactly as `succeed` is, and for the same reason. */
+    readonly attempt: number;
     readonly failure: ReasoningFailure;
     readonly detail: string | null;
+    /** How far the attempt got. Recorded so a failure says which stage it stopped at. */
+    readonly stage: ReasoningStage | null;
     readonly maxAttempts: number;
     readonly now: Date;
   }): Promise<boolean>;
+
+  /**
+   * Put a failed question back in the queue because the owner asked again.
+   *
+   * Conditional on the row being `failed` and on the manual-retry ceiling, so a held-down button
+   * cannot become an unbounded loop against a runtime that is genuinely broken. The attempt
+   * counter resets — a deliberate retry deserves its own three tries — and `manual_retries`
+   * increments, which is what bounds it.
+   *
+   * Returns null when nothing was requeued: already running, never failed, or out of retries.
+   */
+  requeue(input: {
+    readonly requestId: string;
+    readonly maxManualRetries: number;
+    readonly now: Date;
+  }): Promise<ReasoningRequest | null>;
 
   /**
    * Return leases that have run out to the queue.

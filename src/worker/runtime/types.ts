@@ -33,6 +33,18 @@ export interface AgentSessionRequest {
   readonly maxTurns: number;
   readonly model: string | null;
   /**
+   * How much of the final result to keep, in characters.
+   *
+   * The runtime bounds every piece of text it emits, because most of them are headed for a screen
+   * or an event log and an unbounded one is a denial-of-service on both. The default suits a
+   * mission summary. It does not suit a consumer that has to *parse* the reply: a reasoning turn's
+   * answer is a JSON document, and a document cut off in the middle of a string is not a shorter
+   * answer, it is an unreadable one. Such a caller asks for a budget that fits what it can accept.
+   *
+   * Always bounded. This raises the ceiling; it never removes it.
+   */
+  readonly resultMaxChars?: number;
+  /**
    * Called for every tool the runtime would otherwise prompt about.
    *
    * Returning `ask` is what produces an owner-facing permission request; the runtime blocks on

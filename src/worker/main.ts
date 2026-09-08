@@ -227,10 +227,20 @@ export class JarvisWorkerProcess {
     });
     if (!assignment) return false;
 
-    this.log(`Thinking about ${assignment.kind} ${assignment.requestId}.`);
+    this.log(
+      `Thinking about ${assignment.kind} ${assignment.requestId} (attempt ${assignment.attempt}).`,
+    );
+    /*
+     * One line per stage, and nothing else.
+     *
+     * The live failure this replaced said "the model did not answer in time" and left no way to
+     * tell whether the subprocess had ever spoken. Stage names are safe to print — they name a
+     * point in the code, never the question, the answer, or anything from the environment.
+     */
     const runner = new ReasoningRunner({
       runtime: this.deps.runtime,
       workspaceRoot: this.deps.config.workspaceRoot,
+      onStage: (stage) => this.log(`  ${assignment.requestId}: ${stage}`),
     });
 
     const outcome = await runner.run(assignment);
@@ -245,7 +255,7 @@ export class JarvisWorkerProcess {
     this.log(
       outcome.status === 'succeeded'
         ? `Answered ${assignment.requestId}${applied ? '' : ' (no longer wanted)'}.`
-        : `Could not answer ${assignment.requestId}: ${outcome.failure}.`,
+        : `Could not answer ${assignment.requestId}: ${outcome.failure} at ${outcome.stage ?? 'claimed'}.`,
     );
     return true;
   }

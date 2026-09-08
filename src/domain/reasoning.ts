@@ -80,6 +80,16 @@ export const REASONING_TIMEOUT_MS = 90 * 1000;
  */
 export const REASONING_MAX_ATTEMPTS = 3;
 
+/**
+ * How many times the owner may ask again after a question has failed outright.
+ *
+ * Separate from `REASONING_MAX_ATTEMPTS`, which bounds what the system does on its own. This
+ * bounds what a person can ask for, and it exists so a retry button cannot become an unbounded
+ * loop against a runtime that is genuinely broken — three deliberate presses is enough to get past
+ * a transient timeout and few enough that a persistent fault still ends in a sentence.
+ */
+export const REASONING_MAX_MANUAL_RETRIES = 3;
+
 /** The turn ceiling for a reasoning session. One question, one answer, no tools. */
 export const REASONING_MAX_TURNS = 2;
 
@@ -172,19 +182,70 @@ export const REASONING_FAILURES = [
 ] as const;
 export type ReasoningFailure = (typeof REASONING_FAILURES)[number];
 
+/**
+ * How far a reasoning turn got before it stopped.
+ *
+ * Added after a live failure that every scripted test passed. The dashboard reported "the model
+ * did not answer in time" and that was true of the symptom and useless about the cause: the model
+ * had in fact answered, and the worker was still waiting for a stream that could never end. A
+ * stage says which of those two it was, without logging one word of the prompt or the answer.
+ *
+ * Ordered. A failure carries the last stage reached, so "timed out at `session_started`" (the
+ * subprocess never spoke) and "timed out at `model_replied`" (it spoke and we did not stop) are
+ * different bugs with different fixes, and the difference is one field rather than an afternoon.
+ */
+export const REASONING_STAGES = [
+  /** The worker has the assignment. */
+  'claimed',
+  /** The Claude runtime reported itself available. */
+  'runtime_checked',
+  /** The subprocess started and a session exists. */
+  'session_started',
+  /** The first event of any kind arrived from the runtime. */
+  'first_event',
+  /** The model produced text or finished its turn. */
+  'model_replied',
+  /** The reply parsed as an evaluation. */
+  'parsed',
+] as const;
+export type ReasoningStage = (typeof REASONING_STAGES)[number];
+
+export const REASONING_STAGE_LABELS: Readonly<Record<ReasoningStage, string>> = {
+  claimed: 'the question reached the worker',
+  runtime_checked: 'the Claude runtime reported itself available',
+  session_started: 'the Claude session started',
+  first_event: 'the session produced its first event',
+  model_replied: 'the model answered',
+  parsed: 'the answer was read',
+};
+
+/**
+ * The attempt a report is answering.
+ *
+ * The fence. Without it, a worker whose turn was abandoned can come back after the question has
+ * been handed out again and overwrite the newer attempt's answer with its own — and because it is
+ * the same worker, a lease-owner check does not catch it. The write requires this to match the
+ * attempt currently recorded, so a late report loses and is told it lost.
+ */
+const attemptField = z.number().int().min(1).max(1000);
+
 export const reasoningOutcomeSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('succeeded'),
     requestId: z.string().uuid(),
+    attempt: attemptField,
     evaluation: ideaEvaluationSchema,
     usage: reasoningUsageSchema.nullish(),
   }),
   z.object({
     status: z.literal('failed'),
     requestId: z.string().uuid(),
+    attempt: attemptField,
     failure: z.enum(REASONING_FAILURES),
     /** One bounded sentence. Never a stack trace and never a provider payload. */
     detail: z.string().trim().max(300).nullish(),
+    /** The last stage reached. Says whether the model spoke, without repeating what it said. */
+    stage: z.enum(REASONING_STAGES).nullish(),
     usage: reasoningUsageSchema.nullish(),
   }),
 ]);
@@ -257,11 +318,75 @@ export function buildIdeaEvaluationPrompt(input: IdeaEvaluationInput): string {
   ].join('\n');
 }
 
-/** The last fenced block in a reply, so a model that thinks out loud first is still readable. */
-function lastFencedBlock(text: string): string | null {
-  const matches = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
-  const last = matches.at(-1);
-  return last?.[1]?.trim() ?? null;
+/**
+ * How much of a reply the worker keeps, so the answer can be read rather than merely displayed.
+ *
+ * The runtime bounds every piece of text it emits, at a ceiling chosen for a mission summary on a
+ * screen. A reasoning answer is a JSON document that has to survive being parsed, and a document
+ * cut in the middle of a string is not a shorter answer — it is an unreadable one. This is the
+ * widest an evaluation can legally be (600 + 600 + 1200, three lists of twelve 300s, eight more,
+ * and the JSON around them), rounded up, and it is still a bound.
+ */
+export const REASONING_REPLY_MAX_CHARS = 20_000;
+
+/**
+ * Every balanced JSON object in a reply, in the order they appear.
+ *
+ * Deliberately not a fenced-block regex. The worker sees the same answer twice — once through the
+ * `message` stream, which is bounded for display, and once as the final result — and a copy that
+ * was cut mid-string leaves an opening fence with no closing one. A lazy `` ```…``` `` regex then
+ * pairs that orphan with the *next* block's opening fence, swallows the complete answer inside its
+ * match, and reports the whole reply unreadable. That is not hypothetical: it is what a live
+ * QuickPick request did after the timeout was fixed, with a perfectly good evaluation on the wire.
+ *
+ * Scanning for balanced braces has no such failure. A truncated object never closes, so it is
+ * simply not a candidate, and the complete one is found whether it was fenced, bare, or preceded
+ * by three paragraphs of the model thinking out loud.
+ */
+function jsonObjects(text: string): readonly string[] {
+  const found: string[] = [];
+  /*
+   * Every candidate is scanned from its own opening brace, with its own idea of what is inside a
+   * string. That is the part that matters: the truncated copy ends *inside* an unterminated
+   * string, and a single scan carrying that state forward would treat the whole rest of the reply
+   * — the good answer included — as one long string literal and find nothing at all.
+   */
+  for (let i = 0; i < text.length && found.length < MAX_JSON_CANDIDATES; i += 1) {
+    if (text[i] !== '{') continue;
+    const object = balancedFrom(text, i);
+    if (object === null) continue;
+    found.push(object);
+    /* Past the whole object: its nested braces are not separate candidates. */
+    i += object.length - 1;
+  }
+  return found;
+}
+
+/** How many top-level objects are considered. A bound, so a pathological reply cannot cost time. */
+const MAX_JSON_CANDIDATES = 32;
+
+/** The balanced object beginning at `start`, or null if it never closes. */
+function balancedFrom(text: string, start: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 /**
@@ -274,30 +399,28 @@ function lastFencedBlock(text: string): string | null {
  * not a claim the run gets to make about itself.
  */
 export function parseIdeaEvaluation(reply: string): IdeaEvaluation | null {
-  const block = lastFencedBlock(reply) ?? reply.trim();
-  if (!block) return null;
-
-  let raw: unknown;
-  try {
-    raw = JSON.parse(block) as unknown;
-  } catch {
-    /* One retry at the outermost braces, for a model that added a stray word after the fence. */
-    const start = block.indexOf('{');
-    const end = block.lastIndexOf('}');
-    if (start === -1 || end <= start) return null;
+  /*
+   * Last first. A model that revises itself — "here is a draft… actually, here is the answer" —
+   * means the final block, and a reply that carries the same answer twice means the second copy,
+   * which is the complete one. A candidate that does not validate is skipped rather than repaired.
+   */
+  for (const candidate of [...jsonObjects(reply)].reverse()) {
+    let raw: unknown;
     try {
-      raw = JSON.parse(block.slice(start, end + 1)) as unknown;
+      raw = JSON.parse(candidate) as unknown;
     } catch {
-      return null;
+      continue;
     }
-  }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
 
-  if (typeof raw !== 'object' || raw === null) return null;
-  const parsed = ideaEvaluationSchema.safeParse({
-    ...(raw as Record<string, unknown>),
-    basis: EVALUATION_BASES[0],
-  });
-  return parsed.success ? parsed.data : null;
+    const parsed = ideaEvaluationSchema.safeParse({
+      ...(raw as Record<string, unknown>),
+      /* Stamped here, never taken from the model. See the note above. */
+      basis: EVALUATION_BASES[0],
+    });
+    if (parsed.success) return parsed.data;
+  }
+  return null;
 }
 
 /* ------------------------------------------------------- the control-plane view */
@@ -316,6 +439,10 @@ export interface ReasoningRequest {
   readonly result: IdeaEvaluation | null;
   readonly failure: ReasoningFailure | null;
   readonly failureDetail: string | null;
+  /** How far the last attempt got. Null before anything has been tried. */
+  readonly stage: ReasoningStage | null;
+  /** How many times the owner has asked again after a failure. */
+  readonly manualRetries: number;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly finishedAt: string | null;

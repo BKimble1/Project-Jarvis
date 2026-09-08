@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { REASONING_TIMEOUT_MS, ideaEvaluationInput } from '@/domain/reasoning';
+import { ReasoningRunner } from '@/worker/reasoning-runner';
 import { observeClaudeAuth, CLAUDE_AUTH_COMMAND } from '@/worker/claude-auth-probe';
 import { resolveClaudeAuth } from '@/domain/claude-auth';
 import { buildCapacityReport } from '@/worker/claude-telemetry';
@@ -131,13 +137,24 @@ describe('a real Claude session', () => {
         }),
       });
 
+      /*
+       * Stop at the end of the turn, not the end of the stream.
+       *
+       * The SDK is driven with an async-iterable prompt, which puts it in streaming input/output
+       * mode: the query stays open for more input and does not end when the turn does. Draining to
+       * completion here waited for something that could never happen, and this test only failed on
+       * its own timeout — the same fault, in a test, that made every live dashboard question
+       * report a timeout it had not had. `close()` is what ends the input stream.
+       */
       let done = false;
       let costUsd: number | null | undefined;
       for await (const event of session.events) {
         if (event.type === 'done') {
           done = true;
           costUsd = event.usage?.totalCostUsd;
+          break;
         }
+        if (event.type === 'error') break;
       }
       await session.close().catch(() => undefined);
 
@@ -192,4 +209,102 @@ describe('a real Claude session', () => {
     );
     expect(report).toBeNull();
   });
+});
+
+/**
+ * One real dashboard question, answered by a real model, on a real subscription.
+ *
+ * ## Why this one is not like the others in this file
+ *
+ * The rest of this file proves the credential is real and the plumbing around it is honest. This
+ * proves the thing the owner actually asked for: that the code path a QuickPick message travels —
+ * `ReasoningRunner`, the real `ClaudeAgentRuntime`, the real prompt, the real parser — produces a
+ * real assessment on his own Claude subscription and stops when the model has finished.
+ *
+ * ## Why it exists at all
+ *
+ * Because two bugs got past a hundred passing scripted tests, and both of them were bugs about the
+ * *real* runtime rather than about the logic around it. The first was a deadlock: the SDK is driven
+ * with an async-iterable prompt, so its stream stays open after the turn ends, and a consumer that
+ * drained to stream end waited for something that could never happen. The second was in reading
+ * the reply: the same answer arrives twice, once bounded for display, and the truncated copy left
+ * an unterminated code fence that swallowed the complete one. A scripted runtime models neither.
+ * Only this does.
+ *
+ * The scripted suites still carry the regressions — `keepOpen` reproduces the first in a hundred
+ * milliseconds and a truncated-then-complete reply reproduces the second — so this is confirmation
+ * on the real thing, not the only line of defence.
+ */
+describe('a real reasoning turn, on the real subscription', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await mkdtemp(path.join(tmpdir(), 'jarvis-live-reason-'));
+  });
+
+  afterEach(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it(
+    'answers a dashboard question with a structured assessment, and stops when it is done',
+    async () => {
+      const runtime = new ClaudeAgentRuntime({
+        apiKey: null,
+        oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? null,
+        authMode: 'subscription',
+        apiKeyPresent: Boolean(process.env.ANTHROPIC_API_KEY),
+        model: null,
+      });
+
+      const stages: string[] = [];
+      const startedAt = Date.now();
+      const outcome = await new ReasoningRunner({
+        runtime,
+        workspaceRoot,
+        onStage: (stage) => stages.push(stage),
+      }).run({
+        requestId: randomUUID(),
+        kind: 'idea_evaluation',
+        input: ideaEvaluationInput({
+          idea:
+            'A tiny app called QuickPick that lets someone enter two choices and randomly ' +
+            'selects one with a clean animation.',
+          title: 'QuickPick',
+        }),
+        attempt: 1,
+        leaseExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      });
+      const elapsed = Date.now() - startedAt;
+
+      /* Quoted rather than summarised: a failure here should say which stage it got to. */
+      expect(
+        outcome.status,
+        outcome.status === 'failed'
+          ? `${outcome.failure} at ${outcome.stage ?? 'claimed'}: ${outcome.detail ?? ''}`
+          : '',
+      ).toBe('succeeded');
+      if (outcome.status !== 'succeeded') throw new Error('unreachable');
+
+      expect(stages).toContain('model_replied');
+      expect(stages.at(-1)).toBe('parsed');
+
+      /*
+       * The deadlock, checked directly. Before the fix the model answered and this loop kept
+       * waiting until the 90-second deadline; a turn that returns comfortably inside it is the
+       * live evidence that it now stops at the end of the turn rather than the end of the stream.
+       */
+      expect(elapsed).toBeLessThan(REASONING_TIMEOUT_MS);
+
+      /* A real assessment: it judged the idea rather than describing it back. */
+      expect(outcome.evaluation.basis).toBe('reasoned');
+      expect(outcome.evaluation.verdict.length).toBeGreaterThan(40);
+      expect(outcome.evaluation.smallestV1.length).toBeGreaterThan(0);
+
+      /* And it cost tokens on a subscription, with no dollar figure invented for them. */
+      expect(outcome.usage?.durationMs ?? 0).toBeGreaterThan(0);
+      expect(JSON.stringify(outcome)).not.toMatch(/costUsd/i);
+    },
+    SESSION_TIMEOUT_MS,
+  );
 });

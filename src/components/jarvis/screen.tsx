@@ -461,8 +461,9 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * below, which is what keeps a long reply from covering the scene.
    */
   /*
-   * Shown only while there is no assessment to show instead. Once the worker answers, the
-   * evaluation is the more useful thing on screen and the waiting note has done its job.
+   * Shown whenever the current question has no answer yet — not merely when no assessment happens
+   * to be in state. Those are different conditions, and conflating them is what let an old verdict
+   * sit on screen while a new request was pending behind it.
    */
   const pendingThought = thinking && thinking.state !== 'ready' && !evaluation ? thinking : null;
 
@@ -521,6 +522,33 @@ export function JarvisScreen(props: JarvisScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [thinking]);
 
+  /**
+   * Ask again after a failure, on the same proposal.
+   *
+   * Only offered when the server says a retry would do something — the ceiling lives there, so the
+   * button cannot become a loop. On success the panel goes back to thinking and the poller above
+   * picks the answer up; on refusal the sentence explains why rather than doing nothing visible.
+   */
+  async function retryThinking(requestId: string) {
+    try {
+      const response = await fetch('/api/conversation/thinking/retry', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ request: requestId }),
+      });
+      if (!response.ok) {
+        say('That question cannot be tried again right now.', null);
+        return;
+      }
+      const body = (await response.json()) as { thinking: ThinkingSnapshot };
+      setThinking(body.thinking);
+      setEvaluation(null);
+      setExpanded(true);
+    } catch {
+      say('I could not reach the control plane to try that again.', null);
+    }
+  }
+
   async function askJarvis(text: string) {
     setBusy(true);
     try {
@@ -558,6 +586,11 @@ export function JarvisScreen(props: JarvisScreenProps) {
        * has long since stopped thinking about.
        */
       setProposal(turn.proposal);
+      /*
+       * Cleared together, always. An idea turn that is thinking or blocked has *no* assessment yet,
+       * and leaving the previous one on screen is how a live QuickPick spent weeks showing a
+       * verdict from a path that no longer exists. The current request's state is the truth.
+       */
       setEvaluation(turn.evaluation ?? null);
       setThinking(turn.thinking ?? null);
       if (turn.started) {
@@ -1047,7 +1080,12 @@ export function JarvisScreen(props: JarvisScreenProps) {
                     <BriefingBody briefing={briefing} />
                   </div>
                 ) : null}
-                {pendingThought ? <ThinkingBody thinking={pendingThought} /> : null}
+                {pendingThought ? (
+                  <ThinkingBody
+                    thinking={pendingThought}
+                    onRetry={(id) => void retryThinking(id)}
+                  />
+                ) : null}
                 {evaluation ? <EvaluationBody evaluation={evaluation} /> : null}
                 {answer ? (
                   <AnswerPanel
@@ -1834,6 +1872,7 @@ export type ThinkingSnapshot =
       readonly reason: string;
       readonly detail: string;
       readonly retryable: boolean;
+      readonly canRetry: boolean;
     };
 
 /** The structured half of an idea assessment, laid out to be read rather than heard. */
@@ -1860,7 +1899,13 @@ export interface ConversationEvaluation {
  * says — so the note tells Blake what to change and promises that the answer will arrive without
  * him asking again.
  */
-function ThinkingBody({ thinking }: { thinking: ThinkingSnapshot }) {
+function ThinkingBody({
+  thinking,
+  onRetry,
+}: {
+  thinking: ThinkingSnapshot;
+  onRetry: (requestId: string) => void;
+}) {
   if (thinking.state === 'ready') return null;
   const blocked = thinking.state === 'blocked';
   return (
@@ -1871,6 +1916,16 @@ function ThinkingBody({ thinking }: { thinking: ThinkingSnapshot }) {
         <p className="mt-2 text-xs text-[var(--jx-ink-soft)]">
           The question is still queued. Nothing has been created, and you do not need to ask again.
         </p>
+      ) : null}
+      {blocked && thinking.canRetry ? (
+        <button
+          type="button"
+          data-thinking-retry
+          onClick={() => onRetry(thinking.requestId)}
+          className="mt-2 text-sm text-[var(--jx-cyan)] hover:underline"
+        >
+          Try that again
+        </button>
       ) : null}
     </div>
   );

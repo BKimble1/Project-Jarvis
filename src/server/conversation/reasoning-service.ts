@@ -2,11 +2,14 @@ import type { CapacityDecision } from '@/domain/claude-capacity';
 import type { IdeaEvaluation } from '@/domain/proposal';
 import {
   REASONING_MAX_ATTEMPTS,
+  REASONING_MAX_MANUAL_RETRIES,
+  REASONING_STAGE_LABELS,
   ideaEvaluationInput,
   reasoningRequestKey,
   type ReasoningFailure,
   type ReasoningOutcomeInput,
   type ReasoningRequest,
+  type ReasoningStage,
 } from '@/domain/reasoning';
 import { deriveWorkerHealth } from '@/domain/worker';
 import type { AuditRepository, UsageRepository } from '@/server/repositories/accounting-types';
@@ -69,6 +72,8 @@ export type ThinkingState =
       readonly detail: string;
       /** True while the question is still queued, so saying "it will run when…" is honest. */
       readonly retryable: boolean;
+      /** True when asking again would do something. False once the retry ceiling is reached. */
+      readonly canRetry: boolean;
     };
 
 export interface ReasoningServiceDeps {
@@ -113,7 +118,15 @@ export class ReasoningService {
   }): Promise<ThinkingState> {
     const key = reasoningRequestKey('idea_evaluation', input.proposalId);
 
-    if (input.existing) {
+    /*
+     * An evaluation only counts as an answer when a model produced it.
+     *
+     * Rows written before the worker path existed carry `basis: 'not_assessed'` — the old "no model
+     * is configured here" placeholder. Treating one as ready is what left a live QuickPick showing
+     * that sentence weeks later: the proposal had an evaluation, so nothing was ever asked. It was
+     * never a judgement, so it is not one now, and the question goes to the worker.
+     */
+    if (input.existing?.basis === 'reasoned') {
       const already = await this.deps.reasoning.findByKey(key);
       return {
         state: 'ready',
@@ -175,8 +188,10 @@ export class ReasoningService {
       const applied = await this.deps.reasoning.fail({
         requestId: outcome.requestId,
         workerId,
+        attempt: outcome.attempt,
         failure: outcome.failure,
         detail: outcome.detail ?? null,
+        stage: outcome.stage ?? null,
         maxAttempts: REASONING_MAX_ATTEMPTS,
         now,
       });
@@ -202,6 +217,7 @@ export class ReasoningService {
     const applied = await this.deps.reasoning.succeed({
       requestId: outcome.requestId,
       workerId,
+      attempt: outcome.attempt,
       evaluation: outcome.evaluation,
       usage: outcome.usage
         ? {
@@ -278,6 +294,41 @@ export class ReasoningService {
       .catch(() => null);
   }
 
+  /**
+   * Ask again, because the owner said so.
+   *
+   * Only a request that has actually failed can be retried, and only while there are manual
+   * retries left — so a held-down button costs nothing and a genuinely broken runtime still ends
+   * in a sentence rather than a loop. The proposal is untouched: the same question, on the same
+   * row, with its attempts reset.
+   *
+   * Returns the new state, or null when there was nothing to retry.
+   */
+  async retry(requestId: string): Promise<ThinkingState | null> {
+    const requeued = await this.deps.reasoning.requeue({
+      requestId,
+      maxManualRetries: REASONING_MAX_MANUAL_RETRIES,
+      now: this.now(),
+    });
+    if (!requeued) return null;
+
+    await this.deps.audit
+      .append({
+        actor: 'owner',
+        actorKind: 'owner',
+        action: 'reasoning.requested',
+        subjectKind: 'reasoning_request',
+        subjectId: requeued.id,
+        outcome: 'allowed',
+        rule: 'manual_retry',
+        summary: 'Asked the worker to try the question again.',
+        detail: { manualRetries: requeued.manualRetries },
+      })
+      .catch(() => undefined);
+
+    return this.describe(requeued);
+  }
+
   /* ---------------------------------------------------------------- reading */
 
   private async describe(request: ReasoningRequest): Promise<ThinkingState> {
@@ -290,8 +341,10 @@ export class ReasoningService {
         state: 'blocked',
         requestId: request.id,
         reason: 'failed',
-        detail: failureSentence(request.failure, request.failureDetail),
+        detail: failureSentence(request.failure, request.failureDetail, request.stage),
         retryable: false,
+        canRetry:
+          request.state === 'failed' && request.manualRetries < REASONING_MAX_MANUAL_RETRIES,
       };
     }
 
@@ -302,7 +355,8 @@ export class ReasoningService {
      */
     const reach = await this.reachability();
     if (reach) {
-      return { ...reach, requestId: request.id };
+      /* Still queued, so waiting is the retry. Pressing a button would change nothing. */
+      return { ...reach, requestId: request.id, canRetry: false };
     }
 
     return {
@@ -324,7 +378,7 @@ export class ReasoningService {
    */
   private async reachability(): Promise<Omit<
     ThinkingState & { state: 'blocked' },
-    'requestId'
+    'requestId' | 'canRetry'
   > | null> {
     const now = this.now();
     const workers = await this.deps.workers.list();
@@ -373,21 +427,40 @@ export class ReasoningService {
   }
 }
 
-/** One sentence per failure, because each one needs a different thing from the owner. */
-function failureSentence(failure: ReasoningFailure | null, detail: string | null): string {
-  const tail = detail ? ` It reported: ${detail}` : '';
+/**
+ * One sentence per failure, because each one needs a different thing from the owner.
+ *
+ * The stage is appended when there is one, because "it timed out before the session started" and
+ * "it timed out after the model answered" are different faults. The detail is dropped when it is
+ * already the sentence being said — the live report read "The model did not answer in time, so
+ * nothing has judged this. It reported: The model did not answer in time.", which is one fact
+ * charged twice.
+ */
+function failureSentence(
+  failure: ReasoningFailure | null,
+  detail: string | null,
+  stage: ReasoningStage | null = null,
+): string {
+  const head = headline(failure);
+  const useful = detail && !head.toLowerCase().includes(detail.toLowerCase().replace(/[.]$/, ''));
+  const tail = useful ? ` It reported: ${detail}` : '';
+  const where = stage ? ` It got as far as: ${REASONING_STAGE_LABELS[stage]}.` : '';
+  return `${head}${where}${tail}`;
+}
+
+function headline(failure: ReasoningFailure | null): string {
   switch (failure) {
     case 'runtime_unavailable':
-      return `Your worker could not start its Claude runtime, so nothing has judged this.${tail}`;
+      return 'Your worker could not start its Claude runtime, so nothing has judged this.';
     case 'timed_out':
-      return `The model did not answer in time, so nothing has judged this.${tail}`;
+      return 'The model did not answer in time, so nothing has judged this.';
     case 'unreadable':
-      return `The model answered, but not in a shape Jarvis could read — so it has not judged this rather than guessing at what was meant.${tail}`;
+      return 'The model answered, but not in a shape Jarvis could read — so it has not judged this rather than guessing at what was meant.';
     case 'model_error':
-      return `The model could not answer, so nothing has judged this.${tail}`;
+      return 'The model could not answer, so nothing has judged this.';
     case 'interrupted':
-      return `The worker stopped before it answered, so nothing has judged this.${tail}`;
+      return 'The worker stopped before it answered, so nothing has judged this.';
     default:
-      return `Nothing has judged this.${tail}`;
+      return 'Nothing has judged this.';
   }
 }

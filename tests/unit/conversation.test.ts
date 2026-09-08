@@ -184,6 +184,7 @@ function harness(
         reason: 'no_worker',
         detail: 'No worker is connected, and the worker is where your Claude subscription lives.',
         retryable: true,
+        canRetry: false,
       };
     },
   } as unknown as ReasoningService;

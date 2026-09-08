@@ -2,12 +2,14 @@ import type { RunUsage } from '@/domain/mission-run';
 import {
   IDEA_EVALUATION_SYSTEM_PROMPT,
   REASONING_MAX_TURNS,
+  REASONING_REPLY_MAX_CHARS,
   REASONING_TIMEOUT_MS,
   buildIdeaEvaluationPrompt,
   parseIdeaEvaluation,
   type ReasoningAssignment,
   type ReasoningFailure,
   type ReasoningOutcomeInput,
+  type ReasoningStage,
 } from '@/domain/reasoning';
 import { boundText, redactSecrets } from '@/domain/redaction';
 import type { AgentRuntime } from './runtime/types';
@@ -48,6 +50,17 @@ export interface ReasoningRunnerDeps {
   readonly workspaceRoot: string;
   readonly timeoutMs?: number;
   readonly now?: () => Date;
+  /**
+   * Called as each stage is reached.
+   *
+   * The worker logs these. They are the diagnostic that tells "the subprocess never spoke" apart
+   * from "it spoke and we did not stop" — a distinction that cost a live morning to learn and is
+   * one line of output to keep. Stage names only: no prompt, no answer, no environment.
+   */
+  readonly onStage?: (stage: ReasoningStage) => void;
+  /** How long `close()` is given before the turn is abandoned. Bounded so a wedged
+   * subprocess cannot hold the reasoning loop. */
+  readonly closeTimeoutMs?: number;
 }
 
 export class ReasoningRunner {
@@ -62,6 +75,14 @@ export class ReasoningRunner {
    */
   async run(assignment: ReasoningAssignment, signal?: AbortSignal): Promise<ReasoningOutcomeInput> {
     const startedAt = (this.deps.now?.() ?? new Date()).getTime();
+
+    let stage = 'claimed' as ReasoningStage;
+    const reached = (next: ReasoningStage): void => {
+      stage = next;
+      this.deps.onStage?.(next);
+    };
+    reached('claimed');
+
     const failed = (
       failure: ReasoningFailure,
       detail: string | null,
@@ -69,8 +90,10 @@ export class ReasoningRunner {
     ): ReasoningOutcomeInput => ({
       status: 'failed',
       requestId: assignment.requestId,
+      attempt: assignment.attempt,
       failure,
       detail: detail ? boundText(redactSecrets(detail), 300) : null,
+      stage,
       usage: usageFor(usage, startedAt, this.deps.now?.() ?? new Date()),
     });
 
@@ -81,6 +104,7 @@ export class ReasoningRunner {
         availability?.detail ?? 'The Claude runtime could not be started.',
       );
     }
+    reached('runtime_checked');
 
     /*
      * A timeout of our own, on top of whatever the runtime does. The mission path has a watchdog;
@@ -119,6 +143,8 @@ export class ReasoningRunner {
         readOnly: true,
         maxTurns: REASONING_MAX_TURNS,
         model: null,
+        /* The answer is parsed, not displayed. See `REASONING_REPLY_MAX_CHARS`. */
+        resultMaxChars: REASONING_REPLY_MAX_CHARS,
         /* Every tool, every time. A judgement needs nothing from the machine it runs on. */
         decide: async () => ({
           verdict: 'deny' as const,
@@ -127,19 +153,57 @@ export class ReasoningRunner {
         }),
         signal: controller.signal,
       });
+      reached('session_started');
 
-      let text = '';
+      /*
+       * Two texts, deliberately not one.
+       *
+       * `result` is the runtime's final answer, kept whole. `streamed` is what came through the
+       * `message` events, which are bounded for display and can arrive cut mid-sentence. They used
+       * to be concatenated, and that is a second way to lose a good answer: the truncated copy
+       * leaves an unterminated code fence, and everything after it reads as part of that block.
+       * The result is tried first and the stream only as a fallback, so a runtime that never
+       * produced a final result is still readable while a complete answer is never spoiled by an
+       * abbreviated one.
+       */
+      let result = '';
+      let streamed = '';
       let usage: RunUsage | null = null;
       let error: string | null = null;
 
+      /*
+       * Stop at the end of the turn, not at the end of the stream.
+       *
+       * This is the bug that made every live request time out while every scripted test passed.
+       * The Claude Agent SDK enters streaming input/output mode when the prompt is an async
+       * iterable — which is how the runtime drives it, so that an owner can send a follow-up into
+       * a running mission — and in that mode the query stays open for more input. It does not end
+       * after the result. The scripted runtime, having no such notion, finishes its queue when its
+       * steps run out, so draining to completion worked there and deadlocked here: the model
+       * answered, the `done` event arrived, and this loop kept waiting for a stream end that could
+       * never come until the deadline fired and called it a timeout.
+       *
+       * `MissionRunner` has always returned out of its loop on `done`. This now does the same. The
+       * session is closed afterwards, which ends the input stream and lets the runtime tear the
+       * subprocess down — and, in doing so, collect the capacity reading it takes on the way out.
+       */
       const consume = (async (): Promise<'finished'> => {
         for await (const event of session.events) {
-          if (event.type === 'message') text += `${event.text}\n`;
-          else if (event.type === 'usage') usage = event.usage;
-          else if (event.type === 'done') {
-            if (event.result) text += `${event.result}\n`;
+          if (stage === 'session_started') reached('first_event');
+          if (event.type === 'message') {
+            streamed += `${event.text}\n`;
+            reached('model_replied');
+          } else if (event.type === 'usage') {
+            usage = event.usage;
+          } else if (event.type === 'done') {
+            result = event.result;
             usage = event.usage ?? usage;
-          } else if (event.type === 'error') error = event.message;
+            reached('model_replied');
+            break;
+          } else if (event.type === 'error') {
+            error = event.message;
+            break;
+          }
         }
         return 'finished';
       })();
@@ -152,30 +216,30 @@ export class ReasoningRunner {
       });
 
       /*
-       * Raced rather than simply awaited.
-       *
-       * A runtime that honours the abort signal ends its own stream and `settled` wins. One that
-       * does not would leave this loop iterating forever, and a worker stuck inside a reasoning
-       * turn stops answering everything else — so the deadline gets its own way out, and the
-       * session is interrupted and closed on the way past. The abandoned iteration is left to
-       * finish on its own; its lease expires and the question comes back to the queue.
+       * Still raced, because breaking on `done` only helps when a `done` arrives. A runtime that
+       * hangs before saying anything, or one that ignores the abort, must not wedge this loop —
+       * so the deadline keeps its own way out and the session is interrupted on the way past.
        */
       const outcome = await Promise.race([settled, stopped]);
       if (outcome === 'stopped') {
         await session.interrupt().catch(() => undefined);
-        await session.close().catch(() => undefined);
+        await this.closeBounded(session);
         return timedOut
-          ? failed('timed_out', 'The model did not answer in time.', usage)
+          ? failed(
+              'timed_out',
+              `The model did not answer in time — it got as far as ${stage}.`,
+              usage,
+            )
           : failed('interrupted', 'The worker stopped.', usage);
       }
 
-      await session.close().catch(() => undefined);
+      await this.closeBounded(session);
 
       if (timedOut) return failed('timed_out', 'The model did not answer in time.', usage);
       if (signal?.aborted) return failed('interrupted', 'The worker stopped.', usage);
       if (error) return failed('model_error', error, usage);
 
-      const evaluation = parseIdeaEvaluation(text);
+      const evaluation = parseIdeaEvaluation(result) ?? parseIdeaEvaluation(streamed);
       if (!evaluation) {
         return failed(
           'unreadable',
@@ -183,10 +247,12 @@ export class ReasoningRunner {
           usage,
         );
       }
+      reached('parsed');
 
       return {
         status: 'succeeded',
         requestId: assignment.requestId,
+        attempt: assignment.attempt,
         evaluation,
         usage: usageFor(usage, startedAt, this.deps.now?.() ?? new Date()),
       };
@@ -199,7 +265,30 @@ export class ReasoningRunner {
       signal?.removeEventListener('abort', onAbort);
     }
   }
+
+  /**
+   * Close the session, but never wait on it forever.
+   *
+   * `close()` ends the input stream and waits for the runtime's own pump — which is where the
+   * capacity reading is taken, so it is worth waiting for. But a subprocess that has stopped
+   * responding would otherwise hold the reasoning loop open indefinitely, and a worker that cannot
+   * answer the next question is a worse outcome than a missed capacity reading.
+   */
+  private async closeBounded(session: { close(): Promise<void> }): Promise<void> {
+    const limit = this.deps.closeTimeoutMs ?? CLOSE_TIMEOUT_MS;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      session.close().catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, limit);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
 }
+
+/** How long a session is given to shut down before the turn stops waiting for it. */
+const CLOSE_TIMEOUT_MS = 10_000;
 
 /**
  * What is reported back about the cost of a thought.

@@ -44,6 +44,17 @@ export interface ScriptedRuntimeOptions {
    */
   readonly stepsFor?: (request: AgentSessionRequest) => readonly ScriptedStep[] | null;
   readonly sessionId?: string;
+  /**
+   * Behave like the real runtime: keep the event stream open after the steps run out.
+   *
+   * The Claude Agent SDK is driven with an async-iterable prompt, which puts it in streaming
+   * input/output mode — the query stays open for more input and does *not* end when the turn does.
+   * This stand-in finished its queue instead, which is why a consumer that drained to stream end
+   * passed every scripted test and deadlocked against the real thing on the first live request.
+   *
+   * Set this and the queue is finished only by `close()`, exactly as it is in production.
+   */
+  readonly keepOpen?: boolean;
   readonly available?: boolean;
   readonly unavailableDetail?: string;
   /** Called with each follow-up message the owner sends, so tests can assert delivery. */
@@ -152,7 +163,8 @@ export class ScriptedRuntime implements AgentRuntime {
             break;
         }
       }
-      queue.finish();
+      /* See `keepOpen`: production's stream does not end because the steps ran out. */
+      if (!options.keepOpen) queue.finish();
     };
 
     const finished = run();

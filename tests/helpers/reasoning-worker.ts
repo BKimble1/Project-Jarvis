@@ -89,15 +89,20 @@ export class ReasoningWorkerHarness {
     });
     if (!assignment) return false;
     this.claims += 1;
+    this.lastAssignment = { requestId: assignment.requestId, attempt: assignment.attempt };
 
     await this.services.workerService.reportReasoning(workerId, {
       status: 'succeeded',
       requestId: assignment.requestId,
+      attempt: assignment.attempt,
       evaluation,
       usage: { inputTokens: 1200, outputTokens: 400, durationMs: 5_000 },
     });
     return true;
   }
+
+  /** The assignment this worker last claimed, so a test can replay it as a late report. */
+  lastAssignment: { requestId: string; attempt: number } | null = null;
 
   /** Claim one question and report that it could not be answered. */
   async failNext(failure: ReasoningFailure, detail: string | null = null): Promise<boolean> {
@@ -107,12 +112,15 @@ export class ReasoningWorkerHarness {
     });
     if (!assignment) return false;
     this.claims += 1;
+    this.lastAssignment = { requestId: assignment.requestId, attempt: assignment.attempt };
 
     await this.services.workerService.reportReasoning(workerId, {
       status: 'failed',
       requestId: assignment.requestId,
+      attempt: assignment.attempt,
       failure,
       detail,
+      stage: 'session_started',
     });
     return true;
   }

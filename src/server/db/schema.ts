@@ -85,6 +85,7 @@ import type {
   ReasoningFailure,
   ReasoningInput,
   ReasoningKind,
+  ReasoningStage,
   ReasoningState,
 } from '@/domain/reasoning';
 import type { ConnectionProvider, ConnectionStatus } from '@/domain/connection';
@@ -742,6 +743,16 @@ export const reasoningRequests = pgTable(
     failure: text('failure').$type<ReasoningFailure>(),
     /** One bounded sentence for the owner. Never a stack trace, never a provider payload. */
     failureDetail: text('failure_detail'),
+    /**
+     * How far the last attempt got.
+     *
+     * A stage name and nothing else — never a prompt, never an answer. It exists because "timed
+     * out" was true and useless: it did not distinguish a subprocess that never spoke from one
+     * that answered while the worker was still waiting for a stream to end.
+     */
+    stage: text('stage').$type<ReasoningStage>(),
+    /** How many times the owner asked again after a failure. Bounded; see the domain constant. */
+    manualRetries: integer('manual_retries').notNull().default(0),
     inputTokens: integer('input_tokens'),
     outputTokens: integer('output_tokens'),
     durationMs: integer('duration_ms'),

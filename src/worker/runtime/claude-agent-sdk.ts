@@ -413,7 +413,8 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           }
           if (message.rate_limit_info) observed.rateLimit = message.rate_limit_info;
           if (message.context_usage) observed.context = message.context_usage;
-          for (const event of translate(message, this.billing())) queue.push(event);
+          for (const event of translate(message, this.billing(), request.resultMaxChars))
+            queue.push(event);
         }
       } catch (error) {
         queue.push({
@@ -459,10 +460,14 @@ export class ClaudeAgentRuntime implements AgentRuntime {
   }
 }
 
+/** What a final result is cut to when the caller does not ask for more. Suits a mission summary. */
+const RESULT_MAX_CHARS = 4000;
+
 /** SDK message → Jarvis event. Anything Jarvis has no use for is simply dropped. */
 function translate(
   message: SdkMessage,
   billing: 'subscription' | 'api' | 'unknown',
+  resultMaxChars: number = RESULT_MAX_CHARS,
 ): readonly AgentEvent[] {
   const events: AgentEvent[] = [];
 
@@ -517,7 +522,12 @@ function translate(
     } else {
       events.push({
         type: 'done',
-        result: boundText(redactSecrets(message.result ?? ''), 4000),
+        /*
+         * The one piece of text a caller may need whole. See `resultMaxChars`: a mission shows
+         * this to a person and a reasoning turn parses it, and the second cannot survive being cut
+         * in the middle of a JSON string. Still bounded, just not always at the display ceiling.
+         */
+        result: boundText(redactSecrets(message.result ?? ''), resultMaxChars),
         usage,
       });
     }
