@@ -62,7 +62,7 @@ test.describe('the Jarvis screen', () => {
 
     const ask = page.getByRole('region', { name: 'Ask Jarvis' });
     await ask.getByLabel('Ask Jarvis about your projects').fill('Where are we?');
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
 
     /* The answer arrives inside the command region, and the screen is still the screen. */
     await expect(ask.getByRole('heading', { name: 'Where we are' })).toBeVisible();
@@ -75,7 +75,7 @@ test.describe('the Jarvis screen', () => {
 
     const ask = page.getByRole('region', { name: 'Ask Jarvis' });
     await ask.getByLabel('Ask Jarvis about your projects').fill('What needs me?');
-    await ask.getByRole('button', { name: 'Ask' }).click();
+    await ask.getByRole('button', { name: 'Send' }).click();
     await expect(ask.getByRole('button', { name: 'Recent conversation' })).toBeVisible();
 
     /* Folded away by default: the centre shows the last thing said and nothing more. */

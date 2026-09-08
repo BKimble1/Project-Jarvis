@@ -205,6 +205,22 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * `isSecureContext` is a browser fact.
    */
   const [voiceNote, setVoiceNote] = React.useState<string | null>(null);
+  /**
+   * Whether what is in the composer arrived through the microphone.
+   *
+   * ## Why one Send needs this
+   *
+   * The dock used to carry two: "Ask", and "Send as spoken". They are genuinely different — speech
+   * goes through the voice gate, which refuses to treat spoken words as approval — so the second
+   * button was not decoration, and deleting it to satisfy "one Send" would have quietly removed a
+   * required authorisation step.
+   *
+   * So the routing follows the words instead of the button. A transcript lands in the composer as
+   * an editable draft, and that draft stays *spoken* while it is edited: correcting what was heard
+   * is still answering by voice, and downgrading it on the first keystroke would be exactly the
+   * silent removal being avoided. Typing from scratch is typing, and takes the ordinary path.
+   */
+  const [fromMic, setFromMic] = React.useState(false);
   /*
    * The thing Jarvis last offered to do, kept so "go ahead" means something.
    *
@@ -728,6 +744,12 @@ export function JarvisScreen(props: JarvisScreenProps) {
     const text = raw.trim();
     if (text.length === 0) return;
     heard(text);
+    /*
+     * The routing was decided by the caller from the origin of these words. Once they are gone the
+     * composer is empty and holding nothing that was heard, so the next thing typed into it is
+     * typed, not spoken.
+     */
+    setFromMic(false);
 
     const boundTo = boundList.current;
     boundList.current = null;
@@ -837,7 +859,11 @@ export function JarvisScreen(props: JarvisScreenProps) {
   /* What was recognised becomes an editable draft in the same box everything else is typed in. */
   React.useEffect(() => {
     if (speech.phase === 'idle' && speech.transcript.trim().length > 0) {
-      setReply((current) => (current.length > 0 ? current : speech.transcript.trim()));
+      setReply((current) => {
+        if (current.length > 0) return current;
+        setFromMic(true);
+        return speech.transcript.trim();
+      });
       mic.release();
     }
   }, [speech.phase, speech.transcript, mic]);
@@ -1184,6 +1210,8 @@ export function JarvisScreen(props: JarvisScreenProps) {
           onChange={(next) => {
             bind();
             setReply(next);
+            /* Cleared by hand means the transcript is gone, and with it the reason to gate it. */
+            if (next.trim().length === 0) setFromMic(false);
           }}
           inputRef={inputRef}
           busy={busy}
@@ -1192,9 +1220,9 @@ export function JarvisScreen(props: JarvisScreenProps) {
           supported={mounted && speech.supported}
           onSubmit={() => {
             const typed = inputRef.current?.value ?? reply;
-            void send(typed, false);
+            void send(typed, fromMic);
           }}
-          onSpeakSend={() => void send(inputRef.current?.value ?? reply, true)}
+          spoken={fromMic}
           onStartListening={startListening}
           onStopListening={stopListening}
           onSilence={() => speech.silence()}
@@ -1683,7 +1711,7 @@ function CommandDock({
   speaking,
   supported,
   onSubmit,
-  onSpeakSend,
+  spoken,
   onStartListening,
   onStopListening,
   onSilence,
@@ -1704,7 +1732,8 @@ function CommandDock({
   speaking: boolean;
   supported: boolean;
   onSubmit: () => void;
-  onSpeakSend: () => void;
+  /** True when the composer is holding words that arrived through the microphone. */
+  spoken: boolean;
   onStartListening: () => void;
   onStopListening: () => void;
   onSilence: () => void;
@@ -1807,23 +1836,21 @@ function CommandDock({
         ) : null}
 
         {/*
-          A spoken message and a typed one take different server paths — speech goes through the
-          voice gate that refuses to treat words as approval — so the person is told which one
-          they are sending rather than having it inferred from how the text got into the box.
-        */}
-        {supported && value.trim().length > 0 && !listening ? (
-          <DockButton type="button" tone="quiet" onClick={onSpeakSend} disabled={busy}>
-            Send as spoken
-          </DockButton>
-        ) : null}
+          One Send, and it says which path it will take.
 
+          A spoken message and a typed one still reach different server paths — speech goes through
+          the voice gate that refuses to treat words as approval — but which one is a fact about
+          where the words came from, not a choice to put to the person mid-sentence. So the button
+          reads the origin and labels itself, and the person is still told, which was the whole
+          point of having had two.
+        */}
         <DockButton type="submit" tone="primary" disabled={busy}>
           {busy ? (
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           ) : (
             <CornerDownLeft className="h-4 w-4" aria-hidden />
           )}
-          Ask
+          {spoken ? 'Send as spoken' : 'Send'}
         </DockButton>
 
         <DockButton type="button" tone="quiet" onClick={onBrief} disabled={busy}>
