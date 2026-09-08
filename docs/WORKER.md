@@ -265,6 +265,41 @@ permission mode, and anything that cannot be proven clean is preserved and repor
 - whether the GitHub write credential is configured;
 - how many preserved workspaces are on disk.
 
+### The dashboard says it cannot think
+
+Run one real reasoning turn on this machine and watch which stage it reaches:
+
+```bash
+npm run worker:think
+```
+
+It runs the same code a dashboard question runs — the real Claude runtime, the real prompt, the
+real parser — on the Claude subscription this machine is logged into, and prints a line per stage:
+
+```
+     0 ms  claimed
+   395 ms  runtime_checked
+   642 ms  session_started
+  1231 ms  first_event
+ 19311 ms  model_replied
+ 21894 ms  parsed
+```
+
+The stage it stops at is the diagnosis:
+
+| Stops at          | What it means                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `claimed`         | The Claude runtime would not start. Check `claude` is on `PATH` and logged in.              |
+| `runtime_checked` | The subprocess never produced a session — startup or login, not a slow model.               |
+| `session_started` | The session started and never spoke. Raise `--timeout=180000` once to tell slow from stuck. |
+| `first_event`     | Events arrived, no answer. Usually capacity, or a genuinely long turn.                      |
+| `model_replied`   | It answered and the reply could not be read. The output is what to report.                  |
+| `parsed`          | The worker half works. A dashboard that still cannot think has a control-plane problem.     |
+
+It costs one short turn of subscription capacity, and it prints no credential, no prompt and no
+answer — stage names, timings and a bounded, redacted failure detail. `--show-answer` prints the
+verdict as well; `--idea="…"` asks about something other than the default.
+
 ### The worker stopped reporting
 
 Jarvis marks the **worker** disconnected. It does **not** change the mission: a lost heartbeat is

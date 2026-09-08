@@ -464,8 +464,13 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * Shown whenever the current question has no answer yet — not merely when no assessment happens
    * to be in state. Those are different conditions, and conflating them is what let an old verdict
    * sit on screen while a new request was pending behind it.
+   *
+   * And while it is shown, the assessment panel is not. A pending or failed request beside a
+   * verdict from an earlier one reads as though the verdict is the answer to what was just asked,
+   * which is exactly the confusion this whole path exists to avoid. One state at a time, and the
+   * current one wins.
    */
-  const pendingThought = thinking && thinking.state !== 'ready' && !evaluation ? thinking : null;
+  const pendingThought = thinking && thinking.state !== 'ready' ? thinking : null;
 
   /**
    * Wait for the worker to finish thinking, and say so while it does.
@@ -1086,7 +1091,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
                     onRetry={(id) => void retryThinking(id)}
                   />
                 ) : null}
-                {evaluation ? <EvaluationBody evaluation={evaluation} /> : null}
+                {evaluation && !pendingThought ? <EvaluationBody evaluation={evaluation} /> : null}
                 {answer ? (
                   <AnswerPanel
                     answer={answer}
