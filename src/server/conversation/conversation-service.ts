@@ -575,7 +575,16 @@ export class ConversationService {
         type: 'code_change',
         projectId: provisioned.project.id,
         priority: 'medium',
-        constraints: [],
+        /*
+         * What Blake decided while we were settling the scope, carried into the mission.
+         *
+         * This was `[]`, and every answer he gave — the currency, the horizon, whether tax was in
+         * scope, how long an override lasts — was dropped at exactly the moment it started to
+         * matter. He answered the questions I asked and then watched something get built that did
+         * not honour them, which is the "it forgot what we agreed" failure arriving one step later
+         * than the last time.
+         */
+        constraints: [...brief.constraints],
         doNotTouch: [],
         /*
          * Stated, so the result card on the dashboard has something true to show.

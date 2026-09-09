@@ -692,6 +692,16 @@ export const conversationProposals = pgTable(
     projectId: uuid('project_id').references(() => projects.id, { onDelete: 'set null' }),
     missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
     repositoryFullName: text('repository_full_name'),
+    /**
+     * What Blake decided, in his own words. See `0025_proposal_answers`.
+     *
+     * Deliberately not folded into `assumptions` (what I took on trust) or `recommendedV1` (what I
+     * suggested). His decisions are the scope, and at "Go ahead" they are what separates building
+     * what he agreed to from building what I guessed.
+     */
+    answers: jsonb('answers').$type<string[]>().notNull().default([]),
+    /** When the scope was settled, so "is this final?" needs no reading between the lines. */
+    scopeLockedAt: timestamp('scope_locked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),

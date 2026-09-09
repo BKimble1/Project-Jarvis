@@ -39,6 +39,27 @@ export interface ProposalRepository {
    */
   recordEvaluation(id: string, evaluation: IdeaEvaluation, now: Date): Promise<Proposal | null>;
 
+  /**
+   * Add what Blake just decided, without accepting anything.
+   *
+   * ## Why appending rather than replacing
+   *
+   * Because he answers over several turns. "Use US dollars" arrives, then two minutes later "and
+   * an override lasts only the current week" — and a method that replaced the list would lose the
+   * first the moment he added the second. The record is a conversation, not a form.
+   *
+   * Duplicates are dropped case-insensitively, so saying the same thing twice — which people do
+   * when nothing appeared to happen — leaves one entry rather than two.
+   *
+   * Conditional on the proposal still being open, exactly as `recordEvaluation` is: a decision that
+   * arrives after "go ahead" must not quietly rewrite what was agreed to. Returns null when
+   * nothing was updated.
+   */
+  recordAnswers(
+    id: string,
+    input: { readonly answers: readonly string[]; readonly lockScope: boolean; readonly now: Date },
+  ): Promise<Proposal | null>;
+
   findById(id: string): Promise<Proposal | null>;
 
   /**

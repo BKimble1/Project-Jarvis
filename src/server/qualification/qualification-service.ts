@@ -97,6 +97,7 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   '0022_mission_lease.sql',
   '0023_reminders.sql',
   '0024_notifications_spoken.sql',
+  '0025_proposal_answers.sql',
 ];
 
 /** Settings keys this service owns. Named once so a typo cannot silently create a second key. */

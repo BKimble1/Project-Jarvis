@@ -41,6 +41,8 @@ function proposal(over: Partial<Proposal> = {}): Proposal {
     openQuestions: EVALUATION.questions,
     recommendedV1: EVALUATION.smallestV1,
     assumptions: EVALUATION.assumptions,
+    answers: [],
+    scopeLockedAt: null,
     state: 'open',
     projectId: null,
     missionId: null,

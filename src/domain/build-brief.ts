@@ -44,6 +44,22 @@ export interface BuildBrief {
   /** The description column: context an agent benefits from, kept apart from the instruction. */
   readonly description: string | null;
   /**
+   * What Blake decided, carried through to the mission as constraints.
+   *
+   * ## Why these are not folded into the acceptance criteria
+   *
+   * Because they are different kinds of statement and a builder needs both. An acceptance criterion
+   * says what the thing must *do* — "shows a weekly total". A constraint says what it must *not* do
+   * or must assume — "treat entered income as after-tax, so no tax feature in V1", "do not track
+   * rollover separately". Fold the second into the first and a builder reads "no tax feature" as a
+   * feature to build.
+   *
+   * They are also the answers to questions I asked, which makes them the most expensive thing in
+   * the exchange: Blake spent a turn on each. Losing them at the moment the mission is written is
+   * exactly the "it forgot what we agreed" failure, arriving one step later than last time.
+   */
+  readonly constraints: readonly string[];
+  /**
    * Whether a model actually judged this.
    *
    * False means the owner said go ahead before an assessment arrived, which is allowed — it just
@@ -54,6 +70,9 @@ export interface BuildBrief {
 
 /** The most acceptance criteria a brief carries. Beyond this it is a specification, not a V1. */
 const MAX_CRITERIA = 10;
+
+/** The most decisions a brief carries into a mission. A bound, not a target. */
+const MAX_CONSTRAINTS = 12;
 
 /** How every composed objective starts. Named once, so the repair path can recognise its own work. */
 const OBJECTIVE_OPENING = 'Build the first working version of';
@@ -70,14 +89,37 @@ export function buildBrief(proposal: Proposal): BuildBrief {
   const criteria = acceptanceCriteriaFor(proposal);
   const evaluation = proposal.evaluation?.basis === 'reasoned' ? proposal.evaluation : null;
 
+  const constraints = constraintsFor(proposal);
+
   return {
     name,
-    objective: objectiveFor(name, criteria, evaluation),
+    objective: objectiveFor(name, criteria, evaluation, constraints),
     goal: goalFor(name, evaluation),
     acceptanceCriteria: criteria,
     description: descriptionFor(name, evaluation),
+    constraints,
     assessed: evaluation !== null,
   };
+}
+
+/**
+ * The decisions Blake made, bounded and de-duplicated.
+ *
+ * Verbatim. A constraint that has been paraphrased is a different constraint, and the whole value
+ * of these is that they are the words he chose when he settled the scope.
+ */
+function constraintsFor(proposal: Proposal): readonly string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const answer of proposal.answers) {
+    const trimmed = answer.trim();
+    const key = trimmed.toLowerCase();
+    if (trimmed.length === 0 || seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+    if (out.length === MAX_CONSTRAINTS) break;
+  }
+  return out;
 }
 
 /**
@@ -116,6 +158,7 @@ function objectiveFor(
   name: string,
   criteria: readonly string[],
   evaluation: IdeaEvaluation | null,
+  constraints: readonly string[],
 ): string {
   const lines = [`${OBJECTIVE_OPENING} ${name}.`];
 
@@ -132,6 +175,16 @@ function objectiveFor(
       'No assessed scope was agreed, so keep the first version as small as it can be while still',
       'being worth using, and say in the plan what you decided to leave out.',
     );
+  }
+
+  if (constraints.length > 0) {
+    /*
+     * Placed after the criteria and labelled as decisions, so a builder reads "no tax feature in
+     * V1" as a boundary rather than as something to build. Quoted rather than summarised: these
+     * are the owner's words, and paraphrasing a constraint is how it stops binding.
+     */
+    lines.push('', 'The owner has already decided these, and they override anything above:');
+    for (const item of constraints) lines.push(`- ${item}`);
   }
 
   lines.push(

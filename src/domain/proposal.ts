@@ -97,6 +97,17 @@ export interface Proposal {
   readonly projectId: string | null;
   readonly missionId: string | null;
   readonly repositoryFullName: string | null;
+  /**
+   * What Blake decided, verbatim and in the order he said it.
+   *
+   * Distinct from `assumptions` (what I took on trust when nobody had said) and from
+   * `recommendedV1` (what I suggested). These are his, and they win over both: an assumption he
+   * has since answered is no longer an assumption, and a recommendation he has overruled is no
+   * longer the scope.
+   */
+  readonly answers: readonly string[];
+  /** When he settled the scope. Null while it is still open to change. */
+  readonly scopeLockedAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly acceptedAt: string | null;

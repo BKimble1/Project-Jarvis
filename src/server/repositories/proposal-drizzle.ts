@@ -1,5 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { ideaEvaluationSchema, type IdeaEvaluation, type Proposal } from '@/domain/proposal';
+import { boundText } from '@/domain/redaction';
 import type { Database } from '../db/client';
 import { conversationProposals } from '../db/schema';
 import type { ProposalRepository } from './proposal-types';
@@ -14,6 +15,14 @@ type Row = typeof conversationProposals.$inferSelect;
  * Checking the shape first keeps a bad id an ordinary miss.
  */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * How many decisions one proposal will hold.
+ *
+ * A bound rather than a limit anybody should reach: twenty answers is a scope that has stopped
+ * being a first version. It exists so that a loop somewhere else cannot grow a row without end.
+ */
+const MAX_ANSWERS = 20;
 
 function toProposal(row: Row): Proposal {
   /*
@@ -37,6 +46,8 @@ function toProposal(row: Row): Proposal {
     projectId: row.projectId,
     missionId: row.missionId,
     repositoryFullName: row.repositoryFullName,
+    answers: row.answers ?? [],
+    scopeLockedAt: row.scopeLockedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     acceptedAt: row.acceptedAt?.toISOString() ?? null,
@@ -135,6 +146,47 @@ export class DrizzleProposalRepository implements ProposalRepository {
         recommendedV1: [...evaluation.smallestV1],
         assumptions: [...evaluation.assumptions],
         updatedAt: now,
+      })
+      .where(and(eq(conversationProposals.id, id), eq(conversationProposals.state, 'open')))
+      .returning();
+    return row ? toProposal(row) : null;
+  }
+
+  async recordAnswers(
+    id: string,
+    input: { readonly answers: readonly string[]; readonly lockScope: boolean; readonly now: Date },
+  ): Promise<Proposal | null> {
+    if (!UUID.test(id)) return null;
+
+    /*
+     * Read, merge, write — rather than a single append in SQL.
+     *
+     * jsonb concatenation would append blindly, and the thing that has to be prevented is Blake
+     * saying the same decision twice because nothing looked like it happened. De-duplicating needs
+     * to see both lists, so it happens here. The write is still conditional on the proposal being
+     * open, which is the property that actually matters: a decision arriving after "go ahead" must
+     * not rewrite what was agreed to.
+     */
+    const existing = await this.findById(id);
+    if (!existing || existing.state !== 'open') return null;
+
+    const seen = new Set(existing.answers.map((answer) => answer.trim().toLowerCase()));
+    const merged = [...existing.answers];
+    for (const answer of input.answers) {
+      const trimmed = answer.trim();
+      const key = trimmed.toLowerCase();
+      if (trimmed.length === 0 || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(boundText(trimmed, 400));
+      if (merged.length >= MAX_ANSWERS) break;
+    }
+
+    const [row] = await this.db
+      .update(conversationProposals)
+      .set({
+        answers: merged,
+        ...(input.lockScope ? { scopeLockedAt: input.now } : {}),
+        updatedAt: input.now,
       })
       .where(and(eq(conversationProposals.id, id), eq(conversationProposals.state, 'open')))
       .returning();

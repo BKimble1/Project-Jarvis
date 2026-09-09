@@ -123,6 +123,9 @@ function harness(
         openQuestions: [...input.openQuestions],
         recommendedV1: [...input.recommendedV1],
         assumptions: [...input.assumptions],
+        /* `open` never touches decisions — as in the real table, they outlive a re-describe. */
+        answers: found?.answers ?? [],
+        scopeLockedAt: found?.scopeLockedAt ?? null,
         state: 'open',
         projectId: null,
         missionId: null,
@@ -144,6 +147,27 @@ function harness(
         recommendedV1: [...evaluation.smallestV1],
         assumptions: [...evaluation.assumptions],
         updatedAt: now.toISOString(),
+      };
+      proposalRows.set(id, next);
+      return next;
+    },
+    async recordAnswers(id, input) {
+      const row = proposalRows.get(id);
+      if (!row || row.state !== 'open') return null;
+      /* Appends and de-duplicates, exactly as the real table does. */
+      const seen = new Set(row.answers.map((answer) => answer.trim().toLowerCase()));
+      const merged = [...row.answers];
+      for (const answer of input.answers) {
+        const trimmed = answer.trim();
+        if (trimmed.length === 0 || seen.has(trimmed.toLowerCase())) continue;
+        seen.add(trimmed.toLowerCase());
+        merged.push(trimmed);
+      }
+      const next: Proposal = {
+        ...row,
+        answers: merged,
+        scopeLockedAt: input.lockScope ? input.now.toISOString() : row.scopeLockedAt,
+        updatedAt: input.now.toISOString(),
       };
       proposalRows.set(id, next);
       return next;
