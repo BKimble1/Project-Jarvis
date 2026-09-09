@@ -195,7 +195,7 @@ export function assertModeChange(
 ): ModeTransition {
   const transition = findModeTransition(from, to);
   if (!transition) {
-    throw new ConflictError(`Jarvis cannot go from ${from} to ${to}.`, {
+    throw new ConflictError(`I cannot go from ${from} to ${to}.`, {
       from,
       to,
       allowed: allowedModeChanges(from, actor),
@@ -204,8 +204,8 @@ export function assertModeChange(
   if (!transition.actors.includes(actor)) {
     throw new ConflictError(
       transition.widens
-        ? `Only you can grant Jarvis more autonomy. Going from ${from} to ${to} needs a signed-in owner.`
-        : `A ${actor} cannot move Jarvis from ${from} to ${to}.`,
+        ? `Only you can grant me more autonomy. Going from ${from} to ${to} needs a signed-in owner.`
+        : `A ${actor} cannot move me from ${from} to ${to}.`,
       { from, to, actor },
     );
   }

@@ -37,14 +37,18 @@ test.describe('the Jarvis screen', () => {
     await page.goto('/dashboard');
 
     /*
-     * One word for what Jarvis is doing with itself. No worker is enrolled in this suite and the
-     * loop has never run, so the honest answer is "Blocked" — a screen that said Supervised here
-     * would be reporting a setting while hiding the reason nothing is happening.
+     * One word for what Jarvis is doing with itself.
+     *
+     * This suite runs a fresh install, so the mode is `off` — and the owner's own choice outranks
+     * every consequence of it. Reporting "Blocked" here because no worker is enrolled would be true
+     * and useless: of course nothing is running, it has not been switched on. `off`, `paused` and
+     * the emergency stop all read as Paused, which is the honest word for "it will not begin
+     * anything, and you are the reason".
      */
     const posture = page.getByTestId('jx-posture');
     await expect(posture).toBeVisible();
-    await expect(posture).toHaveAttribute('data-posture', 'blocked');
-    await expect(posture).toContainText('Blocked');
+    await expect(posture).toHaveAttribute('data-posture', 'paused');
+    await expect(posture).toContainText('Paused');
 
     /*
      * And the reason, on request rather than permanently — a pause somebody cannot account for is
@@ -53,7 +57,7 @@ test.describe('the Jarvis screen', () => {
     await page
       .getByRole('button', { name: /No worker|All clear|Loop|Holding back|Paused/ })
       .click();
-    await expect(page.getByTestId('jx-posture-reason')).toContainText(/worker|loop|connect/i);
+    await expect(page.getByTestId('jx-posture-reason')).toContainText(/will not begin anything/i);
   });
 
   test('keeps the whole of Jarvis reachable from the screen that replaced the dashboard', async ({

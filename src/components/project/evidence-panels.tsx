@@ -126,8 +126,8 @@ export function RepositoryPanels({
           <CardContent className="pt-0">
             {unavailable.length > 0 ? (
               <p className="rounded-lg bg-[var(--color-caution-soft)] px-3 py-2 text-xs text-[var(--color-caution-text)]">
-                Jarvis could not read: {unavailable.join(', ')}. Those sections are unknown rather
-                than empty.
+                I could not read: {unavailable.join(', ')}. Those sections are unknown rather than
+                empty.
               </p>
             ) : null}
             {source.lastSyncError ? (
@@ -145,7 +145,7 @@ export function RepositoryPanels({
             items={workflows}
             empty={
               unavailable.includes('workflow_runs')
-                ? 'Jarvis could not read workflow runs with this credential.'
+                ? 'I could not read workflow runs with this credential.'
                 : 'No workflow runs found. Build health is unknown.'
             }
             renderMeta={(item) => (
@@ -203,7 +203,7 @@ export function RepositoryPanels({
             items={issues}
             empty={
               unavailable.includes('issues')
-                ? 'Jarvis could not read issues with this credential.'
+                ? 'I could not read issues with this credential.'
                 : 'No issues recorded.'
             }
             renderMeta={(item) => (
@@ -296,7 +296,7 @@ export function NoRepositoryPanel() {
   return (
     <EmptyState
       title="This project has no repository"
-      description="Jarvis tracks it entirely from what you record: goals, milestones, blockers, decisions, updates and next actions. Repository panels are hidden because there is nothing to show, not because something failed."
+      description="I track it entirely from what you record: goals, milestones, blockers, decisions, updates and next actions. Repository panels are hidden because there is nothing to show, not because something failed."
     />
   );
 }

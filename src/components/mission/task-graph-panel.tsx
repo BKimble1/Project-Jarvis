@@ -99,9 +99,9 @@ export function TaskGraphPanel({
         {!view ? (
           <>
             <p className="text-sm text-[var(--color-text-muted)]">
-              Jarvis has an approved plan. Next it proposes the agents that would carry it out —
-              what each one does, what it may read, and where it may write. Nothing starts until you
-              approve that.
+              I have an approved plan. Next I propose the agents that would carry it out — what each
+              one does, what it may read, and where it may write. Nothing starts until you approve
+              that.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <label htmlFor="playbook" className="text-xs text-[var(--color-text-subtle)]">
@@ -174,7 +174,7 @@ export function TaskGraphPanel({
             <p className="text-xs text-[var(--color-text-muted)]">
               Up to {view.graph.maxRepairRounds} repair round
               {view.graph.maxRepairRounds === 1 ? '' : 's'} if review finds something blocking.
-              After that Jarvis stops and asks you rather than trying again.
+              After that I stop and ask you rather than trying again.
             </p>
 
             {!approved ? (

@@ -1,5 +1,10 @@
 import { and, desc, eq } from 'drizzle-orm';
-import { ideaEvaluationSchema, type IdeaEvaluation, type Proposal } from '@/domain/proposal';
+import {
+  ideaEvaluationSchema,
+  MAX_PROPOSAL_ANSWERS,
+  type IdeaEvaluation,
+  type Proposal,
+} from '@/domain/proposal';
 import { boundText } from '@/domain/redaction';
 import type { Database } from '../db/client';
 import { conversationProposals } from '../db/schema';
@@ -15,14 +20,6 @@ type Row = typeof conversationProposals.$inferSelect;
  * Checking the shape first keeps a bad id an ordinary miss.
  */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * How many decisions one proposal will hold.
- *
- * A bound rather than a limit anybody should reach: twenty answers is a scope that has stopped
- * being a first version. It exists so that a loop somewhere else cannot grow a row without end.
- */
-const MAX_ANSWERS = 20;
 
 function toProposal(row: Row): Proposal {
   /*
@@ -178,7 +175,7 @@ export class DrizzleProposalRepository implements ProposalRepository {
       if (trimmed.length === 0 || seen.has(key)) continue;
       seen.add(key);
       merged.push(boundText(trimmed, 400));
-      if (merged.length >= MAX_ANSWERS) break;
+      if (merged.length >= MAX_PROPOSAL_ANSWERS) break;
     }
 
     const [row] = await this.db

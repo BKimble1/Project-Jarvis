@@ -182,8 +182,8 @@ export function MissionLive({ initial }: { initial: MissionLiveData }) {
           <PlugZap className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
             This mission shows as {MISSION_STATE_LABELS[mission.state].toLowerCase()}, but its
-            worker has stopped reporting. Jarvis has not marked it complete or failed — the
-            workspace and any branch are untouched.
+            worker has stopped reporting. I have not marked it complete or failed — the workspace
+            and any branch are untouched.
           </span>
         </p>
       ) : null}
@@ -508,8 +508,8 @@ export function PermissionCard({
     <Card className="border-[var(--color-critical)]/40">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-sm">
-          <ShieldQuestion className="h-4 w-4 text-[var(--color-critical-text)]" aria-hidden />
-          Jarvis needs your decision
+          <ShieldQuestion className="h-4 w-4 text-[var(--color-critical-text)]" aria-hidden />I need
+          your decision
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 pt-0">
@@ -588,7 +588,7 @@ export function PermissionCard({
           </Button>
         </div>
         <p className="text-xs text-[var(--color-text-subtle)]">
-          This applies to this request only. Never paste a credential here — Jarvis never needs one.
+          This applies to this request only. Never paste a credential here — I never need one.
         </p>
       </CardContent>
     </Card>

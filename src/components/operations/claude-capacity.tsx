@@ -63,7 +63,7 @@ export function ClaudeCapacity({ view }: { view: CapacityView }) {
         ) : (
           <p className="text-sm text-[var(--color-text-muted)]">
             {view.authModeLabel === 'Not yet established'
-              ? 'No worker has reported which Claude credential it uses yet, so Jarvis is not applying subscription limits it may not have.'
+              ? 'No worker has reported which Claude credential it uses yet, so I am not applying subscription limits I may not have.'
               : `Model work runs on ${view.authModeLabel.toLowerCase()}, which has no shared five-hour or weekly window. Spending limits apply instead.`}
           </p>
         )}
@@ -91,8 +91,8 @@ export function ClaudeCapacity({ view }: { view: CapacityView }) {
           {view.reportingWorkers === 0
             ? 'No worker has managed to read capacity yet.'
             : `Reported by ${view.reportingWorkers} worker${view.reportingWorkers === 1 ? '' : 's'}.`}{' '}
-          These are account-wide percentages shared across every machine you are signed in on.
-          Jarvis cannot see a token allowance, because Anthropic does not publish one.
+          These are account-wide percentages shared across every machine you are signed in on. I
+          cannot see a token allowance, because Anthropic does not publish one.
         </p>
       </CardContent>
     </Card>

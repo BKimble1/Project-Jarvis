@@ -1,4 +1,4 @@
-import type { IdeaEvaluation, Proposal } from './proposal';
+import { MAX_PROPOSAL_ANSWERS, type IdeaEvaluation, type Proposal } from './proposal';
 
 /**
  * What "go ahead" actually asks for.
@@ -71,8 +71,17 @@ export interface BuildBrief {
 /** The most acceptance criteria a brief carries. Beyond this it is a specification, not a V1. */
 const MAX_CRITERIA = 10;
 
-/** The most decisions a brief carries into a mission. A bound, not a target. */
-const MAX_CONSTRAINTS = 12;
+/**
+ * The most decisions a brief carries into a mission.
+ *
+ * Must not be lower than the number a proposal will *store* — `MAX_PROPOSAL_ANSWERS`. It was (12
+ * against 20), which meant a long enough conversation could record decisions that were silently
+ * never handed to the builder: recorded, visible on the proposal, and absent from the work. That is
+ * "it forgot what we agreed" again, one layer deeper and harder to see than the last two times.
+ *
+ * Tied to the same constant so the two cannot drift apart again.
+ */
+const MAX_CONSTRAINTS = MAX_PROPOSAL_ANSWERS;
 
 /** How every composed objective starts. Named once, so the repair path can recognise its own work. */
 const OBJECTIVE_OPENING = 'Build the first working version of';

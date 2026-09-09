@@ -224,8 +224,8 @@ export function authorize(
           entry.capability,
           'R-AU1',
           canPropose
-            ? 'Jarvis is supervised, so every mission waits for you.'
-            : `Jarvis is ${context.mode.replace('_', ' ')} and is not starting work.`,
+            ? 'Supervised mode is on, so every mission waits for you.'
+            : `I am ${context.mode.replace('_', ' ')} and am not starting work.`,
           canPropose
             ? 'Turn on Operator mode to let the charter stand in for this approval.'
             : null,
@@ -233,8 +233,8 @@ export function authorize(
         ),
       ),
       summary: canPropose
-        ? 'Waiting for you: Jarvis is supervised rather than operating.'
-        : `Refused: Jarvis is ${context.mode.replace('_', ' ')}.`,
+        ? 'Waiting for you: supervised mode is on rather than operator mode.'
+        : `Refused: I am ${context.mode.replace('_', ' ')}.`,
     };
   }
 
@@ -338,7 +338,7 @@ function judge(
 ): CapabilityVerdict {
   /* R-AU8 — an unknown capability is a refusal. It is never resolved by resemblance. */
   if (!isCapabilityClass(entry.capability)) {
-    return deny(entry.capability, 'R-AU8', 'That is not a capability Jarvis has.', null, false);
+    return deny(entry.capability, 'R-AU8', 'That is not a capability I have.', null, false);
   }
   const definition = CAPABILITY_BY_CLASS[entry.capability];
 
@@ -497,15 +497,14 @@ function checkLimits(
      */
     if (spend === null) {
       return {
-        reason:
-          'Jarvis cannot read what it has spent recently, and your charter sets a spending limit',
+        reason: 'I cannot read what I have spent recently, and your charter sets a spending limit',
         remedy: 'Approve it once, or remove the spending limit until spending can be measured.',
       };
     }
     if (!spend.measurable) {
       return {
         reason:
-          'too much recent work has no cost attached for Jarvis to trust its own spending total, and your charter sets a limit',
+          'too much recent work has no cost attached for me to trust my own spending total, and your charter sets a limit',
         remedy: 'Approve it once, or remove the spending limit until costs are being reported.',
       };
     }
@@ -524,7 +523,7 @@ function checkLimits(
      */
     if (already >= limit) {
       return {
-        reason: `Jarvis has already spent $${already.toFixed(2)} ${period}, at or over your $${limit.toFixed(2)} ${label} limit`,
+        reason: `I have already spent $${already.toFixed(2)} ${period}, at or over your $${limit.toFixed(2)} ${label} limit`,
         remedy: `Approve it once, or raise the ${label} limit.`,
       };
     }

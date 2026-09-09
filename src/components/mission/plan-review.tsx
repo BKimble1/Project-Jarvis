@@ -68,8 +68,8 @@ export function PlanReview({
         </CardHeader>
         <CardContent>
           <p className="text-sm text-[var(--color-text-muted)]">
-            Jarvis plans before it does anything. Ask it to plan this mission and it will inspect
-            the repository read-only first.
+            I plan before I do anything. Ask me to plan this mission and I will inspect the
+            repository read-only first.
           </p>
           <Button
             className="mt-3"

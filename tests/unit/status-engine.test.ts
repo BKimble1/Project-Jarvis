@@ -721,7 +721,7 @@ describe('recommended actions', () => {
     expect(actionRules(assessment)).toEqual(['R-RC10-missing-goal']);
     expect(assessment.recommendedActions[0]?.action).toBe('Write down the goal for this project.');
     expect(assessment.recommendedActions[0]?.rationale).toBe(
-      'Jarvis has no recorded goal, so it cannot judge progress.',
+      'I have no recorded goal, so I cannot judge progress.',
     );
     expect(assessment.recommendedActions[0]?.provenance).toBe('unknown');
   });
@@ -810,7 +810,7 @@ describe('headlines', () => {
 
     expect(assessment.headline.rule).toBe('R-HL11-active-without-evidence');
     expect(assessment.headline.text).toBe(
-      'AUR is active, but Jarvis has no evidence of work in progress.',
+      'AUR is active, but I have no evidence of work in progress.',
     );
     expect(assessment.headline.provenance).toBe('unknown');
   });
@@ -827,7 +827,7 @@ describe('unknowns (R-UK1..R-UK5)', () => {
     const assessment = assess(aggregate);
 
     expect(assessment.unknowns).toEqual([
-      'No goal has been recorded, so Jarvis cannot judge whether the project is on track.',
+      'No goal has been recorded, so I cannot judge whether the project is on track.',
       'No phase has been recorded.',
       'The project status has not been set and no evidence implies one.',
     ]);
@@ -861,7 +861,7 @@ describe('unknowns (R-UK1..R-UK5)', () => {
     });
 
     expect(assess(aggregate, [makeWorkflowRun('success')]).unknowns).toContain(
-      'Jarvis could not read workflow_runs, releases for owner/aurora.',
+      'I could not read workflow_runs, releases for owner/aurora.',
     );
   });
 });

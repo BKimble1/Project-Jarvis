@@ -69,12 +69,86 @@ export const INTERPRETATION_KINDS = [
   'command',
   /** Something to keep. */
   'memory',
+  /**
+   * A constraint on what happens next, and nothing else.
+   *
+   * "Do not build it yet." on its own. It is not a cancellation — everything standing is still
+   * standing, and he has told me what not to do with it — and it is not a question, which is where
+   * it used to end up once the gate that called it a refusal was removed. Answering it from the
+   * query router would have been a second wrong answer to replace the first.
+   */
+  'acknowledge',
+  /**
+   * Settling the scope of something already standing — answering its questions, locking its V1.
+   *
+   * A separate kind rather than a flavour of `idea`, because the two do opposite things to the
+   * record: an idea *opens* a proposal (and `open` rewrites its title, idea and summary), while a
+   * refinement *adds to* one. Routing a refinement through the idea path would rename the project
+   * after the answers — "Use US dollars" would become the idea, and `deriveProjectName` would take
+   * it from there.
+   */
+  'refine',
   /** "No", "not tonight". Nothing happens, and nothing is recorded as dismissed. */
   'decline',
   /** Refused whatever else it looks like. */
   'prohibited',
 ] as const;
 export type InterpretationKind = (typeof INTERPRETATION_KINDS)[number];
+
+/**
+ * What the message asks me to do — with my mind, not with my hands.
+ *
+ * ## Why this is a second field rather than more kinds
+ *
+ * Because `kind` was carrying two different questions at once, and when they disagreed the wrong
+ * one won. Blake wrote:
+ *
+ *     "Use US dollars. Look ahead until my next known income date, with six weeks as the fallback.
+ *      Treat entered income as after-tax, so no tax feature in V1. An override lasts only for the
+ *      current week. Do not track rollover separately; recalculate from the current balance each
+ *      week. I will re-enter my bank balance weekly, so remove expense tracking. Lock this as the
+ *      final V1, but do not build it yet."
+ *
+ * and got back "Nothing, then." Six decisions and a request to settle the scope, discarded — because
+ * the message also said not to build, and one field cannot hold both "settle the scope" and "build
+ * nothing" without one of them silently overwriting the other.
+ *
+ * So the two questions now have two answers. **This** is what he asked for. `noBuildYet` is what he
+ * forbade as a consequence. They are computed independently, they never overwrite each other, and
+ * a message can perfectly well say "refine it and build nothing", which is the ordinary case rather
+ * than a contradiction.
+ *
+ * ## Why `cancel` is so narrow
+ *
+ * Because it is the only action that throws work away, and it used to be reachable by accident.
+ * "Do not build it yet" is a constraint on the next step, not a withdrawal of the conversation, and
+ * treating it as one lost everything Blake had just decided. A cancellation now has to be the
+ * *whole* message — see `standaloneCancellation`.
+ */
+export const REQUESTED_ACTIONS = [
+  /** Judge an idea: is it worth building, and what is the smallest version worth having. */
+  'evaluate',
+  /** Settle the scope of something that already exists: answer its questions, lock its V1. */
+  'refine',
+  /** Do the work. */
+  'build',
+  /** Answer a question about state. Changes nothing. */
+  'answer',
+  /** Keep something. */
+  'remember',
+  /** Pause, stop, resume, or change pace. About work that already exists. */
+  'control',
+  /** Throw it away. Only ever from a message that is nothing but a dismissal. */
+  'cancel',
+  /**
+   * Nothing was asked.
+   *
+   * A bare constraint — "Do not build it yet." on its own — lands here. It is deliberately not
+   * `cancel`: he told me what not to do next, and everything standing is still standing.
+   */
+  'none',
+] as const;
+export type RequestedAction = (typeof REQUESTED_ACTIONS)[number];
 
 export const OWNER_COMMANDS = ['pause', 'resume', 'stop', 'retry', 'cancel', 'pace'] as const;
 export type OwnerCommand = (typeof OWNER_COMMANDS)[number];
@@ -110,6 +184,13 @@ export const EMPTY_CONTEXT: ConversationContext = {
 
 export interface Interpretation {
   readonly kind: InterpretationKind;
+  /**
+   * What the message asks me to *do*, independently of what it forbids.
+   *
+   * Read this rather than inferring intent from `kind` and `noBuildYet` together — inferring it is
+   * what produced "Nothing, then." in reply to six decisions. See `REQUESTED_ACTIONS`.
+   */
+  readonly action: RequestedAction;
   readonly raw: string;
   /** One line, in Jarvis's own words, of what it took this to mean. Always shown or logged. */
   readonly understanding: string;
@@ -171,8 +252,66 @@ const normalise = (value: string): string =>
 const NEGATED_WORK =
   /\b(?:do ?n(?:o|')t|dont|never|no need to|hold off|not yet|don ?t|rather not|no rush to)\b[^.!?]*\b(?:build\w*|make|making|start\w*|creat\w*|implement\w*|writ\w*|cod\w*|ship\w*|deploy\w*|do it|anything)\b|\b(?:build|make|start|create|implement)\w*\b[^.!?]*\bnot yet\b/;
 
-/** A flat no. Nothing happens, and nothing is written down as dismissed. */
-const DECLINE = /^(?:no|nope|not tonight|not now|later|leave it|never mind|nevermind|skip it)\b/;
+/**
+ * A dismissal, and the words people wrap one in.
+ *
+ * Split from the cancellation *test* on purpose. Matching one of these means the message contains a
+ * dismissal; it does not mean the message *is* one. "No, use dollars instead" opens with a
+ * dismissal and is a decision — see `standaloneCancellation`.
+ */
+const DISMISSAL =
+  /\b(?:no|nope|not tonight|not now|later|leave it|never ?mind|skip it|forget it|drop it|scrap (?:it|that|this)|dismiss (?:it|that|this)|cancel (?:it|that|this)|bin it|call it off)\b/g;
+
+/**
+ * Filler that survives a dismissal and means nothing on its own.
+ *
+ * "Never mind, dismiss it." leaves ", ." once both dismissals are removed, and "no thanks, forget
+ * it for now" leaves "thanks for now". Neither is a request. Stripping these is what lets the test
+ * below be "is there anything else in this message?" rather than a list of exact phrasings.
+ */
+const CANCELLATION_FILLER =
+  /\b(?:please|thanks|thank you|for now|for the moment|actually|just|then|ok(?:ay)?|well|and|it|that|this|the|a|an|i|we|do|don'?t|dont|let'?s|about|of|to|on|too|either)\b/g;
+
+/**
+ * Is this message a cancellation and *nothing else*?
+ *
+ * ## Why the test is subtractive
+ *
+ * Because the previous test was "does it start with a dismissal word", and that is a test for the
+ * first word rather than for the message. It let "No, use dollars instead" throw away a decision,
+ * and — through a second gate that has now gone — it let a message containing six decisions and a
+ * request to lock the scope be answered with "Nothing, then."
+ *
+ * So: remove the dismissals, remove the filler, remove the punctuation, and look at what is left.
+ * If anything substantive remains, the message is not a cancellation; it is a request that happens
+ * to open with "no". This fails in the safe direction — an elaborate dismissal is read as a request
+ * and answered, which wastes a sentence, where the opposite silently discards work.
+ */
+export function standaloneCancellation(raw: string): boolean {
+  const text = normalise(raw);
+  if (!DISMISSAL.test(text)) {
+    DISMISSAL.lastIndex = 0;
+    return false;
+  }
+  DISMISSAL.lastIndex = 0;
+
+  const remainder = text
+    .replace(DISMISSAL, ' ')
+    .replace(CANCELLATION_FILLER, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  DISMISSAL.lastIndex = 0;
+  CANCELLATION_FILLER.lastIndex = 0;
+  return remainder.length === 0;
+}
+
+/*
+ * `DECLINE` used to live here: /^(?:no|nope|not tonight|…)/ — anchored to the first word.
+ *
+ * That is a test for how a message *opens*, not for what it is, and it let "No, use dollars
+ * instead" throw away a decision. `standaloneCancellation` above replaces it by asking whether
+ * anything survives once the dismissal is removed.
+ */
 
 /** Affirmatives that only mean something next to a proposal. */
 const AFFIRM =
@@ -267,6 +406,114 @@ const IDEA =
   /\b(?:i(?:'ve| have)? (?:an |a )?idea|thinking (?:about|of)|what do you think(?: about| of)?|is (?:this|that|it) worth|should i (?:build|make|do)|does (?:this|that|it) (?:idea )?make sense|would (?:this|that|it) work|is (?:there|this) a market|worth building|good idea|bad idea|sanity check)\b/;
 
 /**
+ * The words a build prohibition is made of, and the filler around them.
+ *
+ * Used only by `onlyForbidsBuilding`. Kept beside it rather than reusing `NEGATED_WORK`, because
+ * that pattern answers "does this forbid building?" and this one answers the different question
+ * "is forbidding building *all* this does?" — and conflating those two is the entire bug this file
+ * has now been bitten by twice.
+ */
+const PROHIBITION_WORDS =
+  /\b(?:do ?n(?:o|')t|dont|don ?t|never|no need to|hold off(?: on)?|not yet|rather not|no rush to|for now|just|please|yet|anything|it|that|this|the|a|an|i|we|to|on|any|but|and|ok(?:ay)?|thanks|thank you|build\w*|make|making|start\w*|creat\w*|implement\w*|writ\w*|cod\w*|ship\w*|deploy\w*|do it|work on|touch)\b/g;
+
+/**
+ * Is forbidding the build the whole of this message?
+ *
+ * ## Why this exists at all
+ *
+ * Because the old gate answered it with "he forbade building, and I could not find a question
+ * word", and Blake answers questions with statements. Six decisions and a request to lock the scope
+ * came back as "Nothing, then."
+ *
+ * Subtractive instead: take out the prohibition and the words that hold one together, and see
+ * whether anything is left. "Do not build it yet." leaves nothing. "Lock this as the final V1, but
+ * do not build it yet." leaves "lock final v1", which is a request. Failing in this direction costs
+ * a sentence; failing in the other direction discards the work.
+ */
+export function onlyForbidsBuilding(raw: string): boolean {
+  /*
+   * There has to *be* a prohibition first.
+   *
+   * Without this the subtraction alone answers true for "ok", "please" and "thanks" — every word
+   * of which is filler — so the function's name would be a lie anywhere but its one call site,
+   * where a `noBuildYet &&` happens to cover for it. A predicate that is only correct because of
+   * its caller is one the next caller gets wrong.
+   */
+  if (!NEGATED_WORK.test(raw.toLowerCase().replace(/\s+/g, ' ').trim())) return false;
+
+  const remainder = normalise(raw)
+    .replace(PROHIBITION_WORDS, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  PROHIBITION_WORDS.lastIndex = 0;
+  return remainder.length === 0;
+}
+
+/**
+ * Settling the scope of something that already exists.
+ *
+ * ## What this is for
+ *
+ * I describe an idea back to Blake with a few open questions, and he answers them — usually all at
+ * once, in one message, as statements rather than as replies to a list:
+ *
+ *     "Use US dollars. Look ahead until my next known income date, with six weeks as the fallback.
+ *      Treat entered income as after-tax, so no tax feature in V1 … Lock this as the final V1, but
+ *      do not build it yet."
+ *
+ * Nothing in that asks a question, so every "is he asking for something?" test misses it. Nothing
+ * in it names a product, so it is not a new idea. It contains a work verb ("remove expense
+ * tracking") that is about the *scope* rather than an instruction to go and do it. It is a message
+ * that only makes sense as an answer to something, and that is exactly what makes it recognisable.
+ *
+ * ## Why a standing proposal is required
+ *
+ * Because refining is transitive and these sentences do not say what they are about. "Use US
+ * dollars" refines something; with nothing standing it is a fragment, and the honest response is to
+ * ask rather than to guess which of his projects he meant. So this returns false with no proposal,
+ * and the message falls through to the ordinary readings — which answer it or ask what it refers
+ * to. That is the safe direction: the cost of missing a refinement is one clarifying question, and
+ * the cost of inventing one is editing the scope of a project he was not talking about.
+ *
+ * ## Why the vocabulary is deliberately broad
+ *
+ * Because it is only ever consulted when a proposal is already standing and the message has already
+ * failed to be an acceptance, a dismissal, a command, a memory or a new idea. At that point the
+ * prior is overwhelming that he is answering me. The words below are a floor — evidence that the
+ * message states something rather than merely acknowledging — not a lock.
+ */
+const SETTLES_SCOPE =
+  /\b(?:refine|revise|adjust|tweak|amend|narrow|tighten|change (?:this|it|that|the)|update (?:this|it|that|the)|lock (?:this|it|that|the)|final(?:i[sz]e|ise|ize)?|that'?s (?:the|it)|settled|agreed|confirm(?:ed)?)\b/;
+
+const STATES_A_DECISION =
+  /\b(?:use|using|treat|assume|include|exclude|remove|drop|skip|omit|keep|add|prefer|default|instead|rather than|only|no |not? \w+ (?:feature|tracking|support)|lasts?|expires?|fallback|fall back|each|per |weekly|monthly|daily|in v1|for v1|version 1)\b/;
+
+/**
+ * Does this message settle or change the scope of something standing?
+ *
+ * `hasProposal` is passed in rather than read from a module-level context so that the function
+ * stays pure and the caller's snapshot is the only source of "what was on screen".
+ */
+export function refinesStandingWork(raw: string, hasProposal: boolean): boolean {
+  if (!hasProposal) return false;
+
+  /*
+   * An instruction to go and do something is not an answer about scope, even while a proposal is
+   * standing. "Audit Holograph read-only." and "Add a settings screen." are work; recording them as
+   * decisions about an unrelated idea would be this module's founding bug wearing a new hat — a
+   * rule reading words out of a sentence that was about something else.
+   *
+   * `punctuated` because `IMPERATIVE_WORK` is position-sensitive: it looks for a work verb at the
+   * start of a clause, which is what tells an instruction apart from a mention.
+   */
+  const punctuated = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (IMPERATIVE_WORK.test(punctuated)) return false;
+
+  const text = normalise(raw);
+  return SETTLES_SCOPE.test(text) || STATES_A_DECISION.test(text);
+}
+
+/**
  * Asking Jarvis to *think*, rather than to do.
  *
  * The second sentence Blake typed — "Evaluate the QuickPick idea we just discussed. Tell me who
@@ -282,15 +529,17 @@ const IDEA =
 const ADVICE =
   /\b(?:evaluate|evaluation|assess|assessment|critique|appraise|advise|advice|weigh in|your (?:opinion|take|thoughts|view)|pros and cons|tell me (?:who|what|whether|if|why|how)|who would use|whether it (?:solves|works|matters)|is it worth|talk (?:me )?through|help me (?:think|decide|weigh)|let'?s (?:talk|discuss|think))\b/;
 
-/**
- * A request for something — anything at all.
+/*
+ * `ASKS_FOR_SOMETHING` used to live here.
  *
- * Used for exactly one decision: whether a message that forbids building is *only* a refusal.
- * "Don't build it yet." asks for nothing and is a decline. "Is this worth building? … Do not build
- * it yet." asks for a great deal and is not.
+ * It answered "did this message also ask for something?" with a list of question words, and it was
+ * consulted by one caller: the gate that decided a message forbidding the build was a refusal of
+ * everything. Blake answers questions with statements, so it found nothing in six decisions and a
+ * request to lock the scope, and the reply was "Nothing, then."
+ *
+ * The gate is gone and so is the pattern. What replaced it is not a better word list — it is the
+ * `action` field, which says what was asked for without having to infer it from what was forbidden.
  */
-const ASKS_FOR_SOMETHING =
-  /\?|\b(?:tell me|show me|give me|give your|explain|describe|list|suggest|recommend|what|which|who|why|how|when|where|whether|should|would|could|can you|talk about|discuss|think about|advise|evaluat\w*|assess\w*|review|reaction|opinions?|thoughts?|verdict|feedback|worth|(?:take|have) a look|look at|questions?)\b/;
 
 /*
  * Word *stems*, not whole words, for the ones people inflect.
@@ -431,12 +680,40 @@ const QUESTION_PATTERNS: readonly RegExp[] = [
 
 /* ------------------------------------------------------------------ the interpreter */
 
+/**
+ * What each kind means when nobody says otherwise.
+ *
+ * A table rather than a chain of conditionals, so adding a kind is a visible decision about what it
+ * is asking for rather than a silent fall-through to "nothing".
+ */
+const DEFAULT_ACTION_FOR_KIND: Record<InterpretationKind, RequestedAction> = {
+  work: 'build',
+  question: 'answer',
+  idea: 'evaluate',
+  follow_up: 'none',
+  command: 'control',
+  memory: 'remember',
+  acknowledge: 'none',
+  refine: 'refine',
+  decline: 'cancel',
+  prohibited: 'none',
+};
+
 function build(
   raw: string,
   overrides: Partial<Interpretation> & { kind: InterpretationKind },
 ): Interpretation {
   return {
     raw,
+    /*
+     * Derived from the kind unless the caller states it.
+     *
+     * Every branch below that has an opinion sets `action` explicitly; this default exists so that
+     * a branch which has not thought about it cannot silently claim `none`. The mapping is the
+     * obvious one, and `refine` is deliberately absent from it — refining is never a fallback, it
+     * is always a decision some branch made on purpose.
+     */
+    action: DEFAULT_ACTION_FOR_KIND[overrides.kind],
     understanding: '',
     subject: null,
     missionType: null,
@@ -508,20 +785,58 @@ export function interpretMessage(
   const finish = (over: Partial<Interpretation> & { kind: InterpretationKind }): Interpretation =>
     build(raw, { noBuildYet, ...over });
 
-  if (DECLINE.test(text)) {
-    return finish({ kind: 'decline', understanding: 'Nothing, then.' });
+  /*
+   * A cancellation, and nothing else.
+   *
+   * The only path that throws work away, so the test is the whole message rather than its first
+   * word — see `standaloneCancellation`. "Never mind, dismiss it." lands here. "No, use dollars
+   * instead" does not, and neither does anything that merely forbids building.
+   */
+  if (standaloneCancellation(raw)) {
+    return finish({ kind: 'decline', action: 'cancel', understanding: 'Nothing, then.' });
   }
 
   /*
-   * A refusal and nothing else. "Don't build it yet." asks for nothing, so there is nothing to do;
-   * a message that also asks a question, requests an evaluation, or proposes a discussion is not a
-   * refusal of *that*, however firmly it forbids building.
+   * ---------------------------------------------------------------------------------------------
+   * There used to be a second gate here, and it is worth saying what it did before saying what
+   * replaced it, because the shape of the mistake is more useful than the fix.
+   *
+   *     if (noBuildYet && !ASKS_FOR_SOMETHING.test(text)) return decline
+   *
+   * The intent was "a refusal and nothing else". The implementation was "he forbade building, and
+   * I could not find a question word" — and those are only the same sentence when people ask for
+   * things by asking questions. Blake answered mine with statements:
+   *
+   *     "Use US dollars. Look ahead until my next known income date … Lock this as the final V1,
+   *      but do not build it yet."
+   *
+   * Six decisions and a request to settle the scope. No question word anywhere, so the gate read
+   * the whole message as a refusal and replied "Nothing, then." The constraint had eaten the
+   * request, which is what happens whenever one field carries two questions.
+   *
+   * Nothing replaces it. `noBuildYet` is computed above and travels on whatever the message turns
+   * out to be; a message that genuinely asks for nothing now lands on its own reading below with
+   * `action: 'none'`, which suppresses building without discarding anything. The classification and
+   * the constraint are two answers to two questions, and neither is allowed to overwrite the other.
+   * ---------------------------------------------------------------------------------------------
    */
-  if (noBuildYet && !ASKS_FOR_SOMETHING.test(text)) {
+
+  /*
+   * Nothing but a constraint.
+   *
+   * Subtractive, exactly as the cancellation test is, and for the same reason: "is there anything
+   * else in this message?" is the question, and a list of exact phrasings is not that question.
+   * With something standing this is an acknowledgement that keeps it; with nothing standing it is
+   * the same acknowledgement about nothing in particular, which is still better than answering a
+   * question he did not ask.
+   */
+  if (noBuildYet && onlyForbidsBuilding(raw)) {
     return finish({
-      kind: 'decline',
-      noBuildYet: true,
-      understanding: 'Understood — not building anything yet.',
+      kind: 'acknowledge',
+      action: 'none',
+      understanding: context.proposal
+        ? 'Understood — I will not build it yet. It is still here when you want it.'
+        : 'Understood — I will not build anything yet.',
     });
   }
 
@@ -577,6 +892,29 @@ export function interpretMessage(
 
   if (MEMORY.test(text)) {
     return finish({ kind: 'memory', understanding: 'Something to remember.' });
+  }
+
+  /*
+   * Answering the questions I asked about something already on the table.
+   *
+   * Placed here on purpose — after the readings that mean something on their own, before the ones
+   * that guess. Everything above is unambiguous with or without a proposal standing: a dismissal,
+   * a "go ahead", a pause, a note. Everything below has to infer what the message is about, and
+   * with a proposal standing the answer is nearly always "the thing we were just discussing".
+   *
+   * `commissionsThinking` wins over this, and that ordering matters: "what do you think of doing it
+   * in euros instead?" is a question about a change, not the change itself, and answering it by
+   * silently editing the scope would be acting on something he was still weighing up.
+   */
+  if (!commissionsThinking && refinesStandingWork(raw, context.proposal !== null)) {
+    return finish({
+      kind: 'refine',
+      action: 'refine',
+      subject: subjectOf(text),
+      understanding: noBuildYet
+        ? 'Noted against what we are working on. Nothing will be built.'
+        : 'Noted against what we are working on.',
+    });
   }
 
   /*

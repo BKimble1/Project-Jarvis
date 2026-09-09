@@ -155,7 +155,7 @@ export function unattendedVerdict(
     allowed: false,
     level,
     missing,
-    reason: `Jarvis is at "${QUALIFICATION_LEVEL_LABELS[level]}", so it will not ${missing
+    reason: `I am at "${QUALIFICATION_LEVEL_LABELS[level]}", so I will not ${missing
       .map((entry) => CAPABILITY_LABELS[entry.capability])
       .join(', nor ')} without you watching. Qualify to ${QUALIFICATION_LEVEL_LABELS[
       highest(missing.map((entry) => entry.required))

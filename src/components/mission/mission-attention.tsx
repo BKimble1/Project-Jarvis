@@ -75,7 +75,7 @@ const SECTIONS: readonly {
   {
     key: 'clarification',
     title: 'Questions before planning',
-    description: 'Jarvis will not guess these.',
+    description: 'I will not guess these.',
     severity: 'medium',
   },
   {
@@ -94,7 +94,7 @@ const SECTIONS: readonly {
   {
     key: 'prReady',
     title: 'Draft pull requests to review',
-    description: 'Open, unmerged, and waiting for you. Jarvis does not merge.',
+    description: 'Open, unmerged, and waiting for you. I do not merge.',
     severity: 'medium',
   },
   {
@@ -185,7 +185,7 @@ export function DisconnectedWorkers({ workers }: { workers: readonly WorkerHealt
           <span className="font-normal text-[var(--color-text-subtle)]">({offline.length})</span>
         </CardTitle>
         <p className="text-xs text-[var(--color-text-muted)]">
-          Jarvis cannot run a mission without a healthy worker.
+          I cannot run a mission without a healthy worker.
         </p>
       </CardHeader>
       <CardContent className="pt-0">

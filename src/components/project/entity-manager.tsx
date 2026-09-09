@@ -314,7 +314,7 @@ export function NextActionsSection({
   return (
     <SectionCard
       title="Next actions"
-      description="Your list. Jarvis puts these ahead of anything it would suggest itself."
+      description="Your list. I put these ahead of anything I would suggest myself."
       count={open.length}
       addLabel="Add action"
       form={(close) => (
@@ -442,7 +442,7 @@ export function MilestonesSection({
   return (
     <SectionCard
       title="Milestones"
-      description="Marked complete by you. Jarvis keeps them labelled Manual unless a source verifies them."
+      description="Marked complete by you. I keep them labelled Manual unless a source verifies them."
       count={milestones.filter((milestone) => milestone.state !== 'done').length}
       addLabel="Add milestone"
       form={(close) => (

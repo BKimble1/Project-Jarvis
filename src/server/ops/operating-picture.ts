@@ -239,7 +239,7 @@ export async function buildOperatingPicture(
   const blockers: readonly string[] = [
     ready.length === 0 ? workerDetail : null,
     loop.state === 'stalled' || loop.state === 'never_run'
-      ? 'The operator loop is not running, so Jarvis will not start anything by itself.'
+      ? 'The operator loop is not running, so I will not start anything by myself.'
       : null,
     decision.verdict === 'reserved' || decision.verdict === 'exhausted' ? decision.reason : null,
   ].filter((entry): entry is string => entry !== null);
@@ -311,10 +311,10 @@ function headline(input: {
   actions: readonly NextAction[];
 }): string {
   if (input.loop.state === 'stalled' || input.loop.state === 'never_run') {
-    return 'Jarvis is not running its own loop, so it will not start anything by itself.';
+    return 'I am not running my own loop, so I will not start anything by myself.';
   }
   if (input.running > 0) {
-    return `Jarvis is working on ${input.running} thing${input.running === 1 ? '' : 's'}. ${summariseNextActions(input.actions)}`;
+    return `I am working on ${input.running} thing${input.running === 1 ? '' : 's'}. ${summariseNextActions(input.actions)}`;
   }
-  return `Jarvis is ${input.modeLabel.toLowerCase()} and nothing is running. ${summariseNextActions(input.actions)}`;
+  return `I am ${input.modeLabel.toLowerCase()} and nothing is running. ${summariseNextActions(input.actions)}`;
 }

@@ -135,9 +135,7 @@ describe('buildMissionSignals', () => {
       workers: connected,
       now: NOW,
     });
-    expect(live.currentWork.some((claim) => claim.text.includes('Jarvis is working on'))).toBe(
-      true,
-    );
+    expect(live.currentWork.some((claim) => claim.text.includes('I am working on'))).toBe(true);
     expect(live.unknowns).toEqual([]);
 
     const stalled = buildMissionSignals({

@@ -1053,6 +1053,14 @@ export function buildServices(
      * is now the same path, decided by the same charter.
      */
     conversation,
+    /*
+     * And read against the same snapshot. A refinement only means something next to what it
+     * refines, so without this a spoken one is a fragment and lands on the query router.
+     */
+    standingProposal: async () => {
+      const open = await proposals.latestOpen();
+      return open ? { id: open.id, summary: open.summary } : null;
+    },
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

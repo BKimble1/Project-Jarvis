@@ -77,7 +77,7 @@ export async function handsOffStatus(services: HandsOffServices): Promise<HandsO
     canEnable: hasCharter,
     blockedReason: hasCharter
       ? null
-      : 'Jarvis needs a charter in force before it can act on its own. Write one in Operations, activate it, and this becomes available.',
+      : 'I need a charter in force before I can act on my own. Write one in Operations, activate it, and this becomes available.',
   };
 }
 
@@ -123,7 +123,7 @@ export async function setHandsOff(
      */
     if (before.mode === 'emergency_stop') {
       throw new ConflictError(
-        'Jarvis is under an emergency stop. Clear it in Operations before turning Hands-off on.',
+        'The emergency stop is on. Clear it in Operations before turning Hands-off on.',
         { mode: before.mode },
       );
     }

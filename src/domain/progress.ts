@@ -296,10 +296,10 @@ export const SUPERVISOR_ACTIONS = [
 export type SupervisorAction = (typeof SUPERVISOR_ACTIONS)[number];
 
 export const SUPERVISOR_ACTION_MEANING: Record<SupervisorAction, string> = {
-  continue: 'Jarvis is getting somewhere and will keep going.',
-  narrow: 'Jarvis is going in circles, so it is cutting the job down to the useful part.',
-  escalate: 'Jarvis cannot finish this without you.',
-  stop: 'Jarvis has stopped. Everything it produced is kept.',
+  continue: 'I am getting somewhere and will keep going.',
+  narrow: 'I am going in circles, so I am cutting the job down to the useful part.',
+  escalate: 'I cannot finish this without you.',
+  stop: 'I have stopped. Everything I produced is kept.',
 };
 
 export interface SupervisorVerdict {
@@ -368,7 +368,7 @@ export function superviseMission(input: {
   if (asked || input.ownerCouldUnblock) {
     return {
       action: 'escalate',
-      reason: `Jarvis needs you: ${describe(verdict)}`,
+      reason: `I need you: ${describe(verdict)}`,
       verdict,
       preserve,
     };

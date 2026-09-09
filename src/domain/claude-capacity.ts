@@ -331,7 +331,7 @@ export function decideCapacity(
       maxNewWork: null,
       reason:
         capacity.authMode === 'unknown'
-          ? 'Jarvis has not established how this worker authenticates, so it is not applying subscription limits it may not have. Spending limits still apply.'
+          ? 'I have not established how this worker authenticates, so I am not applying subscription limits I may not have. Spending limits still apply.'
           : 'This worker does not use a Claude subscription, so there is no shared window to reserve. Spending limits still apply.',
       window: null,
       quality: capacity.authMode === 'unknown' ? 'unknown' : 'measured',
@@ -376,7 +376,7 @@ export function decideCapacity(
         verdict: 'exhausted',
         mayStartNewWork: false,
         maxNewWork: 0,
-        reason: `${RATE_WINDOW_LABELS[check.window]} is used up. Jarvis will start nothing until it resets${describeReset(capacity.windows[check.window].resetsAt)}.`,
+        reason: `${RATE_WINDOW_LABELS[check.window]} is used up. I will start nothing until it resets${describeReset(capacity.windows[check.window].resetsAt)}.`,
         window: check.window,
         quality: observation.quality,
       };
@@ -389,8 +389,8 @@ export function decideCapacity(
         maxNewWork: 0,
         reason:
           remaining <= check.reservePercent
-            ? `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left, inside the ${check.reservePercent}% you asked Jarvis to keep for you. It will finish what is running and start nothing new.`
-            : `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left, only just clear of the ${check.reservePercent}% reserve. Jarvis is waiting for a little more room before it starts anything, rather than starting and deferring on alternate passes.`,
+            ? `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left, inside the ${check.reservePercent}% you asked me to keep for you. I will finish what is running and start nothing new.`
+            : `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left, only just clear of the ${check.reservePercent}% reserve. I am waiting for a little more room before I start anything, rather than starting and deferring on alternate passes.`,
         window: check.window,
         quality: observation.quality,
       };
@@ -402,7 +402,7 @@ export function decideCapacity(
         verdict: 'clear',
         mayStartNewWork: true,
         maxNewWork: 1,
-        reason: `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left. Jarvis will start one thing at a time rather than filling every slot.`,
+        reason: `${RATE_WINDOW_LABELS[check.window]} has ${Math.round(remaining)}% left. I will start one thing at a time rather than filling every slot.`,
         window: check.window,
         quality: observation.quality,
       };
@@ -422,7 +422,7 @@ export function decideCapacity(
       verdict: 'unknown',
       mayStartNewWork: true,
       maxNewWork: 1,
-      reason: `Jarvis cannot read the ${RATE_WINDOW_LABELS[unreadable].toLowerCase()}, so it is working one thing at a time rather than guessing how much room there is. Spending limits still apply.`,
+      reason: `I cannot read the ${RATE_WINDOW_LABELS[unreadable].toLowerCase()}, so I am working one thing at a time rather than guessing how much room there is. Spending limits still apply.`,
       window: unreadable,
       quality: 'unknown',
     };
@@ -437,7 +437,7 @@ export function decideCapacity(
       verdict: 'clear',
       mayStartNewWork: true,
       maxNewWork: 1,
-      reason: `Jarvis is working from a ${RATE_WINDOW_LABELS[stale].toLowerCase()} reading that is no longer current, so it is starting one thing at a time until a worker reports a fresh one.`,
+      reason: `I am working from a ${RATE_WINDOW_LABELS[stale].toLowerCase()} reading that is no longer current, so I am starting one thing at a time until a worker reports a fresh one.`,
       window: stale,
       quality: 'stale',
     };
@@ -449,7 +449,7 @@ export function decideCapacity(
     verdict: 'clear',
     mayStartNewWork: true,
     maxNewWork: null,
-    reason: 'There is room in every window Jarvis can see.',
+    reason: 'There is room in every window I can see.',
     window: null,
     quality: 'measured',
   };
@@ -508,7 +508,7 @@ export function assessContext(observation: ContextObservation, now: Date): Conte
        * gauge is unreadable, the cheap action is the right one.
        */
       shouldCheckpoint: true,
-      reason: 'Jarvis cannot read how full this session is, so it is checkpointing to be safe.',
+      reason: 'I cannot read how full this session is, so I am checkpointing to be safe.',
     };
   }
   if (percent.value >= 90) {
@@ -524,7 +524,7 @@ export function assessContext(observation: ContextObservation, now: Date): Conte
       state: 'filling',
       percentUsed: percent,
       shouldCheckpoint: true,
-      reason: `The session is ${Math.round(percent.value)}% full, so Jarvis is writing down where it got to before it has to.`,
+      reason: `The session is ${Math.round(percent.value)}% full, so I am writing down where I got to before I have to.`,
     };
   }
   return {
@@ -587,7 +587,7 @@ export function routeModel(input: {
       ? {
           weight,
           model: models.balanced,
-          reason: 'Capacity is tight, so Jarvis is stepping down one model rather than stopping.',
+          reason: 'Capacity is tight, so I am stepping down one model rather than stopping.',
         }
       : { weight, model: models.strong, reason: 'This needs to be right.' };
   }

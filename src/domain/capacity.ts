@@ -204,23 +204,19 @@ export function canStartTask(input: StartTaskCapacityInput): CapacityVerdict {
   const { limits, instance, mission, task } = input;
 
   if (instance.posture === 'stopped') {
-    return refuse(
-      'R-CAP1',
-      'Jarvis is stopped. Nothing new will start until you resume it.',
-      false,
-    );
+    return refuse('R-CAP1', 'I am stopped. Nothing new will start until you resume me.', false);
   }
   if (instance.posture === 'draining') {
     return refuse(
       'R-CAP2',
-      'Jarvis is draining: it is finishing what is running and starting nothing new.',
+      'Draining: I am finishing what is running and starting nothing new.',
       false,
     );
   }
   if (!input.missionAlreadyActive && instance.activeMissions >= limits.maxActiveMissions) {
     return refuse(
       'R-CAP3',
-      `Jarvis runs ${limits.maxActiveMissions} missions at a time and both are busy.`,
+      `I run ${limits.maxActiveMissions} missions at a time and both are busy.`,
       true,
     );
   }

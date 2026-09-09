@@ -1,4 +1,5 @@
 import { ValidationError } from '@/domain/errors';
+import { EMPTY_CONTEXT, type ConversationContext } from '@/domain/interpretation';
 import type { IdeaEvaluation } from '@/domain/proposal';
 import {
   assertConfirmationMatches,
@@ -55,6 +56,18 @@ export interface VoiceServiceDeps {
    * spoken request is handed back to the screen rather than silently dropped.
    */
   readonly conversation?: ConversationService;
+  /**
+   * What is standing, so a spoken message is read against the same snapshot a typed one is.
+   *
+   * Without it "use US dollars, and lock that as the final V1" is a fragment with nothing to refine
+   * and lands on the query router, which reaches no proposal — so speaking a refinement quietly did
+   * less than typing one. Optional, because a deployment without the conversational half has no
+   * proposals to stand.
+   */
+  readonly standingProposal?: () => Promise<{
+    readonly id: string;
+    readonly summary: string;
+  } | null>;
   readonly clock?: () => Date;
 }
 
@@ -137,7 +150,7 @@ export class VoiceService {
       throw new ValidationError('That is longer than I will take from one recording.');
     }
 
-    const classification = classifyTranscript(transcript);
+    const classification = classifyTranscript(transcript, await this.context());
 
     const capture = await this.deps.voice.create({
       transcript,
@@ -190,7 +203,12 @@ export class VoiceService {
     }
 
     const text = normaliseTranscript(input.text);
-    const classification = assertConfirmationMatches({ shownIntent: input.shownIntent, text });
+    const classification = assertConfirmationMatches({
+      shownIntent: input.shownIntent,
+      text,
+      /* The same snapshot the read-back used, so the guard checks the text rather than the clock. */
+      context: await this.context(),
+    });
     assertNotSelfApproving(classification.intent);
 
     const outcome = await this.act(classification.intent, text, actor);
@@ -205,6 +223,12 @@ export class VoiceService {
     });
 
     return { capture: updated, outcome };
+  }
+
+  /** The conversational snapshot, or an empty one when there is nothing to stand. */
+  private async context(): Promise<ConversationContext> {
+    const proposal = (await this.deps.standingProposal?.().catch(() => null)) ?? null;
+    return { ...EMPTY_CONTEXT, proposal };
   }
 
   private async act(
@@ -237,7 +261,14 @@ export class VoiceService {
       return { kind: 'answer', said: answer.summary, href: answer.href };
     }
 
-    if (intent === 'mission_draft') {
+    /*
+     * A conversational turn: an idea, a refinement of one, a "not yet", or a dismissal.
+     *
+     * Handled by exactly the same call as a typed one, so speaking and typing are one act. The
+     * conversation service decides what each of those means; nothing here second-guesses it, which
+     * is the whole reason there is only one interpreter.
+     */
+    if (intent === 'conversation' || intent === 'mission_draft') {
       /*
        * Started, not handed back — with the read-back that already happened standing in for the
        * misrecognition check it was always for. This is where the owner's instruction lands: a
@@ -255,6 +286,8 @@ export class VoiceService {
       const turn = await this.deps.conversation.handle({
         message: text,
         ownerLogin: actor.actor,
+        /* The same snapshot again. Speaking and typing are one act, so they read one context. */
+        context: await this.context(),
       });
       const said = turn.notes.length > 0 ? `${turn.said} ${turn.notes.join(' ')}` : turn.said;
       /*

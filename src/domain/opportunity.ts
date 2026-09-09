@@ -45,10 +45,10 @@ export const OBSERVATION_STATES = [
 export type ObservationState = (typeof OBSERVATION_STATES)[number];
 
 export const OBSERVATION_STATE_MEANING: Record<ObservationState, string> = {
-  observed: 'Jarvis has current information about this.',
-  stale: 'Jarvis has information about this, but it is old enough to be wrong.',
-  failed: 'Jarvis tried to look and could not.',
-  unwatched: 'Nothing is connected that would tell Jarvis about this.',
+  observed: 'I have current information about this.',
+  stale: 'I have information about this, but it is old enough to be wrong.',
+  failed: 'I tried to look and could not.',
+  unwatched: 'Nothing is connected that would tell me about this.',
 };
 
 /**
@@ -383,10 +383,10 @@ export const PRIORITY_BANDS = [
 export type PriorityBand = (typeof PRIORITY_BANDS)[number];
 
 export const PRIORITY_BAND_MEANING: Record<PriorityBand, string> = {
-  now: 'Jarvis will pick this up next.',
+  now: 'I will pick this up next.',
   next: 'Queued behind the urgent work.',
   later: 'Real, but not worth interrupting anything for.',
-  watch: 'Recorded so you can see it. Jarvis will not act on this by itself.',
+  watch: 'Recorded so you can see it. I will not act on this by myself.',
 };
 
 export interface PriorityFactor {
@@ -468,12 +468,12 @@ export function prioritise(opportunity: Opportunity, context: PriorityContext): 
       points: PROVENANCE_POINTS[opportunity.provenance],
       why:
         opportunity.provenance === 'verified'
-          ? 'It comes from evidence Jarvis read itself.'
+          ? 'It comes from evidence I read myself.'
           : opportunity.provenance === 'manual'
-            ? 'It comes from something you told Jarvis.'
+            ? 'It comes from something you told me.'
             : opportunity.provenance === 'inferred'
               ? 'It is inferred rather than observed, so it may be wrong.'
-              : 'Jarvis cannot say where this came from.',
+              : 'I cannot say where this came from.',
     },
   ];
 
@@ -484,12 +484,12 @@ export function prioritise(opportunity: Opportunity, context: PriorityContext): 
       why: 'It belongs to a project one of your charter goals names.',
     });
   } else if (context.withinCharter) {
-    factors.push({ name: 'scope', points: 5, why: 'Jarvis is allowed to work on this.' });
+    factors.push({ name: 'scope', points: 5, why: 'I am allowed to work on this.' });
   } else {
     factors.push({
       name: 'scope',
       points: -20,
-      why: 'Your charter does not cover this project, so Jarvis will not start work on it.',
+      why: 'Your charter does not cover this project, so I will not start work on it.',
     });
   }
 
@@ -514,13 +514,13 @@ export function prioritise(opportunity: Opportunity, context: PriorityContext): 
   };
 
   if (opportunity.requiresOwner) {
-    cap('watch', 'needs you', 'Only you can settle this, so Jarvis will raise it rather than act.');
+    cap('watch', 'needs you', 'Only you can settle this, so I will raise it rather than act.');
   }
   if (context.coverage !== 'observed') {
     cap(
       'watch',
       'not observed',
-      `${OBSERVATION_STATE_MEANING[context.coverage]} Jarvis will not act on what it cannot currently see.`,
+      `${OBSERVATION_STATE_MEANING[context.coverage]} I will not act on what I cannot currently see.`,
     );
   }
   if (!context.withinCharter) {

@@ -81,7 +81,7 @@ export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
         attention.push({
           code: 'decision_required',
           severity: SEVERITY.clarification ?? 'medium',
-          summary: `“${mission.title}” is waiting on your answer before Jarvis can plan it.`,
+          summary: `“${mission.title}” is waiting on your answer before I can plan it.`,
           provenance: 'verified',
           evidenceIds: [],
           rule: 'R-MS1',
@@ -103,7 +103,7 @@ export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
         attention.push({
           code: 'decision_required',
           severity: SEVERITY.permission ?? 'critical',
-          summary: `Jarvis is paused on “${mission.title}” waiting for permission to continue.`,
+          summary: `I am paused on “${mission.title}” waiting for permission to continue.`,
           provenance: 'verified',
           evidenceIds: [],
           rule: 'R-MS3',
@@ -114,7 +114,7 @@ export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
         attention.push({
           code: 'decision_required',
           severity: SEVERITY.input ?? 'high',
-          summary: `Jarvis asked a question on “${mission.title}” and is waiting for your answer.`,
+          summary: `I asked a question on “${mission.title}” and am waiting for your answer.`,
           provenance: 'verified',
           evidenceIds: [],
           rule: 'R-MS4',
@@ -210,11 +210,11 @@ export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
           rule: 'R-MS11',
         });
         unknowns.push(
-          `Whether “${mission.title}” is still making progress — its worker is not responding, so Jarvis cannot tell. Nothing has been marked complete or failed.`,
+          `Whether “${mission.title}” is still making progress — its worker is not responding, so I cannot tell. Nothing has been marked complete or failed.`,
         );
       } else {
         currentWork.push({
-          text: `Jarvis is working on “${mission.title}” (${MISSION_STATE_LABELS[mission.state].toLowerCase()}).`,
+          text: `I am working on “${mission.title}” (${MISSION_STATE_LABELS[mission.state].toLowerCase()}).`,
           provenance: 'verified',
           evidenceIds: [],
           rule: 'R-MS12',
@@ -224,7 +224,7 @@ export function buildMissionSignals(input: MissionSignalInput): MissionSignals {
 
     if (mission.state === 'inspecting' || mission.state === 'planning') {
       currentWork.push({
-        text: `Jarvis is ${mission.state === 'inspecting' ? 'inspecting the repository for' : 'planning'} “${mission.title}”.`,
+        text: `I am ${mission.state === 'inspecting' ? 'inspecting the repository for' : 'planning'} “${mission.title}”.`,
         provenance: 'verified',
         evidenceIds: [],
         rule: 'R-MS13',
@@ -301,7 +301,7 @@ function describeAgents(
     out.attention.push({
       code: 'decision_required',
       severity: 'high',
-      summary: `“${mission.title}” used every repair round it was allowed and still does not pass review. Jarvis stopped rather than trying again. Everything it did is preserved.`,
+      summary: `“${mission.title}” used every repair round it was allowed and still does not pass review. I stopped rather than trying again. Everything it did is preserved.`,
       provenance: 'verified',
       evidenceIds: [],
       rule: 'R-MS15',
@@ -313,7 +313,7 @@ function describeAgents(
     out.attention.push({
       code: 'decision_required',
       severity: 'critical',
-      summary: `An agent on “${mission.title}” changed files outside the write set you approved, so Jarvis stopped it and preserved the workspace for you to look at.`,
+      summary: `An agent on “${mission.title}” changed files outside the write set you approved, so I stopped it and preserved the workspace for you to look at.`,
       provenance: 'verified',
       evidenceIds: [],
       rule: 'R-MS16',

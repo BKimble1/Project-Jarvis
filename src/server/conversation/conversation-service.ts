@@ -5,6 +5,7 @@ import {
   type Interpretation,
 } from '@/domain/interpretation';
 import { buildBrief } from '@/domain/build-brief';
+import { finalisedV1, readRefinement } from '@/domain/refinement';
 import type { OperatingEventKind, OperatingState } from '@/domain/operating-state';
 import { deriveProjectName, describesNewProject } from '@/domain/new-project';
 import type { Project } from '@/domain/project';
@@ -168,9 +169,136 @@ export class ConversationService {
         return this.proposeIdea(interpretation, input.message);
       case 'follow_up':
         return this.followUp(interpretation, context, input.ownerLogin ?? null);
+      case 'refine':
+        return this.refine(interpretation, input.message, context);
+      case 'acknowledge':
+        return this.acknowledge(interpretation, context);
       default:
         return this.answer(interpretation, input.message, context);
     }
+  }
+
+  /* -------------------------------------------------------------- refining */
+
+  /**
+   * Answering the questions I asked, and settling the scope.
+   *
+   * ## What this must not do
+   *
+   * Go anywhere near `proposals.open`. That method rewrites `title`, `idea` and `summary`
+   * unconditionally, so routing a refinement through the idea path would replace the idea with the
+   * answers — "Use US dollars. Look ahead until…" would *become* the idea, and `deriveProjectName`
+   * would name the project from it. That is the "Yet" bug's exact shape, one turn later in the
+   * conversation.
+   *
+   * It also creates nothing. Not a project, not a repository, not a mission. Refining is deciding
+   * what would be built, which is the opposite of building it, and `noBuildYet` is usually set on
+   * these messages besides.
+   *
+   * ## What happens with nothing standing
+   *
+   * It cannot get here — `refinesStandingWork` returns false without a proposal in the caller's
+   * snapshot. But the snapshot is the *browser's* and the row is the truth, so the proposal is
+   * re-read here and a miss is answered honestly rather than guessed at.
+   */
+  private async refine(
+    interpretation: Interpretation,
+    raw: string,
+    context: ConversationContext,
+  ): Promise<ConversationTurn> {
+    const standing = context.proposal
+      ? ((await this.deps.proposals.findById(context.proposal.id)) ??
+        (await this.deps.proposals.latestOpen()))
+      : await this.deps.proposals.latestOpen();
+
+    if (!standing || standing.state !== 'open') {
+      return {
+        kind: 'refine',
+        understanding: interpretation.understanding,
+        said: "I am not sure what that refers to — nothing is open for me to change. Describe the idea and I'll pick it up from there.",
+        href: null,
+        answer: null,
+        started: null,
+        proposal: null,
+        evaluation: null,
+        thinking: null,
+        noBuildYet: interpretation.noBuildYet,
+        notes: [],
+      };
+    }
+
+    const refinement = readRefinement(raw);
+    const updated =
+      refinement.answers.length > 0 || refinement.locksScope
+        ? ((await this.deps.proposals.recordAnswers(standing.id, {
+            answers: refinement.answers,
+            lockScope: refinement.locksScope,
+            now: this.now(),
+          })) ?? standing)
+        : standing;
+
+    const v1 = finalisedV1(updated);
+
+    /*
+     * Recorded on the idea's own timeline, so a reload shows the scope being settled rather than a
+     * gap between "evaluating" and "approved".
+     */
+    await this.record(updated.id, {
+      to: 'waiting_for_input',
+      kind: 'progress',
+      message: refinement.locksScope
+        ? `I have settled the first version of ${updated.title} with what you decided.`
+        : `I have noted what you decided about ${updated.title}.`,
+    });
+
+    return {
+      kind: 'refine',
+      understanding: interpretation.understanding,
+      said: `${v1.sentence}${interpretation.noBuildYet ? ' Nothing has been built.' : ''}`,
+      href: null,
+      answer: null,
+      started: null,
+      /* Still standing, so a later "Go ahead" accepts exactly this — with the decisions on it. */
+      proposal: { id: updated.id, summary: updated.summary },
+      evaluation: updated.evaluation,
+      thinking: null,
+      noBuildYet: interpretation.noBuildYet,
+      notes: [],
+    };
+  }
+
+  /**
+   * A constraint on what happens next, and nothing else.
+   *
+   * "Do not build it yet." on its own. Nothing is created, nothing is changed, and — the part that
+   * matters — nothing is discarded: whatever was standing is handed back so the next "go ahead"
+   * still has something to accept. This used to answer "Nothing, then", which read as agreement
+   * that the whole conversation was off.
+   */
+  private async acknowledge(
+    interpretation: Interpretation,
+    context: ConversationContext,
+  ): Promise<ConversationTurn> {
+    const standing = context.proposal
+      ? ((await this.deps.proposals.findById(context.proposal.id)) ?? null)
+      : await this.deps.proposals.latestOpen();
+    const open = standing?.state === 'open' ? standing : null;
+
+    return {
+      kind: 'acknowledge',
+      understanding: interpretation.understanding,
+      said: open
+        ? `Understood — I will not build anything yet. ${open.title} is still here whenever you want it.`
+        : 'Understood — I will not build anything yet.',
+      href: null,
+      answer: null,
+      started: null,
+      proposal: open ? { id: open.id, summary: open.summary } : null,
+      evaluation: open?.evaluation ?? null,
+      thinking: null,
+      noBuildYet: true,
+      notes: [],
+    };
   }
 
   /* ------------------------------------------------------------------ work */

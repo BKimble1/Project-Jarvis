@@ -38,13 +38,13 @@ export function ClarificationPanel({
           <MessageCircleQuestion className="h-4 w-4" aria-hidden />
           {open.length > 0
             ? open.length === 1
-              ? 'Jarvis has one question'
-              : `Jarvis has ${open.length} questions`
+              ? 'I have one question'
+              : `I have ${open.length} questions`
             : 'Answered questions'}
         </CardTitle>
         {open.length > 0 ? (
           <p className="text-xs text-[var(--color-text-muted)]">
-            These change what gets built, so Jarvis asks rather than guessing.
+            These change what gets built, so I ask rather than guessing.
           </p>
         ) : null}
       </CardHeader>
@@ -68,7 +68,7 @@ export function ClarificationPanel({
                   <ProvenanceBadge level={question.answerProvenance ?? 'unknown'} />
                   {question.answerProvenance === 'inferred' ? (
                     <span className="text-[var(--color-text-subtle)]">
-                      Jarvis assumed this — it is not your decision
+                      I assumed this — it is not your decision
                     </span>
                   ) : null}
                 </p>
@@ -188,7 +188,7 @@ function QuestionForm({
 
       {question.recommendation ? (
         <p className="text-xs text-[var(--color-text-subtle)]">
-          Jarvis would assume: {question.recommendation}
+          I would assume: {question.recommendation}
         </p>
       ) : null}
     </form>

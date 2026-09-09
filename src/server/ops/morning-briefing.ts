@@ -195,10 +195,10 @@ function nextSentence(picture: OperatingPicture): string {
   }
   if (!picture.standingAuthority) {
     return picture.blockedReason
-      ? `Jarvis will not start anything by itself. ${picture.blockedReason}`
-      : 'Jarvis will propose work and wait for you rather than starting anything.';
+      ? `I will not start anything by myself. ${picture.blockedReason}`
+      : 'I will propose work and wait for you rather than starting anything.';
   }
   const first = picture.actions.find((action) => action.kind === 'start_opportunity');
-  if (!first) return 'Jarvis has nothing queued that it would start on its own.';
-  return `Left alone, Jarvis will start: ${first.label}.`;
+  if (!first) return 'I have nothing queued that I would start on my own.';
+  return `Left alone, I will start: ${first.label}.`;
 }

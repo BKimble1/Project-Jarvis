@@ -315,7 +315,7 @@ describe('whether there is room', () => {
   it('says so plainly when it has not established how a worker authenticates', () => {
     const decision = decideCapacity(mergeAccountLimits([], NOW), RESERVE);
     expect(decision.quality).toBe('unknown');
-    expect(decision.reason).toMatch(/has not established/);
+    expect(decision.reason).toMatch(/have not established how this worker authenticates/);
   });
 });
 

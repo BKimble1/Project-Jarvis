@@ -544,7 +544,7 @@ export function recommendActions(
       action:
         project.type === 'software' || project.type === 'ios_app' || project.type === 'website'
           ? 'Synchronise this project, or record what is actually happening.'
-          : 'Record a short update so Jarvis knows where this stands.',
+          : 'Record a short update so I know where this stands.',
       rationale: freshness.explanation,
       provenance: 'verified',
       evidenceIds: [],
@@ -556,7 +556,7 @@ export function recommendActions(
   if (actions.length === 0 && goals.length === 0 && !project.goal) {
     actions.push({
       action: 'Write down the goal for this project.',
-      rationale: 'Jarvis has no recorded goal, so it cannot judge progress.',
+      rationale: 'I have no recorded goal, so I cannot judge progress.',
       provenance: 'unknown',
       evidenceIds: [],
       requiresOwner: true,
@@ -785,7 +785,7 @@ function buildHeadline(input: {
   }
   if (freshness.state === 'failing') {
     return claim(
-      `${name}: synchronisation is failing, so this is the last information Jarvis could verify.`,
+      `${name}: synchronisation is failing, so this is the last information I could verify.`,
       'verified',
       [],
       'R-HL5-sync-failing',
@@ -828,8 +828,8 @@ function buildHeadline(input: {
    */
   return claim(
     derived.status === 'unknown'
-      ? `${name} has no recorded status, and Jarvis has no evidence of work in progress.`
-      : `${name} is active, but Jarvis has no evidence of work in progress.`,
+      ? `${name} has no recorded status, and I have no evidence of work in progress.`
+      : `${name} is active, but I have no evidence of work in progress.`,
     'unknown',
     [],
     'R-HL11-active-without-evidence',
@@ -847,9 +847,7 @@ function collectUnknowns(
   const unknowns: string[] = [];
 
   if (!project.goal && goals.length === 0) {
-    unknowns.push(
-      'No goal has been recorded, so Jarvis cannot judge whether the project is on track.',
-    );
+    unknowns.push('No goal has been recorded, so I cannot judge whether the project is on track.');
   }
   if (!project.phase) {
     unknowns.push('No phase has been recorded.');
@@ -868,7 +866,7 @@ function collectUnknowns(
   const partial = sources.filter((source) => source.unavailableCapabilities.length > 0);
   for (const source of partial) {
     unknowns.push(
-      `Jarvis could not read ${source.unavailableCapabilities.join(', ')} for ${describeSource(source)}.`,
+      `I could not read ${source.unavailableCapabilities.join(', ')} for ${describeSource(source)}.`,
     );
   }
   if (

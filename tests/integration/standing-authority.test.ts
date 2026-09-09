@@ -286,7 +286,7 @@ describe('standing authority', () => {
 
       await expect(
         charterService.setMode({ to: 'operator', actor: 'system', changedBy: 'supervisor' }),
-      ).rejects.toThrow(/Only you can grant Jarvis more autonomy/);
+      ).rejects.toThrow(/Only you can grant me more autonomy/);
     });
 
     it('remembers where a pause came from, and forgets it on the way out', async () => {

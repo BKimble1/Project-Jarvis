@@ -249,7 +249,7 @@ export class CharterService {
       const charter = await this.deps.charters.active();
       if (!charter) {
         throw new ConflictError(
-          'Jarvis cannot operate on standing authority without a charter in force. Activate one first.',
+          'I cannot operate on standing authority without a charter in force. Activate one first.',
         );
       }
       if (isCharterExpired(charter, now)) {

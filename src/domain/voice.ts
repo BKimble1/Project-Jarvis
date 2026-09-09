@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ValidationError } from './errors';
-import { interpretMessage } from './interpretation';
+import { EMPTY_CONTEXT, interpretMessage, type ConversationContext } from './interpretation';
 import { boundText, redactSecrets } from './redaction';
 
 /**
@@ -95,6 +95,18 @@ export const TRANSCRIPT_INTENTS = [
    * `voice_captures` rows of every existing installation.
    */
   'mission_draft',
+  /**
+   * Something to think about, decide, or settle — not something to start.
+   *
+   * An idea, a refinement of one, or a bare "not yet". All three go to the same place a typed one
+   * goes, and none of them creates anything.
+   *
+   * It needs its own intent because the read-back is a promise. `mission_draft` says "I will start
+   * this: it plans first" — which is exactly wrong for a message whose whole point is that nothing
+   * should be built, and reading it aloud before acting would be telling Blake the opposite of what
+   * is about to happen.
+   */
+  'conversation',
   /** Recognised as approval-shaped, and deliberately not honoured. */
   'approval_attempt',
   'unclear',
@@ -106,20 +118,22 @@ export const INTENT_LABELS: Record<TranscriptIntent, string> = {
   note: 'A note to keep',
   project_update: 'An update to a project',
   mission_draft: 'Work to start',
+  conversation: 'Something to think about',
   approval_attempt: 'An approval, which has to be done on screen',
   unclear: 'Not clear',
 };
 
 /** What Jarvis will do once I confirm, in the second person, so there is no ambiguity. */
 export const INTENT_CONSEQUENCE: Record<TranscriptIntent, string> = {
-  question: 'Jarvis will answer this. Nothing changes.',
-  note: 'Jarvis will save this as a note you said. Nothing else changes.',
-  project_update: "Jarvis will add this to that project's record for you to review.",
+  question: 'I will answer this. Nothing changes.',
+  note: 'I will save this as a note you said. Nothing else changes.',
+  project_update: "I will add this to that project's record for you to review.",
   mission_draft:
-    'Jarvis will start this: it plans first, and it only runs what your charter already allows. Nothing outside the charter happens without you.',
+    'I will start this: I plan first, and I only run what your charter already allows. Nothing outside the charter happens without you.',
+  conversation: 'I will think about this and answer. Nothing will be created, started or built.',
   approval_attempt:
-    'Jarvis will not approve anything from a recording. Open the item and approve it on screen, where you can see what you are agreeing to.',
-  unclear: 'Jarvis is not sure what you meant. Edit the text, or type it instead.',
+    'I will not approve anything from a recording. Open the item and approve it on screen, where you can see what you are agreeing to.',
+  unclear: 'I am not sure what you meant. Edit the text, or type it instead.',
 };
 
 /* ------------------------------------------------------------------- limits */
@@ -257,7 +271,10 @@ export interface Classification {
  * guess: asking me to rephrase costs a second, and guessing wrong on a spoken instruction is how
  * a voice interface becomes something you stop trusting.
  */
-export function classifyTranscript(text: string): Classification {
+export function classifyTranscript(
+  text: string,
+  context: ConversationContext = EMPTY_CONTEXT,
+): Classification {
   const value = text.trim();
 
   if (APPROVAL_PATTERN.test(value)) {
@@ -292,13 +309,52 @@ export function classifyTranscript(text: string): Classification {
    * work. Two classifiers that disagree mean the same words do different things depending on which
    * one saw them first, and speaking a request is meant to be the same act as typing it.
    */
-  const interpretation = interpretMessage(value);
+  /*
+   * Interpreted against the same snapshot a typed message gets.
+   *
+   * Without it this call is context-free, and a whole class of message means nothing without
+   * context: "use US dollars, and lock that as the final V1" is a refinement of something standing
+   * or it is a fragment, and the difference is not in the words. Classifying it blind sent it to
+   * the query router, where it reached nothing — so speaking a refinement did less than typing one
+   * while looking identical from the outside.
+   */
+  const interpretation = interpretMessage(value, context);
 
   if (interpretation.kind === 'memory') {
     return {
       intent: 'note',
       consequence: INTENT_CONSEQUENCE.note,
       rule: 'R-VC2',
+      requiresVisualApproval: false,
+    };
+  }
+
+  /*
+   * An idea, a refinement, or a bare "not yet" — all of which belong to the conversation.
+   *
+   * ## What was wrong
+   *
+   * They landed on `question`, and the voice service answers a question from the *query router*,
+   * which reads state and never touches a proposal. So speaking "I have an idea for QuickPick"
+   * created no proposal, and speaking "use US dollars, and lock that as the final V1" reached
+   * nothing at all — while typing the same words did the whole thing. Two ways of saying one
+   * sentence, two different outcomes, and the spoken one silently did less.
+   *
+   * `mission_draft` is the intent that routes to `ConversationService.handle`, which is where all
+   * three of these need to go. The name is historical — it is stored in the `voice_captures` rows
+   * of every existing installation, so it stays — and it does not imply a mission is drafted: the
+   * conversation service decides that, exactly as it does for typed words.
+   */
+  if (
+    interpretation.kind === 'idea' ||
+    interpretation.kind === 'refine' ||
+    interpretation.kind === 'acknowledge' ||
+    interpretation.kind === 'decline'
+  ) {
+    return {
+      intent: 'conversation',
+      consequence: INTENT_CONSEQUENCE.conversation,
+      rule: 'R-VC6',
       requiresVisualApproval: false,
     };
   }
@@ -358,11 +414,20 @@ export function assertNotSelfApproving(intent: TranscriptIntent): void {
 export function assertConfirmationMatches(input: {
   readonly shownIntent: TranscriptIntent;
   readonly text: string;
+  /**
+   * The same snapshot the read-back was classified against.
+   *
+   * It has to be the same one, or the check compares two different questions and fails on messages
+   * nobody edited: a refinement classified with a proposal standing, then re-derived without one,
+   * reads as a question the second time and is refused as "you confirmed X but that now reads as
+   * Y". The guard is for edits to the *text*, not for a context that moved underneath it.
+   */
+  readonly context?: ConversationContext;
 }): Classification {
-  const derived = classifyTranscript(input.text);
+  const derived = classifyTranscript(input.text, input.context ?? EMPTY_CONTEXT);
   if (derived.intent !== input.shownIntent) {
     throw new ValidationError(
-      `You confirmed "${INTENT_LABELS[input.shownIntent]}" but that text now reads as "${INTENT_LABELS[derived.intent]}". Read it again before Jarvis acts on it.`,
+      `You confirmed "${INTENT_LABELS[input.shownIntent]}" but that text now reads as "${INTENT_LABELS[derived.intent]}". Read it again before I act on it.`,
       { shown: input.shownIntent, derived: derived.intent },
     );
   }

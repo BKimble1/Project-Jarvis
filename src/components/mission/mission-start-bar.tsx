@@ -61,7 +61,7 @@ export function MissionStartBar({
         error?: { message: string };
       };
       if (!response.ok) {
-        toast.error(body.error?.message ?? 'Jarvis could not read that.');
+        toast.error(body.error?.message ?? 'I could not read that.');
         return;
       }
       const answer = body.answer;
@@ -116,7 +116,7 @@ export function MissionStartBar({
         toast.error(body.error?.message ?? 'That mission could not be created.');
         return;
       }
-      toast.success('Mission created. Jarvis will plan it before anything runs.');
+      toast.success('Mission created. I will plan it before anything runs.');
       if (body.mission) router.push(`/missions/${body.mission.id}`);
       else router.refresh();
     } catch {

@@ -109,9 +109,26 @@ describe('negation constrains the verb it negates, and nothing else', () => {
     }
   });
 
-  it('treats a bare refusal as a refusal', () => {
+  /**
+   * A constraint is not a cancellation, and this test used to say it was.
+   *
+   * It asserted `kind === 'decline'` for "Don't build it yet.", which is defensible read narrowly —
+   * nothing should be built — and wrong read as what it became: the branch that satisfied it was
+   * `noBuildYet && !ASKS_FOR_SOMETHING`, and that branch answered six decisions and a request to
+   * lock the scope with "Nothing, then."
+   *
+   * The rule now: forbidding the build says what not to do next. It never withdraws the rest of the
+   * message, and it never throws away what is standing. Only a message that is *nothing but* a
+   * dismissal cancels anything.
+   */
+  it('treats a bare refusal as a constraint, not as a cancellation', () => {
     for (const refusal of ["Don't build it yet.", 'No need to build anything.']) {
-      expect(interpretMessage(refusal).kind, refusal).toBe('decline');
+      const result = interpretMessage(refusal);
+      expect(result.kind, refusal).toBe('acknowledge');
+      expect(result.action, refusal).toBe('none');
+      expect(result.noBuildYet, refusal).toBe(true);
+      /* The words that mean "I have thrown this away" are reserved for a real dismissal. */
+      expect(result.understanding.toLowerCase(), refusal).not.toContain('nothing, then');
     }
   });
 

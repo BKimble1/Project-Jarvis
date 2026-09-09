@@ -605,7 +605,7 @@ describe('things that must not become authority', () => {
       context({ charter: charterContext, spend: null }),
     );
     expect(unreadable.outcome).toBe('needs_owner');
-    expect(unreadable.verdicts[0]?.reason).toMatch(/cannot read what it has spent/);
+    expect(unreadable.verdicts[0]?.reason).toMatch(/cannot read what I have spent/);
 
     const untrustworthy = authorize(
       request([ask({ capability: 'research.read' })], { estimatedSpendUsd: 1 }),

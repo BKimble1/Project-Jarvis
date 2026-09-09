@@ -78,6 +78,16 @@ export const NOT_ASSESSED_NOTICE =
   'Nothing has judged whether this is worth building yet. ' +
   'The questions below are the ones that would change the shape of a first version either way.';
 
+/**
+ * How many decisions one proposal holds.
+ *
+ * A bound rather than a target: twenty answers is a scope that has stopped being a first version.
+ * `buildBrief` uses the same number for the constraints it hands a mission, and the two must stay
+ * equal — a proposal that stores more than the brief carries loses decisions between the record and
+ * the work, invisibly.
+ */
+export const MAX_PROPOSAL_ANSWERS = 20;
+
 export interface Proposal {
   readonly id: string;
   /** Stable over re-submissions of the same idea. See the note above. */

@@ -41,7 +41,7 @@ test.describe('a project without a repository', () => {
 
     /* Nothing has been observed, so the briefing must say so rather than imply progress. */
     await expect(
-      page.getByText(`${name} is active, but Jarvis has no evidence of work in progress.`),
+      page.getByText(`${name} is active, but I have no evidence of work in progress.`),
     ).toBeVisible();
   });
 
