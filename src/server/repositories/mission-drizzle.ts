@@ -357,6 +357,7 @@ function buildPatch(patch: MissionStatePatch): Record<string, unknown> {
   };
   assign('activeRunId', 'activeRunId');
   assign('claimedByWorkerId', 'claimedByWorkerId');
+  assign('leaseExpiresAt', 'leaseExpiresAt');
   assign('currentPlanVersion', 'currentPlanVersion');
   assign('approvedPlanVersion', 'approvedPlanVersion');
   assign('currentGraphVersion', 'currentGraphVersion');

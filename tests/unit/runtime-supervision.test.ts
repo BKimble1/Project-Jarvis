@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAX_WORKER_POOL,
+  resolveWorkerPool,
   decideRestart,
   LOG_KEEP,
   LOG_ROTATE_BYTES,
@@ -285,5 +287,48 @@ describe('what Jarvis can see', () => {
     /* `configured`, not `not_connected`: the authorization is fine, the network was not. */
     expect(email?.state).toBe('configured');
     expect(email?.detail).toContain('the last read failed');
+  });
+});
+
+/**
+ * How many workers the supervisor is willing to run.
+ *
+ * Every worker is a separate session on one subscription login, so the ceiling is not about
+ * throughput — it is about not getting an account rate-limited overnight by a typo.
+ */
+describe('the worker pool ceiling', () => {
+  it('runs one worker when nothing was asked for', () => {
+    expect(resolveWorkerPool(null).size).toBe(1);
+    expect(resolveWorkerPool(undefined).size).toBe(1);
+    expect(resolveWorkerPool(Number.NaN).size).toBe(1);
+  });
+
+  it('honours a sensible number without comment', () => {
+    const pool = resolveWorkerPool(2);
+    expect(pool.size).toBe(2);
+    expect(pool.reason).toBeNull();
+  });
+
+  it('clamps a silly number rather than refusing to start', () => {
+    /*
+     * Refusing would leave the owner with no worker at all, which is worse than running the number
+     * that is safe. So it clamps, and the reason is returned so the log can say what it did rather
+     * than quietly disagreeing with the configuration file.
+     */
+    const pool = resolveWorkerPool(400);
+    expect(pool.size).toBe(MAX_WORKER_POOL);
+    expect(pool.reason).toContain(String(MAX_WORKER_POOL));
+  });
+
+  it('never runs nothing', () => {
+    for (const requested of [0, -1, -100]) {
+      const pool = resolveWorkerPool(requested);
+      expect(pool.size, String(requested)).toBe(1);
+      expect(pool.reason, String(requested)).toBeTruthy();
+    }
+  });
+
+  it('takes whole workers only', () => {
+    expect(resolveWorkerPool(2.9).size).toBe(2);
   });
 });

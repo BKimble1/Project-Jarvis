@@ -716,7 +716,7 @@ describe('worker-mediated reasoning, over the real protocol', () => {
     expect(blocked.reason).toBe('failed');
     expect(blocked.canRetry).toBe(true);
     /* The stage is carried through, so the sentence says where it stopped rather than only that it did. */
-    expect(String(blocked.detail)).toContain('It got as far as');
+    expect(String(blocked.detail)).toContain('I got as far as');
     /* And it is not charged twice for one fact. */
     expect(String(blocked.detail).match(/did not answer in time/g)).toHaveLength(1);
 

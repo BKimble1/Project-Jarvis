@@ -866,7 +866,7 @@ describe('status query router', () => {
     const answer = await harness.services.router.answer('Force push the fix to main');
 
     expect(answer.intent).toBe('prohibited_request');
-    expect(answer.title).toBe('Jarvis will not do that');
+    expect(answer.title).toBe('I will not do that');
     expect(answer.summary).toContain('Force pushing rewrites history');
     expect(answer.notice).toBe('No mission was created.');
     expect(answer.missionPreview).toBeNull();

@@ -35,7 +35,7 @@ import type { WorkerCapacityReading } from '@/server/repositories/mission-types'
 import { classifyMissionRisk } from '@/domain/mission-risk';
 import { usageOutcomeFor, usageRowForRun } from './usage-ledger';
 import { assertMissionBranchName, buildBranchName } from '@/domain/workspace-safety';
-import type { WorkerEnrolment } from '@/domain/worker';
+import { MISSION_LEASE_MS, type WorkerEnrolment } from '@/domain/worker';
 import type {
   ArtifactInput,
   PermissionRequestInput,
@@ -601,6 +601,14 @@ export class WorkerService {
 
     const patch = {
       lastActivityAt: now,
+      /*
+       * The claim is renewed by *this* — a report about this mission — rather than by the poll.
+       *
+       * A heartbeat proves a process is running. It does not prove the mission it holds is being
+       * worked on, and a lease renewed by a heartbeat would never expire for a worker that had
+       * silently abandoned one while continuing to beat perfectly well.
+       */
+      leaseExpiresAt: new Date(now.getTime() + MISSION_LEASE_MS),
       ...(input.branchName !== undefined ? { workingBranch: input.branchName ?? null } : {}),
       ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch ?? null } : {}),
       ...(input.baseSha !== undefined ? { baseSha: input.baseSha ?? null } : {}),

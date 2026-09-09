@@ -91,3 +91,48 @@ export function shouldRotate(sizeBytes: number): boolean {
 export function rolledLogName(base: string, generation: number): string {
   return generation === 0 ? base : base.replace(/\.log$/, `.${generation}.log`);
 }
+
+/* ------------------------------------------------------------ the worker pool */
+
+/**
+ * The hard ceiling on worker processes, whatever configuration asks for.
+ *
+ * A pool size is a number in a file, and a number in a file is one typo away from four hundred.
+ * Every one of those would be a separate Claude subscription session on one login, which is not a
+ * throughput problem — it is a way to get an account rate-limited by accident overnight. Four is
+ * more than a single-owner deployment needs and small enough to be survivable.
+ */
+export const MAX_WORKER_POOL = 4;
+
+/**
+ * How many workers to run, given what was asked for.
+ *
+ * Clamped rather than rejected: a supervisor that refuses to start because the pool size is silly
+ * leaves the owner with no worker at all, which is worse than running the number that is safe and
+ * saying so. The reason is returned so the log can say what it did rather than quietly disagreeing
+ * with the configuration file.
+ */
+export function resolveWorkerPool(requested: number | null | undefined): {
+  readonly size: number;
+  readonly reason: string | null;
+} {
+  if (requested === null || requested === undefined || Number.isNaN(requested)) {
+    return { size: 1, reason: null };
+  }
+  const whole = Math.floor(requested);
+  if (whole < 1) {
+    return {
+      size: 1,
+      reason: `A pool of ${requested} would run nothing, so one worker is running.`,
+    };
+  }
+  if (whole > MAX_WORKER_POOL) {
+    return {
+      size: MAX_WORKER_POOL,
+      reason:
+        `A pool of ${whole} was asked for and ${MAX_WORKER_POOL} is the ceiling — every worker is ` +
+        'a separate session on one subscription login.',
+    };
+  }
+  return { size: whole, reason: null };
+}

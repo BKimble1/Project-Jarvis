@@ -385,8 +385,8 @@ export class ReasoningService {
       since: request.createdAt,
       detail:
         request.state === 'running'
-          ? 'Jarvis is thinking. Your worker is running this on your Claude subscription.'
-          : 'Jarvis is thinking. The question is queued for your worker.',
+          ? "I'm thinking about it. This is running on your machine, on your Claude subscription."
+          : "I'm thinking about it. The question is queued for your worker to pick up.",
     };
   }
 
@@ -416,7 +416,7 @@ export class ReasoningService {
         state: 'blocked',
         reason: 'no_worker',
         detail:
-          'No worker is connected, and the worker is where your Claude subscription lives — so there is nothing here that can think about this yet. Start it with `npm run jarvis:live` and the question will be answered without you asking again.',
+          "No worker is connected, and a worker is where my Claude subscription lives — so I cannot think about this yet. Start one with `npm run jarvis:live` and I'll answer without you asking again.",
         retryable: true,
       };
     }
@@ -426,9 +426,9 @@ export class ReasoningService {
       return {
         state: 'blocked',
         reason: 'runtime_unavailable',
-        detail: `Your worker is connected but its Claude runtime is not usable, so it cannot think about this yet.${
-          detail ? ` It reports: ${detail}` : ''
-        } The question stays queued.`,
+        detail: `Your worker is connected but my Claude runtime there is not usable, so I cannot think about this yet.${
+          detail ? ` What it reports is: ${detail}` : ''
+        } Your question stays queued.`,
         retryable: true,
       };
     }
@@ -438,7 +438,7 @@ export class ReasoningService {
       return {
         state: 'blocked',
         reason: 'capacity_exhausted',
-        detail: `Jarvis is not spending Claude capacity right now. ${capacity.reason} The question stays queued and will be answered when there is room.`,
+        detail: `I'm not spending Claude capacity right now. ${capacity.reason} Your question stays queued and I'll answer it when there is room.`,
         retryable: true,
       };
     }
@@ -463,24 +463,24 @@ function failureSentence(
 ): string {
   const head = headline(failure);
   const useful = detail && !head.toLowerCase().includes(detail.toLowerCase().replace(/[.]$/, ''));
-  const tail = useful ? ` It reported: ${detail}` : '';
-  const where = stage ? ` It got as far as: ${REASONING_STAGE_LABELS[stage]}.` : '';
+  const tail = useful ? ` What came back was: ${detail}` : '';
+  const where = stage ? ` I got as far as: ${REASONING_STAGE_LABELS[stage]}.` : '';
   return `${head}${where}${tail}`;
 }
 
 function headline(failure: ReasoningFailure | null): string {
   switch (failure) {
     case 'runtime_unavailable':
-      return 'Your worker could not start its Claude runtime, so nothing has judged this.';
+      return 'I could not start my Claude runtime on your worker, so I have not judged this.';
     case 'timed_out':
-      return 'The model did not answer in time, so nothing has judged this.';
+      return 'I did not finish thinking in time, so I have not judged this.';
     case 'unreadable':
-      return 'The model answered, but not in a shape Jarvis could read — so it has not judged this rather than guessing at what was meant.';
+      return 'I answered in a shape I could not read back, so I have not judged this rather than guessing at what I meant.';
     case 'model_error':
-      return 'The model could not answer, so nothing has judged this.';
+      return 'I could not answer, so I have not judged this.';
     case 'interrupted':
-      return 'The worker stopped before it answered, so nothing has judged this.';
+      return 'I stopped before I answered, so I have not judged this.';
     default:
-      return 'Nothing has judged this.';
+      return 'I have not judged this yet.';
   }
 }

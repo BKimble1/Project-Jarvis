@@ -46,6 +46,37 @@ const MESSAGE_TWO =
   'what I worked on. Is this worth building? Ask only questions that materially affect a simple ' +
   'V1. Do not build it yet.';
 
+/**
+ * The message that came back wrong, word for word.
+ *
+ * Blake typed this on the dashboard and read an answer about running fewer missions in parallel.
+ * The cause was `\bbudget\b` inside the pattern that recognises "conserve my Claude allowance", so
+ * a budgeting *app* was read as an instruction to slow down. `tests/integration/answer-correlation`
+ * pins the reading; this pins the whole path, with a real model at the end of it, because the thing
+ * that actually failed was what appeared on his screen rather than a classification in isolation.
+ */
+const BUDGET_MESSAGE =
+  'Evaluate this idea: a simple student budget app that tracks recurring bills, weekly spending, ' +
+  'and how much income I need each month. Give me your assessment and the smallest useful V1. ' +
+  'Do not build anything yet.';
+
+/** Unrelated on purpose, and submitted immediately afterwards. Neither may wear the other. */
+const UNRELATED_MESSAGE =
+  'Evaluate this idea: a small tool that turns a photo of a bike into a parts list for repairs. ' +
+  'Give me your assessment and the smallest useful V1. Do not build anything yet.';
+
+/**
+ * Words that mean the answer is about budgeting.
+ *
+ * Any one of them is enough. Requiring a specific sentence would be asserting on the model's
+ * wording rather than on its subject, and would fail the day it phrased the same judgement
+ * differently — which is not the failure this test is for.
+ */
+const ABOUT_BUDGETING = /budget|bills?|spending|income|money|expenses?|finances?/i;
+/** And words that mean it wandered off to the thing that actually went wrong. */
+const ABOUT_PACE = /missions? running in parallel|attempt less at once|allowance resets/i;
+const ABOUT_BIKES = /bike|bicycle|parts list|repair/i;
+
 const cookieStore = new Map<string, string>();
 
 vi.mock('next/headers', () => ({
@@ -341,6 +372,122 @@ describe('a real dashboard question, answered by a real model', () => {
     },
     TURN_TIMEOUT_MS * 2,
   );
+
+  /*
+   * Blake's exact message, and an unrelated one straight after it, in both orders.
+   *
+   * Both orders because the failure this guards against is order-dependent by nature: an answer
+   * that attaches itself to "the current idea" rather than to the request that asked passes in one
+   * order and fails in the other, and a test that only ever runs one of them proves nothing.
+   */
+  for (const order of [
+    { label: 'budget first', first: BUDGET_MESSAGE, second: UNRELATED_MESSAGE },
+    { label: 'the unrelated idea first', first: UNRELATED_MESSAGE, second: BUDGET_MESSAGE },
+  ]) {
+    it(
+      `answers the budgeting idea about budgeting, with ${order.label}`,
+      async () => {
+        expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+
+        const enrolment = await services.workerService.enrol('live-correlation-worker', 1);
+        workerToken = enrolment.token;
+        await services.workerService.poll(enrolment.worker.id, {
+          heartbeat: HEARTBEAT,
+          wantsWork: true,
+          acknowledgedCommandIds: [],
+        });
+
+        const { POST } = await import('@/app/api/conversation/route');
+        const ask = async (message: string) => {
+          const response = await POST(
+            new Request(`${BASE}/api/conversation`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', origin: BASE },
+              body: JSON.stringify({ message }),
+            }),
+          );
+          expect(response.status).toBe(200);
+          return (await response.json()) as Record<string, unknown>;
+        };
+
+        const first = await ask(order.first);
+        const second = await ask(order.second);
+
+        /*
+         * Read as an idea, not as an instruction. This is the assertion that would have caught the
+         * morning: the turn came back `command`, and everything after it was correct for a
+         * question Blake had not asked.
+         */
+        expect(first.kind, JSON.stringify(first)).toBe('idea');
+        expect(second.kind, JSON.stringify(second)).toBe('idea');
+
+        const firstId = (first.proposal as { id: string }).id;
+        const secondId = (second.proposal as { id: string }).id;
+        expect(secondId).not.toBe(firstId);
+
+        const budgetId = order.first === BUDGET_MESSAGE ? firstId : secondId;
+        const otherId = order.first === BUDGET_MESSAGE ? secondId : firstId;
+
+        /* Two real model turns, over the real worker routes. */
+        await runRealWorkerUntilReported(2);
+
+        const budget = await services.proposals.findById(budgetId);
+        const other = await services.proposals.findById(otherId);
+
+        /* Judged by the model, and about the thing that was asked about. */
+        expect(budget?.evaluation?.basis).toBe('reasoned');
+        const budgetText = JSON.stringify(budget?.evaluation ?? {});
+        expect(budgetText, 'the budgeting idea got a budgeting answer').toMatch(ABOUT_BUDGETING);
+        expect(budgetText, 'and not the pace answer that started all this').not.toMatch(ABOUT_PACE);
+        expect(budgetText, 'and nothing from the other idea').not.toMatch(ABOUT_BIKES);
+
+        expect(other?.evaluation?.basis).toBe('reasoned');
+        const otherText = JSON.stringify(other?.evaluation ?? {});
+        expect(otherText).toMatch(ABOUT_BIKES);
+        expect(otherText, 'the unrelated idea did not borrow the budgeting one').not.toMatch(
+          /recurring bills|weekly spending/i,
+        );
+
+        /*
+         * A reload: no client state at all, only the proposal id, read back through the same key
+         * the request was written under. Each answer is still on the turn that asked for it.
+         */
+        for (const [id, expected, forbidden] of [
+          [budgetId, ABOUT_BUDGETING, ABOUT_BIKES],
+          [otherId, ABOUT_BIKES, /recurring bills|weekly spending/i],
+        ] as const) {
+          const after = await services.reasoningService.statusForProposal(id);
+          expect(after?.state).toBe('ready');
+          if (after?.state === 'ready') {
+            const text = JSON.stringify(after.evaluation);
+            expect(text).toMatch(expected);
+            expect(text).not.toMatch(forbidden);
+          }
+        }
+
+        /* Said once. A refresh claims nothing, because the first claim marked them spoken. */
+        const events = await import('@/app/api/operating/events/route');
+        const claim = async () => {
+          const response = await events.POST(
+            new Request(`${BASE}/api/operating/events`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', origin: BASE },
+              body: JSON.stringify({ limit: 20 }),
+            }),
+          );
+          expect(response.status).toBe(200);
+          return ((await response.json()) as { events: readonly { id: string }[] }).events;
+        };
+        expect((await claim()).length).toBeGreaterThan(0);
+        expect(await claim(), 'a refresh must not repeat what was already said').toEqual([]);
+
+        /* Both messages said not to build, so nothing was built. */
+        expect(await services.projects.listAllForAssessment(true)).toHaveLength(0);
+        expect(await services.missionRepo.listOpen()).toHaveLength(0);
+      },
+      TURN_TIMEOUT_MS * 2,
+    );
+  }
 
   /**
    * The real worker process, with the real Claude runtime, over the real routes.

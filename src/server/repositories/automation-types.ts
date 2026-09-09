@@ -124,6 +124,8 @@ export interface ScheduleCreateInput {
   readonly instruction?: string | null;
   readonly enabled?: boolean;
   readonly createdBy: string;
+  /** Required for `once`, meaningless otherwise. `YYYY-MM-DD` in `timeZone`. */
+  readonly onDate?: string | null;
 }
 
 export interface SchedulePatch {
@@ -142,6 +144,9 @@ export interface SchedulePatch {
   readonly lastOccurrenceAt?: Date | null;
   readonly pausedAt?: Date | null;
   readonly pausedReason?: string | null;
+  readonly onDate?: string | null;
+  readonly snoozedUntil?: Date | null;
+  readonly completedAt?: Date | null;
 }
 
 export interface ExecutionCreateInput {
@@ -233,6 +238,14 @@ export interface NotificationCreateInput {
   readonly href?: string | null;
   readonly dedupeKey: string;
   readonly expiresAt?: Date | null;
+  /**
+   * Stamped when this should never be read out loud.
+   *
+   * Set at creation only for something produced inside quiet hours: the row exists and is on the
+   * dashboard, and the narrator finds nothing left to claim. Left null for everything else, which
+   * is what makes it sayable exactly once.
+   */
+  readonly spokenAt?: Date | null;
 }
 
 export interface NotificationRepository {
@@ -260,6 +273,16 @@ export interface NotificationRepository {
   markUnread(id: string): Promise<JarvisNotification>;
   acknowledge(id: string, now: Date): Promise<JarvisNotification>;
   markAllRead(now: Date): Promise<number>;
+  /**
+   * Notifications nobody has said out loud yet, oldest first.
+   *
+   * The same pair `operating_events` uses, and for the same reason: the browser reads them, says
+   * them, and claims them — so a refresh, a second tab, or a phone picked up mid-sentence find
+   * nothing to repeat.
+   */
+  unspoken(limit?: number): Promise<readonly JarvisNotification[]>;
+  /** Claim these for speaking. Returns only the ids this caller actually won. */
+  markSpoken(ids: readonly string[], now: Date): Promise<readonly string[]>;
   /** How many of a category were created inside a window. Feeds the rate check. */
   countSince(category: NotificationCategory, since: Date): Promise<number>;
   expire(now: Date): Promise<number>;

@@ -1045,6 +1045,15 @@ export const missions = pgTable(
     pullRequestNumber: integer('pull_request_number'),
 
     activeRunId: uuid('active_run_id'),
+    /**
+     * When the holding worker's claim stops being believed.
+     *
+     * A heartbeat says a *process* is alive; this says a *mission* is still being worked on. They
+     * are different questions, and only the second one can answer "may somebody else take this".
+     * Renewed while the worker reports progress, and swept when it passes — see
+     * `reclaimExpiredMissions`, which is careful about which states are safe to hand on.
+     */
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
     claimedByWorkerId: uuid('claimed_by_worker_id').references(() => workers.id, {
       onDelete: 'set null',
     }),
@@ -1114,6 +1123,7 @@ export const missions = pgTable(
     index('missions_created_idx').on(table.createdAt),
     index('missions_updated_idx').on(table.updatedAt),
     index('missions_worker_idx').on(table.claimedByWorkerId),
+    index('missions_lease_idx').on(table.leaseExpiresAt),
   ],
 );
 
@@ -2877,11 +2887,18 @@ export const schedules = pgTable(
     lastOccurrenceAt: timestamp('last_occurrence_at', { withTimezone: true }),
     pausedAt: timestamp('paused_at', { withTimezone: true }),
     pausedReason: text('paused_reason'),
+    /** The single local day a `once` schedule fires on, as `YYYY-MM-DD`. See `0023_reminders`. */
+    onDate: text('on_date'),
+    /** Held, but coming back. Not the same as paused — see the migration. */
+    snoozedUntil: timestamp('snoozed_until', { withTimezone: true }),
+    /** Dealt with. Reminders only; kept rather than deleted. */
+    completedAt: timestamp('completed_at', { withTimezone: true }),
   },
   (table) => [
     index('schedules_enabled_idx').on(table.enabled),
     index('schedules_kind_idx').on(table.kind),
     index('schedules_project_idx').on(table.projectId),
+    index('schedules_open_idx').on(table.enabled, table.completedAt),
   ],
 );
 
@@ -2989,8 +3006,11 @@ export const notifications = pgTable(
     readAt: timestamp('read_at', { withTimezone: true }),
     acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
+    /** When it was read out loud. The claim watermark — see `0024_notifications_spoken`. */
+    spokenAt: timestamp('spoken_at', { withTimezone: true }),
   },
   (table) => [
+    index('notifications_unspoken_idx').on(table.spokenAt, table.createdAt),
     uniqueIndex('notifications_dedupe_open_idx')
       .on(table.dedupeKey)
       .where(sql`acknowledged_at is null`),

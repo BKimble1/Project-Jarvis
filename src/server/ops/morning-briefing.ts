@@ -61,6 +61,7 @@ export async function buildMorningBriefing(
     | 'briefings'
     | 'sources'
     | 'personalSignals'
+    | 'settings'
   >,
   options: { readonly now?: Date; readonly lastBriefingAt?: string | null } = {},
 ): Promise<MorningBriefing> {

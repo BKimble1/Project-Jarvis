@@ -79,6 +79,21 @@ export interface JarvisScreenProps {
   readonly headline: string;
   readonly modeLabel: string;
   readonly modeMeaning: string;
+  /**
+   * What Jarvis is doing with itself, in one word, decided on the server.
+   *
+   * The screen renders this and does not compute it. A dashboard that worked out its own posture
+   * would eventually disagree with the morning briefing about whether Jarvis was blocked, and the
+   * owner would believe whichever he happened to be reading.
+   */
+  readonly posture: {
+    readonly posture: string;
+    readonly label: string;
+    readonly sentence: string;
+    readonly tone: string;
+    readonly handsOff: boolean;
+    readonly blockers: readonly string[];
+  };
   /** The raw operating mode, so the screen can tell "paused" from "supervised" without parsing a label. */
   readonly mode: string;
   readonly loopState: string;
@@ -258,6 +273,24 @@ export function JarvisScreen(props: JarvisScreenProps) {
     props.standingEvaluation,
   );
   const [thinking, setThinking] = React.useState<ThinkingSnapshot | null>(props.standingThinking);
+
+  /**
+   * Which message the screen is currently showing the answer to.
+   *
+   * ## Why a counter and not the request id
+   *
+   * Because the thing that must not happen is *any* older response landing on a newer message, and
+   * an older response does not always have a request id to compare against. Ask an idea, then ask
+   * a plain question before the assessment arrives: the second turn has no reasoning request at
+   * all, so there is no id for the first one's poll to be measured against — and it would happily
+   * paint its assessment over the answer to a question it knows nothing about.
+   *
+   * One number, incremented the moment a message is submitted, answers it in every case. A poll
+   * subscribed under submission 4 that comes back while the screen is showing submission 5 is
+   * discarded — its answer is still safely on its row, and a refresh or a return to that proposal
+   * shows it. What it may not do is replace something newer that Blake is looking at now.
+   */
+  const submission = React.useRef(0);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
   const turnId = React.useRef(0);
@@ -569,6 +602,8 @@ export function JarvisScreen(props: JarvisScreenProps) {
   React.useEffect(() => {
     if (thinking?.state !== 'thinking' && thinking?.state !== 'blocked') return;
     const requestId = thinking.requestId;
+    /* The message this poll belongs to. Anything newer takes the screen away from it. */
+    const belongsTo = submission.current;
     let cancelled = false;
 
     /*
@@ -591,6 +626,15 @@ export function JarvisScreen(props: JarvisScreenProps) {
           if (!response.ok || cancelled) return;
           const body = (await response.json()) as { thinking: ThinkingSnapshot };
           if (cancelled || body.thinking.state === 'thinking') return;
+          /*
+           * Submitted something else while this was in the air. The effect's own cleanup usually
+           * catches that, but it runs after React has re-rendered, and this continuation can land
+           * inside that gap — which is exactly long enough to paint a stale assessment over a
+           * message Blake has just sent.
+           */
+          if (submission.current !== belongsTo) return;
+          /* And never onto a different request, whatever the ordering. */
+          if (body.thinking.requestId !== requestId) return;
           /* Still blocked for the same reason is not news, and must not re-announce itself. */
           if (body.thinking.state === 'blocked' && thinking.state === 'blocked') return;
 
@@ -644,6 +688,14 @@ export function JarvisScreen(props: JarvisScreenProps) {
   }
 
   async function askJarvis(text: string) {
+    /*
+     * Claimed before the request leaves, not after it returns.
+     *
+     * Every poll already in flight belongs to an earlier message from this instant on, whatever
+     * order the responses come back in.
+     */
+    submission.current += 1;
+    const mine = submission.current;
     setBusy(true);
     try {
       const response = await fetch('/api/conversation', {
@@ -669,6 +721,13 @@ export function JarvisScreen(props: JarvisScreenProps) {
         thinking: ThinkingSnapshot | null;
         notes: readonly string[];
       };
+
+      /*
+       * Overtaken while this was in flight — two messages sent in quick succession, and this is
+       * the older one's reply. Dropping it is right: the newer message is what is on screen, and
+       * nothing here is lost, because every answer is stored against its own turn.
+       */
+      if (submission.current !== mine) return;
 
       setAnswer(turn.answer);
       setAsked(text);
@@ -716,6 +775,9 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * back for the screen. This redesign adds no approval and removes none.
    */
   async function throughVoiceGate(text: string) {
+    /* Same claim a typed message makes. See `submission`. */
+    submission.current += 1;
+    const mine = submission.current;
     setBusy(true);
     try {
       const submitted = await fetch('/api/voice', {
@@ -730,6 +792,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
         requiresVisualApproval?: boolean;
         error?: { message?: string };
       };
+      if (submission.current !== mine) return;
       if (!submitted.ok || !understood.id || !understood.intent) {
         say(understood.error?.message ?? 'I could not make sense of that.');
         return;
@@ -745,10 +808,38 @@ export function JarvisScreen(props: JarvisScreenProps) {
         body: JSON.stringify({ text, shownIntent: understood.intent }),
       });
       const result = (await confirmed.json().catch(() => ({}))) as {
-        outcome?: { said?: string };
+        outcome?: {
+          said?: string;
+          turn?: {
+            proposal: { id: string; summary: string } | null;
+            thinking: ThinkingSnapshot | null;
+            evaluation: ConversationEvaluation | null;
+          };
+        };
         error?: { message?: string };
       };
+      if (submission.current !== mine) return;
       if (confirmed.ok) markCompleted();
+
+      /*
+       * A spoken idea leaves the same things on screen as a typed one.
+       *
+       * Without this the words went through the whole path — proposal opened, question queued,
+       * worker answered — and the screen showed a sentence and nothing else: no panel to watch, and
+       * no standing proposal, so the "go ahead" that came next had nothing to accept. Speaking an
+       * idea and typing it are the same turn, and now they leave the same state.
+       */
+      const carried = result.outcome?.turn;
+      if (carried) {
+        setAsked(text);
+        setAnswer(null);
+        setBriefing(null);
+        setProposal(carried.proposal);
+        setEvaluation(carried.evaluation ?? null);
+        setThinking(carried.thinking ?? null);
+        setExpanded(carried.thinking !== null || carried.evaluation !== null);
+      }
+
       say(result.outcome?.said ?? result.error?.message ?? 'That did not work.');
       router.refresh();
     } catch {
@@ -1108,12 +1199,27 @@ export function JarvisScreen(props: JarvisScreenProps) {
             instead of occupying the top of the screen permanently.
           */}
           <div className="order-last flex min-w-0 basis-full flex-wrap items-center gap-2 xl:order-none xl:basis-auto">
+            {/*
+              The posture, not the mode.
+
+              The mode is a stored value with six names, three of which mean "nothing is happening"
+              for different reasons; the posture is the answer to what the owner is actually asking
+              when he glances up here. It still links to Operations, because that is where the
+              answer is changed.
+            */}
             <Link
               href="/operations"
-              title={props.modeMeaning}
-              className="rounded-full border border-[color-mix(in_srgb,var(--jx-line)_75%,transparent)] px-2.5 py-1 text-[0.6875rem] tracking-[0.08em] text-[var(--jx-ink-dim)] uppercase transition-colors hover:border-[var(--jx-blue)] hover:text-[var(--jx-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
+              title={props.posture.sentence}
+              data-testid="jx-posture"
+              data-posture={props.posture.posture}
+              className="flex items-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--jx-line)_75%,transparent)] px-2.5 py-1 text-[0.6875rem] tracking-[0.08em] text-[var(--jx-ink-dim)] uppercase transition-colors hover:border-[var(--jx-blue)] hover:text-[var(--jx-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jx-cyan)]"
             >
-              {props.modeLabel}
+              <span
+                aria-hidden
+                className="h-2 w-2 rounded-full"
+                style={{ background: `var(--jx-${props.posture.tone})` }}
+              />
+              {props.posture.label}
             </Link>
 
             <button
@@ -1235,6 +1341,25 @@ export function JarvisScreen(props: JarvisScreenProps) {
         {showStatus ? (
           <div id="jx-status-details" className="shrink-0">
             <ReadinessStrip readiness={props.readiness} />
+            {/*
+              The reason, every time.
+
+              A pause the owner cannot account for is indistinguishable from a fault, so the
+              sentence behind the posture is here whatever the posture is — not only when something
+              has gone wrong. Where there is more than one thing in the way, all of them are
+              listed: "Blocked" with one cause named and two hidden is how a person fixes the
+              wrong thing.
+            */}
+            <p className="mt-2 text-[0.75rem] text-[var(--jx-ink)]" data-testid="jx-posture-reason">
+              {props.posture.sentence}
+            </p>
+            {props.posture.blockers.length > 1 ? (
+              <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[0.75rem] text-[var(--jx-ink-dim)]">
+                {props.posture.blockers.map((blocker) => (
+                  <li key={blocker}>{blocker}</li>
+                ))}
+              </ul>
+            ) : null}
             <p className="mt-2 text-[0.75rem] text-[var(--jx-ink-dim)]">{props.modeMeaning}</p>
           </div>
         ) : null}

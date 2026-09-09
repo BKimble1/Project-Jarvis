@@ -38,10 +38,24 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
     now: Date;
   }): Promise<ReasoningRequest> {
     /*
-     * `onConflictDoUpdate` on the unique key, touching only `updated_at`. An insert that loses the
-     * race still returns the winning row, which is what makes asking twice cost one answer. The
-     * state is deliberately not reset: a request that already succeeded keeps its result, and the
-     * caller decides whether to show it or ask again on purpose.
+     * `onConflictDoUpdate` on the unique key. An insert that loses the race still returns the
+     * winning row, which is what makes asking twice cost one answer. The state is deliberately not
+     * reset: a request that already succeeded keeps its result, and the caller decides whether to
+     * show it or ask again on purpose.
+     *
+     * ## Why the prompt is rewritten, and only while the row is still queued
+     *
+     * It was not, and the row kept whatever text arrived first. So a person who described an idea,
+     * saw nothing happen, and described it again more fully had the *second* description written
+     * onto the proposal — `open` updates `idea` — and the *first* one sent to the worker. The
+     * screen then showed an assessment that did not answer what he had just asked, with no way to
+     * tell from the outside that two different texts were in play.
+     *
+     * `setWhere` confines the rewrite to a row nobody has picked up yet. Once a worker has claimed
+     * a request it is reading that prompt on another machine, and changing it underneath would
+     * produce an answer stored against text that was never sent — the same failure, better hidden.
+     * A claimed or finished request keeps its prompt, and the newer description is answered by
+     * asking again deliberately rather than by rewriting history.
      */
     const [row] = await this.db
       .insert(reasoningRequests)
@@ -57,11 +71,20 @@ export class DrizzleReasoningRepository implements ReasoningRepository {
       })
       .onConflictDoUpdate({
         target: reasoningRequests.requestKey,
-        set: { updatedAt: input.now },
+        set: { updatedAt: input.now, input: input.input, conversationId: input.conversationId },
+        setWhere: eq(reasoningRequests.state, 'queued'),
       })
       .returning();
 
-    if (!row) throw new Error('The reasoning request could not be written.');
+    /*
+     * `setWhere` that matches nothing updates nothing and returns nothing, which is not a failure —
+     * it is the claimed-or-finished case above. The existing row is the answer.
+     */
+    if (!row) {
+      const existing = await this.findByKey(input.requestKey);
+      if (!existing) throw new Error('The reasoning request could not be written.');
+      return existing;
+    }
     return toRequest(row);
   }
 

@@ -1,5 +1,7 @@
+import { APPROVAL_POLICY_KEY, parseApprovalPolicy } from '@/domain/approval-policy';
 import { mergeAccountLimits, decideCapacity } from '@/domain/claude-capacity';
 import { OPERATING_MODE_LABELS, OPERATING_MODE_MEANING } from '@/domain/operating-mode';
+import { derivePosture, handsOffGaps, type PostureView } from '@/domain/operating-posture';
 import { nextActions, summariseNextActions, type NextAction } from '@/domain/next-actions';
 import { PRIORITY_BANDS } from '@/domain/opportunity';
 import { supervisorHealth, type SupervisorHealth } from '@/domain/supervisor-health';
@@ -43,6 +45,17 @@ export interface OperatingPicture {
   readonly mode: string;
   readonly modeLabel: string;
   readonly modeMeaning: string;
+  /**
+   * The one word for what Jarvis is doing with itself, and the sentence explaining it.
+   *
+   * Derived here rather than in the screen so that the dashboard, the briefing and any spoken
+   * answer say the same word. A screen computing its own posture would eventually disagree with
+   * the briefing about whether Jarvis was blocked, and the owner would believe whichever he
+   * happened to be looking at.
+   */
+  readonly posture: PostureView;
+  /** What is still missing before Hands-off is genuinely on. Empty when it is. */
+  readonly handsOffGaps: readonly string[];
   readonly standingAuthority: boolean;
   /** Why standing authority is not in force, when it is not. */
   readonly blockedReason: string | null;
@@ -69,21 +82,26 @@ type PictureServices = Pick<
   | 'tasks'
   | 'opportunities'
   | 'projects'
+  | 'settings'
 >;
 
 export async function buildOperatingPicture(
   services: PictureServices,
   now: Date = new Date(),
 ): Promise<OperatingPicture> {
-  const [authority, ticks, workers, open, observations, backlog, projects] = await Promise.all([
-    services.charterService.authority(),
-    services.operatorTicks.recent(12),
-    services.workerRepo.list(),
-    services.missionRepo.listOpen(),
-    services.workerRepo.capacityObservations(),
-    services.opportunities.listByState(['open']),
-    services.projects.listAllForAssessment(false),
-  ]);
+  const [authority, ticks, workers, open, observations, backlog, projects, storedPolicy] =
+    await Promise.all([
+      services.charterService.authority(),
+      services.operatorTicks.recent(12),
+      services.workerRepo.list(),
+      services.missionRepo.listOpen(),
+      services.workerRepo.capacityObservations(),
+      services.opportunities.listByState(['open']),
+      services.projects.listAllForAssessment(false),
+      services.settings.get(APPROVAL_POLICY_KEY),
+    ]);
+
+  const policy = parseApprovalPolicy(storedPolicy);
 
   const loop = supervisorHealth(ticks, now);
 
@@ -198,6 +216,42 @@ export async function buildOperatingPicture(
       })),
   });
 
+  const workerDetail =
+    ready.length > 0
+      ? `${ready.length} worker${ready.length === 1 ? '' : 's'} connected.`
+      : live.length === 0
+        ? 'No worker is enrolled, so nothing can run.'
+        : 'A worker is enrolled but is not reporting.';
+
+  /*
+   * What is stopping work, as opposed to what the owner chose.
+   *
+   * Only things that are wrong belong here. Being supervised is not a blocker — it is a setting —
+   * and a deployment that reported the owner's own preference as an obstruction would train him to
+   * ignore the word.
+   *
+   * A held-back governor is not a fault, but it does stop work starting, so it is named here — an
+   * owner watching nothing happen deserves to be told which of the two it is. `unknown` is not:
+   * it means no window has been measured yet, which is the state of every fresh install, and a
+   * deployment that greeted its owner with "Blocked" on the first morning would have taught him
+   * the word meant nothing before he had used it once.
+   */
+  const blockers: readonly string[] = [
+    ready.length === 0 ? workerDetail : null,
+    loop.state === 'stalled' || loop.state === 'never_run'
+      ? 'The operator loop is not running, so Jarvis will not start anything by itself.'
+      : null,
+    decision.verdict === 'reserved' || decision.verdict === 'exhausted' ? decision.reason : null,
+  ].filter((entry): entry is string => entry !== null);
+
+  const posture = derivePosture({
+    mode: authority.mode,
+    policy,
+    runningCount: running.length,
+    blockers,
+    waitingOnOwner: actions.filter((action) => action.requiresOwner).length,
+  });
+
   return {
     headline: headline({
       modeLabel: OPERATING_MODE_LABELS[authority.mode],
@@ -208,17 +262,14 @@ export async function buildOperatingPicture(
     mode: authority.mode,
     modeLabel: OPERATING_MODE_LABELS[authority.mode],
     modeMeaning: OPERATING_MODE_MEANING[authority.mode],
+    posture,
+    handsOffGaps: handsOffGaps(authority.mode, policy),
     standingAuthority: authority.standingAuthority,
     blockedReason: authority.blockedReason,
     loop,
     capacity: { verdict: decision.verdict, reason: decision.reason },
     workerReady: ready.length > 0,
-    workerDetail:
-      ready.length > 0
-        ? `${ready.length} worker${ready.length === 1 ? '' : 's'} connected.`
-        : live.length === 0
-          ? 'No worker is enrolled, so nothing can run.'
-          : 'A worker is enrolled but is not reporting.',
+    workerDetail,
     running,
     actions,
     actionSummary: summariseNextActions(actions),

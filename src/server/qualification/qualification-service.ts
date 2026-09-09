@@ -94,6 +94,9 @@ export const EXPECTED_MIGRATIONS: readonly string[] = [
   '0019_reasoning_requests.sql',
   '0020_reasoning_stage.sql',
   '0021_operating_states.sql',
+  '0022_mission_lease.sql',
+  '0023_reminders.sql',
+  '0024_notifications_spoken.sql',
 ];
 
 /** Settings keys this service owns. Named once so a typo cannot silently create a second key. */

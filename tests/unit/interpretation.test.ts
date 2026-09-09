@@ -266,3 +266,91 @@ describe('the rest of the everyday sentences', () => {
     }
   });
 });
+
+/**
+ * The morning a budgeting app was read as an instruction to slow down.
+ *
+ * Blake typed, on the dashboard:
+ *
+ *     "Evaluate this idea: a simple student budget app that tracks recurring bills, weekly
+ *      spending, and how much income I need each month. Give me your assessment and the smallest
+ *      useful V1. Do not build anything yet."
+ *
+ * and read back a paragraph about running fewer missions in parallel. It looked exactly like stale
+ * context — an old operator message answering a new turn — and it was not: `\bbudget\b` was a word
+ * in the pattern that recognises "conserve my Claude allowance", so a *budgeting app* matched, and
+ * everything after that was correct for the message the interpreter thought it had.
+ *
+ * That is the third appearance of one bug. A rule read a single word out of a sentence that was
+ * about something else: it named a project "Yet" from "Do not build anything yet", it read a plan's
+ * promise *not* to merge as an intention to merge, and here it heard a request for advice as an
+ * order. Two things were changed — the word now needs its object, and a message that carries a
+ * subject beats a bare command — and both are pinned below, along with the commands that must
+ * still work.
+ */
+describe('a subject is not a command', () => {
+  const BUDGET_IDEA =
+    'Evaluate this idea: a simple student budget app that tracks recurring bills, weekly ' +
+    'spending, and how much income I need each month. Give me your assessment and the smallest ' +
+    'useful V1. Do not build anything yet.';
+
+  it('reads a budgeting app as an idea rather than as an instruction to slow down', () => {
+    const read = interpretMessage(BUDGET_IDEA);
+
+    expect(read.kind).toBe('idea');
+    expect(read.command).toBeNull();
+    expect(read.pace).toBeNull();
+    /* And the constraint survives the reading: judgement was asked for, building was forbidden. */
+    expect(read.noBuildYet).toBe(true);
+  });
+
+  it('is not fooled by any of the ordinary ways to name a budget', () => {
+    for (const said of [
+      'What do you think of a budget tracker for freelancers?',
+      'Is a household budget planner worth building?',
+      'I have an idea for an app that helps students budget their term.',
+    ]) {
+      const read = interpretMessage(said);
+      expect(read.pace, said).toBeNull();
+      expect(read.kind, said).toBe('idea');
+    }
+  });
+
+  it('still reads a genuine pace instruction as one', () => {
+    for (const said of [
+      'Slow down until my Claude allowance resets.',
+      'Take it easy for the rest of the day.',
+      'Ease off — budget my capacity until Friday.',
+      'Go easy today.',
+    ]) {
+      const read = interpretMessage(said);
+      expect(read.kind, said).toBe('command');
+      expect(read.command, said).toBe('pace');
+      expect(read.pace, said).toBe('conserve');
+    }
+  });
+
+  it('lets a subject beat a bare command word', () => {
+    /*
+     * "Pause" is a whole command, and also a word somebody's app is about. A message that carries
+     * a subject and asks for a judgement is not mission control — and the failure mode of getting
+     * this the other way round is answering a question nobody asked.
+     */
+    const read = interpretMessage(
+      'What do you think of an app that lets you pause and resume a shared shopping list?',
+    );
+    expect(read.kind).toBe('idea');
+    expect(read.command).toBeNull();
+  });
+
+  it('leaves the bare commands exactly as they were', () => {
+    for (const [said, command] of [
+      ['pause', 'pause'],
+      ['stop', 'stop'],
+      ['cancel', 'cancel'],
+      ['retry', 'retry'],
+    ] as const) {
+      expect(interpretMessage(said).command, said).toBe(command);
+    }
+  });
+});

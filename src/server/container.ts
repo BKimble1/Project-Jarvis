@@ -222,6 +222,7 @@ import type {
 import { MissionService } from '@/server/missions/mission-service';
 import { VoiceService } from '@/server/voice/voice-service';
 import { buildOperatingPicture, type OperatingPicture } from '@/server/ops/operating-picture';
+import { ScheduleService } from '@/server/schedules/schedule-service';
 import { WorkerService } from '@/server/missions/worker-service';
 
 /**
@@ -306,6 +307,8 @@ export interface Services {
   readonly answers: AnswerRepository;
   readonly qualification: QualificationRepository;
   readonly schedules: ScheduleRepository;
+  /** The thing that makes a schedule happen. See `server/schedules/schedule-service`. */
+  readonly scheduleService: ScheduleService;
   readonly briefingRecords: BriefingRepository;
   readonly notifications: NotificationRepository;
   readonly notificationPreferences: PreferenceRepository;
@@ -918,7 +921,28 @@ export function buildServices(
       tasks,
       opportunities,
       projects,
+      settings,
     });
+
+  /*
+   * The caller these tables never had.
+   *
+   * Constructed here rather than lazily, because a schedule that fires depends on nothing being
+   * forgotten at wiring time — and a service that is only built when something asks for it is a
+   * service that never runs on a machine where nothing asks.
+   */
+  const scheduleService = new ScheduleService({
+    schedules: scheduleRepo,
+    notifications: notificationRepo,
+    briefings: briefingRecords,
+    settings,
+    audit,
+    allows: async (capability) => {
+      const verdict = await qualificationService.evaluate(capability as never);
+      return { allowed: verdict.allowed, reason: verdict.reason ?? 'Not available at this level.' };
+    },
+    ...(overrides.clock ? { clock: overrides.clock } : {}),
+  });
 
   const router = new StatusQueryRouter({
     projects,
@@ -1102,6 +1126,7 @@ export function buildServices(
     qualification,
     schedules: scheduleRepo,
     briefingRecords,
+    scheduleService,
     notifications: notificationRepo,
     notificationPreferences,
     push,

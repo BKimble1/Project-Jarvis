@@ -12,7 +12,9 @@ import { getServices } from '@/server/container';
 import { CapacityControls } from '@/components/operations/capacity-controls';
 import { ClaudeCapacity } from '@/components/operations/claude-capacity';
 import { buildCapacityView } from '@/server/operator/capacity-view';
+import { handsOffStatus } from '@/server/ops/hands-off';
 import { ReadinessPanel } from '@/components/operations/readiness-panel';
+import { HandsOffPanel } from '@/components/operations/hands-off-panel';
 import { SupervisorPanel } from '@/components/operations/supervisor-panel';
 import { supervisorHealth } from '@/domain/supervisor-health';
 import { OUTCOME_VERDICT_LABELS, summariseOutcomes, type OutcomeVerdict } from '@/domain/outcome';
@@ -41,6 +43,7 @@ export default async function OperationsPage() {
 
   const [
     posture,
+    handsOff,
     limits,
     activeTasks,
     missions,
@@ -53,9 +56,11 @@ export default async function OperationsPage() {
     operatorState,
     outcomes,
     missionPage,
+    restarts,
     usageRows,
   ] = await Promise.all([
     services.orchestrator.posture(),
+    handsOffStatus(services),
     services.orchestrator.limits(),
     services.tasks.listActive(),
     services.missionRepo.listOpen(),
@@ -76,6 +81,14 @@ export default async function OperationsPage() {
     services.outcomes.recent(8),
     /* Everything Jarvis touched in the last day, for the "what happened today" question. */
     services.missionRepo.list({ limit: 60 }),
+    /*
+     * What the supervisor has had to do to keep a worker alive.
+     *
+     * Not derivable from the worker rows: a crash and a quiet minute look identical from here, so
+     * this is the supervisor's own account, filed at the time. It is the number Blake needs before
+     * leaving a machine to work overnight.
+     */
+    services.audit.list({ actions: ['worker.restarted', 'worker.abandoned'], limit: 8 }),
     /*
      * Filtered in the query rather than in the page: an instance that has been running for months
      * has a lot of ledger rows, and "the last day" is a range the index already answers.
@@ -217,6 +230,25 @@ export default async function OperationsPage() {
         </CardContent>
       </Card>
 
+      {/*
+       * Immediately below "is it running", because the two answer one question between them: what
+       * will happen to the next thing Blake asks for, and how far it gets before it needs him.
+       */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">How much I do on my own</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <HandsOffPanel
+            on={handsOff.on}
+            gaps={handsOff.gaps}
+            canEnable={handsOff.canEnable}
+            blockedReason={handsOff.blockedReason}
+            preAuthorised={handsOff.policy.preAuthorised}
+          />
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="text-sm">Readiness</CardTitle>
@@ -282,6 +314,39 @@ export default async function OperationsPage() {
           </Link>
           .
         </p>
+      ) : null}
+
+      {restarts.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Worker restarts</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 pt-0">
+            <p className="text-xs text-[var(--color-text-muted)]">
+              What the supervisor has had to do to keep a worker running. A crash and a quiet minute
+              look the same from here, so this is the supervisor&rsquo;s own account, filed when it
+              happened.
+            </p>
+            <ul className="flex flex-col gap-1.5">
+              {restarts.map((event) => (
+                <li key={event.id} className="text-xs">
+                  <span
+                    className={
+                      event.action === 'worker.abandoned'
+                        ? 'text-[var(--color-critical-text)]'
+                        : 'text-[var(--color-text)]'
+                    }
+                  >
+                    {event.summary}
+                  </span>{' '}
+                  <span className="text-[var(--color-text-subtle)]">
+                    <RelativeTime iso={event.occurredAt} />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
       ) : null}
 
       {posture !== 'open' ? (

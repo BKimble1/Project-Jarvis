@@ -180,6 +180,13 @@ export interface Mission {
 
   readonly activeRunId: string | null;
   readonly claimedByWorkerId: string | null;
+  /**
+   * When the holding worker's claim stops being believed.
+   *
+   * A heartbeat says a process is alive; this says a mission is still being worked on. Null when
+   * nothing holds it.
+   */
+  readonly leaseExpiresAt: string | null;
   readonly attemptCount: number;
   readonly currentPlanVersion: number | null;
   readonly approvedPlanVersion: number | null;

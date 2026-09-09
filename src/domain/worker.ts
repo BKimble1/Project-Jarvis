@@ -65,6 +65,18 @@ export interface WorkerHealth {
 }
 
 /** How long a worker may be silent before Jarvis stops describing it as connected. */
+/**
+ * How long a mission claim is believed without a fresh report of progress.
+ *
+ * Deliberately far longer than the disconnect grace for a *process*. A worker that vanishes for
+ * ninety seconds has probably been restarted and will come back to the same workspace; taking its
+ * mission away at that point would be the reclaim causing the disruption it exists to recover
+ * from. Five minutes is long enough that a restart, a slow install or a laptop lid closing does
+ * not lose a mission, and short enough that a genuinely dead worker does not hold one all night.
+ */
+export const MISSION_LEASE_SECONDS = 300;
+export const MISSION_LEASE_MS = MISSION_LEASE_SECONDS * 1000;
+
 export const WORKER_HEARTBEAT_GRACE_SECONDS = 45;
 export const WORKER_DISCONNECT_SECONDS = 120;
 

@@ -68,6 +68,7 @@ function mission(overrides: Partial<Mission> = {}): Mission {
     pullRequestNumber: null,
     activeRunId: null,
     claimedByWorkerId: null,
+    leaseExpiresAt: null,
     attemptCount: 0,
     currentPlanVersion: 1,
     approvedPlanVersion: 1,

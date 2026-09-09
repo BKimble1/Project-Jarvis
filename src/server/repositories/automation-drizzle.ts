@@ -323,6 +323,7 @@ export class DrizzleScheduleRepository implements ScheduleRepository {
         instruction: input.instruction ? boundText(input.instruction, 1000) : null,
         enabled: input.enabled ?? true,
         createdBy: input.createdBy,
+        onDate: input.onDate ?? null,
       })
       .returning();
     if (!row) throw new NotFoundError('Schedule');
@@ -370,6 +371,9 @@ export class DrizzleScheduleRepository implements ScheduleRepository {
               pausedReason: patch.pausedReason === null ? null : boundText(patch.pausedReason, 300),
             }
           : {}),
+        ...(patch.onDate !== undefined ? { onDate: patch.onDate } : {}),
+        ...(patch.snoozedUntil !== undefined ? { snoozedUntil: patch.snoozedUntil } : {}),
+        ...(patch.completedAt !== undefined ? { completedAt: patch.completedAt } : {}),
         updatedAt: new Date(),
       })
       .where(eq(schedules.id, id))
@@ -586,6 +590,7 @@ export class DrizzleNotificationRepository implements NotificationRepository {
         dedupeKey: input.dedupeKey,
         lastOccurredAt: now,
         expiresAt: input.expiresAt ?? null,
+        spokenAt: input.spokenAt ?? null,
       })
       .onConflictDoNothing({
         target: notifications.dedupeKey,
@@ -671,6 +676,41 @@ export class DrizzleNotificationRepository implements NotificationRepository {
       .where(isNull(notifications.readAt))
       .returning({ id: notifications.id });
     return rows.length;
+  }
+
+  /**
+   * What nobody has said out loud yet.
+   *
+   * Acknowledged rows are excluded: something Blake has already dealt with must not be announced
+   * to him afterwards, and a queue that read out an hour of history on the next page load is the
+   * exact failure the watermark exists to prevent.
+   */
+  async unspoken(limit = 20): Promise<readonly JarvisNotification[]> {
+    const rows = await this.db
+      .select()
+      .from(notifications)
+      .where(and(isNull(notifications.spokenAt), isNull(notifications.acknowledgedAt)))
+      .orderBy(notifications.createdAt)
+      .limit(Math.min(Math.max(limit, 1), 50));
+    return rows.map((row) => toNotification(row));
+  }
+
+  /**
+   * Claim these for speaking, and report only the ones actually won.
+   *
+   * The `is null` in the predicate is the whole mechanism. Two tabs polling at once both read the
+   * same rows and both try to claim them; the update is conditional, so each row is won by exactly
+   * one of them and the other is told it got nothing. Deciding this in the browser instead — "have
+   * I said this before?" — cannot work, because the browser is the thing that was just reloaded.
+   */
+  async markSpoken(ids: readonly string[], now: Date): Promise<readonly string[]> {
+    if (ids.length === 0) return [];
+    const won = await this.db
+      .update(notifications)
+      .set({ spokenAt: now })
+      .where(and(inArray(notifications.id, [...ids]), isNull(notifications.spokenAt)))
+      .returning({ id: notifications.id });
+    return won.map((row) => row.id);
   }
 
   async countSince(category: NotificationCategory, since: Date): Promise<number> {

@@ -114,7 +114,7 @@ export function nextActions(input: NextActionInput): readonly NextAction[] {
       kind: 'start_worker',
       label: 'Start a worker',
       detail:
-        'No worker is connected, so nothing can run. Jarvis can still plan and answer questions.',
+        'Nothing is connected on your machine, so I cannot run anything. I can still plan and answer questions.',
       href: '/workers',
       subjectId: 'worker',
       requiresOwner: true,
@@ -125,8 +125,8 @@ export function nextActions(input: NextActionInput): readonly NextAction[] {
     actions.push({
       id: 'resume_jarvis',
       kind: 'resume_jarvis',
-      label: 'Resume Jarvis',
-      detail: `Jarvis is ${OPERATING_MODE_LABELS[input.mode].toLowerCase()}, so it will not start anything on its own.`,
+      label: 'Let me start work again',
+      detail: `I am ${OPERATING_MODE_LABELS[input.mode].toLowerCase()}, so I will not start anything on my own.`,
       href: '/operations',
       subjectId: 'mode',
       requiresOwner: true,
@@ -150,7 +150,7 @@ export function nextActions(input: NextActionInput): readonly NextAction[] {
       id: `plan:${entry.missionId}`,
       kind: 'approve_plan',
       label: `Approve the plan for ${entry.missionTitle}`,
-      detail: `Jarvis has written a plan and is waiting. Risk: ${entry.riskLevel.replace(/_/g, ' ')}.`,
+      detail: `I have written a plan and I am waiting on you. Risk: ${entry.riskLevel.replace(/_/g, ' ')}.`,
       href: `/missions/${entry.missionId}`,
       subjectId: entry.missionId,
       requiresOwner: true,

@@ -156,6 +156,7 @@ export default async function DashboardPage() {
       mode={picture.mode}
       modeLabel={picture.modeLabel}
       modeMeaning={picture.modeMeaning}
+      posture={picture.posture}
       loopState={picture.loop.state}
       loopExplanation={picture.loop.explanation}
       standingAuthority={picture.standingAuthority}

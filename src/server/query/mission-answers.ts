@@ -394,7 +394,7 @@ export function answerExecutionRequest(
 
   if (intake.kind === 'prohibited') {
     return {
-      ...base('prohibited_request', 'Jarvis will not do that', intake.refusal ?? ''),
+      ...base('prohibited_request', 'I will not do that', intake.refusal ?? ''),
       href: null,
       notice: 'No mission was created.',
       sections: [

@@ -103,6 +103,9 @@ export function toSchedule(row: Row<typeof schedules>): Schedule {
     lastOccurrenceAt: iso(row.lastOccurrenceAt),
     pausedAt: iso(row.pausedAt),
     pausedReason: row.pausedReason,
+    onDate: row.onDate,
+    snoozedUntil: iso(row.snoozedUntil),
+    completedAt: iso(row.completedAt),
   };
 }
 
@@ -163,6 +166,7 @@ export function toNotification(row: Row<typeof notifications>): JarvisNotificati
     readAt: iso(row.readAt),
     acknowledgedAt: iso(row.acknowledgedAt),
     expiresAt: iso(row.expiresAt),
+    spokenAt: iso(row.spokenAt),
   };
 }
 

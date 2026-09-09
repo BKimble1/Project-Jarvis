@@ -44,11 +44,19 @@ export const OPERATING_MODE_LABELS: Record<OperatingMode, string> = {
   emergency_stop: 'Emergency stop',
 };
 
+/**
+ * What each mode means, said to Blake in the first person.
+ *
+ * These are read on the dashboard beside sentences Jarvis says about itself, and the mode meaning
+ * is interpolated into spoken lines when work stops. A third-person clause in the middle of one of
+ * those is the thing the voice rule exists to prevent, so it is written the same way here as
+ * everywhere else Blake is addressed. The mode's *label* is a status word and stays a status word.
+ */
 export const OPERATING_MODE_MEANING: Record<OperatingMode, string> = {
-  off: 'Jarvis is not watching anything and will not start work.',
-  observer: 'Jarvis watches and tells you what it would do. It creates nothing.',
-  supervised: 'Jarvis proposes missions and waits for you to approve each one.',
-  operator: 'Jarvis creates and runs missions on its own, inside the charter you authorised.',
+  off: 'I am not watching anything and will not start work.',
+  observer: 'I watch and tell you what I would do. I create nothing.',
+  supervised: 'I propose missions and wait for you to approve each one.',
+  operator: 'I create and run missions on my own, inside the charter you authorised.',
   paused: 'Work already running continues or stops safely. Nothing new begins.',
   emergency_stop: 'Everything that can be stopped safely is being stopped.',
 };

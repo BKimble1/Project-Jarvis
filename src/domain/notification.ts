@@ -162,6 +162,8 @@ export interface JarvisNotification {
   readonly readAt: string | null;
   readonly acknowledgedAt: string | null;
   readonly expiresAt: string | null;
+  /** When it was read out loud. Null means nobody has said it yet. */
+  readonly spokenAt: string | null;
 }
 
 export interface NotificationDelivery {

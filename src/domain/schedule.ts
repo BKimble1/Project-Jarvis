@@ -50,6 +50,14 @@ export const SCHEDULE_KINDS = [
   'health_check',
   /** Knowledge review: expiring operational facts, unresolved conflicts. */
   'knowledge_review',
+  /**
+   * Something Blake asked to be reminded about.
+   *
+   * The only kind whose *content* is his rather than derived, and the only one that can be
+   * completed: a briefing is produced again tomorrow whatever he does with today's, whereas a
+   * reminder that has been dealt with should stop arriving.
+   */
+  'reminder',
 ] as const;
 export type ScheduleKind = (typeof SCHEDULE_KINDS)[number];
 
@@ -63,6 +71,7 @@ export const SCHEDULE_KIND_LABELS: Record<ScheduleKind, string> = {
   mission_draft: 'Draft a mission',
   health_check: 'Health check',
   knowledge_review: 'Review knowledge',
+  reminder: 'Reminder',
 };
 
 /**
@@ -84,6 +93,12 @@ export const KIND_CAPABILITY: Record<ScheduleKind, ActivationCapability> = {
   mission_draft: 'scheduled_mission_draft',
   health_check: 'scheduled_notification',
   knowledge_review: 'scheduled_briefing',
+  /*
+   * A reminder repeats words Blake wrote. It reads no repository, runs no model and reaches
+   * nothing outside Jarvis, so it takes the lightest capability there is — the same one a health
+   * check uses to put a notification on his own screen.
+   */
+  reminder: 'scheduled_notification',
 };
 
 /** Kinds that need a project. A project briefing about nothing is not a thing. */
@@ -95,10 +110,21 @@ export const PROJECT_SCOPED_KINDS = [
 
 /* ------------------------------------------------------------------ cadence */
 
-export const CADENCES = ['daily', 'weekdays', 'weekly', 'monthly'] as const;
+/**
+ * How often something comes round.
+ *
+ * `once` is the odd one out and is deliberately in the same list rather than in a table of its
+ * own. A one-time reminder and a daily briefing differ in exactly one respect — whether there is a
+ * next time — and everything else about them is identical: a wall-clock intention in a named zone,
+ * a DST policy, an idempotency key derived from the local occurrence, a catch-up rule, a retry
+ * bound. Modelling the one-time case separately would mean writing all of that twice and getting
+ * the second copy wrong, most likely in March.
+ */
+export const CADENCES = ['once', 'daily', 'weekdays', 'weekly', 'monthly'] as const;
 export type Cadence = (typeof CADENCES)[number];
 
 export const CADENCE_LABELS: Record<Cadence, string> = {
+  once: 'Once',
   daily: 'Every day',
   weekdays: 'Weekdays',
   weekly: 'Once a week',
@@ -161,6 +187,30 @@ export interface Schedule {
   readonly lastOccurrenceAt: string | null;
   readonly pausedAt: string | null;
   readonly pausedReason: string | null;
+  /**
+   * The single local day a `once` schedule fires on, as `YYYY-MM-DD`.
+   *
+   * The time of day still comes from `hour` and `minute`, so a one-time reminder is a wall-clock
+   * intention exactly like every other schedule and inherits the same DST policy. Null for every
+   * repeating cadence, and required for `once` — a one-time schedule with no day would either
+   * never fire or fire every day, and both are worse than refusing to create it.
+   */
+  readonly onDate: string | null;
+  /**
+   * Held until this instant, because Blake said "not now".
+   *
+   * Distinct from `pausedAt`, which means "stop entirely until I say otherwise". A snooze is a
+   * promise to come back, so it has a time on it, and the schedule stays enabled — an interface
+   * that showed a snoozed reminder as paused would be describing a delay as a decision.
+   */
+  readonly snoozedUntil: string | null;
+  /**
+   * When Blake said this was dealt with.
+   *
+   * Only reminders can be completed. A completed reminder never fires again and is not deleted,
+   * because "did I ever get round to that" is a question the record should be able to answer.
+   */
+  readonly completedAt: string | null;
 }
 
 export const EXECUTION_STATES = [
@@ -452,6 +502,18 @@ export function occurrenceIdempotencyKey(scheduleId: string, localKey: string): 
 
 function matchesCadence(schedule: Schedule, parts: ZonedParts): boolean {
   switch (schedule.cadence) {
+    case 'once':
+      /*
+       * Exactly one local day, compared as a string.
+       *
+       * Comparing formatted local parts rather than instants is the same choice the idempotency
+       * key makes, and for the same reason: "the 14th" is a wall-clock fact, and an instant
+       * comparison would put it on the wrong day for anyone far enough from UTC.
+       */
+      return (
+        schedule.onDate ===
+        `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+      );
     case 'daily':
       return true;
     case 'weekdays':
@@ -574,6 +636,51 @@ export function dueOccurrences(schedule: Schedule, now: Date): DueVerdict {
   }
 
   /*
+   * **R-SC7** — a finished reminder owes nothing, for ever.
+   *
+   * Checked before the snooze, because a reminder Blake completed while it was snoozed is
+   * completed: the snooze was a promise to come back to something that no longer needs him.
+   */
+  if (schedule.completedAt !== null) {
+    return { occurrences: [], rule: 'R-SC7', reason: 'Already dealt with.' };
+  }
+
+  /*
+   * **R-SC8** — a snooze is its own occurrence.
+   *
+   * The obvious implementation is wrong, and it is worth saying why. Marking a reminder "snoozed"
+   * and then letting the normal arithmetic find it again does nothing: the occurrence Blake
+   * snoozed has already been claimed, its idempotency key is spent, and the next *scheduled*
+   * occurrence of a daily reminder is tomorrow. "Remind me in an hour" would mean "tomorrow", and
+   * for a one-time reminder it would mean "never".
+   *
+   * So the snooze instant is itself an occurrence, with a key derived from it. That is exactly
+   * what Blake asked for — a reminder at 15:30 — and it inherits the whole mechanism: claimed
+   * once, retried under the same bound, recorded in the same place.
+   */
+  if (schedule.snoozedUntil !== null) {
+    const until = new Date(schedule.snoozedUntil);
+    if (until.getTime() > now.getTime()) {
+      return { occurrences: [], rule: 'R-SC8', reason: 'Snoozed.' };
+    }
+    const localKey = localOccurrenceKey(until, schedule.timeZone);
+    return {
+      occurrences: [
+        {
+          instant: until,
+          localKey,
+          idempotencyKey: occurrenceIdempotencyKey(schedule.id, `snooze:${localKey}`),
+          shifted: false,
+          action: 'run',
+          reason: null,
+        },
+      ],
+      rule: 'R-SC8',
+      reason: 'The snooze has run out.',
+    };
+  }
+
+  /*
    * With no watermark, start from the previous occurrence rather than from the beginning of time:
    * a schedule created this afternoon should not immediately deliver this morning's briefing.
    */
@@ -684,6 +791,10 @@ export function describeSchedule(schedule: Schedule): string {
   const time = `${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`;
   const zone = schedule.timeZone.replace(/_/g, ' ');
   switch (schedule.cadence) {
+    case 'once':
+      return schedule.onDate
+        ? `Once, on ${schedule.onDate} at ${time} (${zone})`
+        : `Once at ${time} (${zone})`;
     case 'daily':
       return `Every day at ${time} (${zone})`;
     case 'weekdays':

@@ -33,6 +33,29 @@ test.describe('the Jarvis screen', () => {
     await expect(core).toHaveAttribute('aria-hidden', 'true');
   });
 
+  test('names the posture, and gives the reason behind it', async ({ page }) => {
+    await page.goto('/dashboard');
+
+    /*
+     * One word for what Jarvis is doing with itself. No worker is enrolled in this suite and the
+     * loop has never run, so the honest answer is "Blocked" — a screen that said Supervised here
+     * would be reporting a setting while hiding the reason nothing is happening.
+     */
+    const posture = page.getByTestId('jx-posture');
+    await expect(posture).toBeVisible();
+    await expect(posture).toHaveAttribute('data-posture', 'blocked');
+    await expect(posture).toContainText('Blocked');
+
+    /*
+     * And the reason, on request rather than permanently — a pause somebody cannot account for is
+     * indistinguishable from a fault.
+     */
+    await page
+      .getByRole('button', { name: /No worker|All clear|Loop|Holding back|Paused/ })
+      .click();
+    await expect(page.getByTestId('jx-posture-reason')).toContainText(/worker|loop|connect/i);
+  });
+
   test('keeps the whole of Jarvis reachable from the screen that replaced the dashboard', async ({
     page,
     scenario,

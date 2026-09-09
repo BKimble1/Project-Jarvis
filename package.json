@@ -2,7 +2,7 @@
   "name": "project-jarvis",
   "version": "0.1.0",
   "private": true,
-  "description": "Jarvis — a private, single-user project registry and evidence-based portfolio status brain.",
+  "description": "Jarvis \u2014 a private, single-user project registry and evidence-based portfolio status brain.",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -38,7 +38,8 @@
     "worker:workspaces": "tsx scripts/workspaces.ts",
     "qualify": "tsx scripts/qualify.ts",
     "repair:project-name": "tsx scripts/repair-project-name.ts",
-    "vault:key": "tsx scripts/vault-key.ts"
+    "vault:key": "tsx scripts/vault-key.ts",
+    "worker:supervise": "tsx scripts/worker-supervise.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

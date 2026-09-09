@@ -37,7 +37,7 @@ import type {
 } from '@/domain/mission-run';
 import { containsSecret } from '@/domain/redaction';
 import { buildBranchName } from '@/domain/workspace-safety';
-import { deriveWorkerHealth, type WorkerHealth } from '@/domain/worker';
+import { MISSION_LEASE_MS, deriveWorkerHealth, type WorkerHealth } from '@/domain/worker';
 import { resolveProjectName, type MatchResult } from '@/server/query/parser';
 import type {
   ProjectRepository,
@@ -1405,6 +1405,107 @@ export class MissionService {
     ).length;
 
     return { stoppedConfirmed, stalled };
+  }
+
+  /**
+   * Keep a claim alive while the work behind it is genuinely moving.
+   *
+   * Called from the worker's own progress reports rather than from its heartbeat, on purpose. A
+   * heartbeat proves a process is running; it does not prove that *this mission* is being worked
+   * on. A worker stuck in a loop, or holding a mission it has silently abandoned, beats perfectly
+   * well — and a lease renewed by a heartbeat would never expire for either of them.
+   */
+  async renewMissionLease(missionId: string, workerId: string): Promise<void> {
+    const mission = await this.deps.missions.findById(missionId);
+    /* Only the worker that holds it may renew it. Anything else is a stale process reporting. */
+    if (!mission || mission.claimedByWorkerId !== workerId) return;
+    await this.deps.missions.patch(missionId, {
+      leaseExpiresAt: new Date(this.clock().getTime() + MISSION_LEASE_MS),
+    });
+  }
+
+  /**
+   * Take back the missions whose holder stopped renewing, and be careful about which.
+   *
+   * ## Why not everything is requeued
+   *
+   * Because `reconcileLostWorkers` above states the rule this must not break: a mission whose
+   * worker went silent is **not** failed, and the work on disk is very likely fine. A mission that
+   * had already started building has a branch, possibly commits, possibly a pull request. Handing
+   * that to a second worker does not resume it — it does it again, on top of itself.
+   *
+   * So only the states where nothing has been produced yet are requeued: `claimed`, where a worker
+   * took the mission and never began, and `preparing_workspace`, where it was still setting up.
+   * Both are safe because there is nothing to duplicate.
+   *
+   * Anything further along has its claim released and says so on its own timeline, so a returning
+   * worker can pick it up deliberately and a person can see it waiting — which is the honest
+   * outcome, and the same one the interface already shows as stalled.
+   *
+   * ## Why releasing the claim is safe
+   *
+   * `canClaimMission` refuses anything that is not `queued` with no active run, so releasing a
+   * claim cannot let a second worker start a step the first is still performing. The guard is the
+   * protection; the lease only decides when to stop believing the first worker.
+   */
+  async reclaimExpiredMissions(): Promise<{
+    readonly requeued: number;
+    readonly released: number;
+  }> {
+    const now = this.clock();
+    const open = await this.deps.missions.listOpen();
+
+    let requeued = 0;
+    let released = 0;
+
+    for (const mission of open) {
+      if (!mission.claimedByWorkerId || !mission.leaseExpiresAt) continue;
+      if (Date.parse(mission.leaseExpiresAt) > now.getTime()) continue;
+      if (!isActiveState(mission.state)) continue;
+
+      const safeToRequeue = mission.state === 'claimed' || mission.state === 'preparing_workspace';
+
+      if (safeToRequeue) {
+        await this.deps.missions.patch(mission.id, {
+          claimedByWorkerId: null,
+          activeRunId: null,
+          leaseExpiresAt: null,
+        });
+        const released_ = await this.require(mission.id);
+        await this.tryMove(released_, 'queued', 'system', {});
+        await this.deps.events.record(mission.id, {
+          type: 'warning',
+          actor: 'system',
+          level: 'warning',
+          summary:
+            'The worker holding this stopped reporting before any work began, so it went back in the queue.',
+          detail: { previousState: mission.state, workerId: mission.claimedByWorkerId },
+        });
+        requeued += 1;
+        continue;
+      }
+
+      /*
+       * Further along: the claim is released so a worker can take it up again deliberately, but
+       * the state is left exactly where it was. Whatever is on disk, on a branch, or on GitHub is
+       * not re-done from here.
+       */
+      await this.deps.missions.patch(mission.id, {
+        claimedByWorkerId: null,
+        leaseExpiresAt: null,
+      });
+      await this.deps.events.record(mission.id, {
+        type: 'warning',
+        actor: 'system',
+        level: 'warning',
+        summary:
+          'The worker holding this stopped reporting. Its work is untouched and nothing was repeated; it needs a look.',
+        detail: { state: mission.state, workerId: mission.claimedByWorkerId },
+      });
+      released += 1;
+    }
+
+    return { requeued, released };
   }
 
   /** Has the repository moved since the approved plan was written? */

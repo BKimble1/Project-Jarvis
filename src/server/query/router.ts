@@ -160,7 +160,7 @@ export class StatusQueryRouter {
       intent,
       title: 'Mission Control is not available here',
       summary:
-        'This Jarvis instance is running without Mission Control, so it cannot answer questions about missions or start one.',
+        'I am running without Mission Control, so I cannot answer questions about missions or start one.',
       summaryProvenance: 'verified',
       sections: [],
       projectIds: scoped ? [scoped.id] : [],
@@ -319,7 +319,7 @@ export class StatusQueryRouter {
       default:
         return {
           intent: 'unsupported',
-          title: 'Jarvis did not understand that',
+          title: 'I did not understand that',
           summary:
             'Try "Where are we?", "Where are we on <project>?", "What changed?", "What needs me?", "Which projects are blocked?" or "What should I focus on?".',
           summaryProvenance: 'verified',
@@ -609,7 +609,7 @@ export class StatusQueryRouter {
     return {
       intent,
       title: 'No matching project',
-      summary: `Jarvis could not find a project matching that name.`,
+      summary: `I could not find a project matching that name.`,
       summaryProvenance: 'verified',
       sections: [
         {

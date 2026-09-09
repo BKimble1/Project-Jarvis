@@ -79,6 +79,8 @@ export interface MissionCreateInput extends MissionDraftInput {
 export interface MissionStatePatch {
   readonly activeRunId?: string | null;
   readonly claimedByWorkerId?: string | null;
+  /** When the holding worker's claim stops being believed. Null releases it. */
+  readonly leaseExpiresAt?: Date | null;
   readonly currentPlanVersion?: number | null;
   readonly approvedPlanVersion?: number | null;
   readonly workingBranch?: string | null;

@@ -71,6 +71,7 @@ export function toMission(row: Row<typeof missions>): Mission {
     pullRequestNumber: row.pullRequestNumber,
     activeRunId: row.activeRunId,
     claimedByWorkerId: row.claimedByWorkerId,
+    leaseExpiresAt: row.leaseExpiresAt?.toISOString() ?? null,
     attemptCount: row.attemptCount,
     currentPlanVersion: row.currentPlanVersion,
     approvedPlanVersion: row.approvedPlanVersion,

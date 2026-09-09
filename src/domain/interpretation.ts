@@ -221,12 +221,32 @@ const COMMANDS: readonly { readonly command: OwnerCommand; readonly pattern: Reg
  *
  * "Slow down until my Claude allowance resets" is a scheduling instruction: attempt less, run less
  * in parallel, investigate less. Nothing here pretends token generation speed is controllable.
+ *
+ * ## Why `budget` is no longer a word here
+ *
+ * It was, as a synonym for "economise", and it read this message —
+ *
+ *     "Evaluate this idea: a simple student budget app that tracks recurring bills, weekly
+ *      spending, and how much income I need each month."
+ *
+ * — as an instruction to attempt less at once, and answered with a paragraph about mission
+ * concurrency. The word was doing its job; the trouble is that "budget" is a *noun* far more often
+ * than it is a verb, and it is one of the most common subjects an app is ever about. A pattern
+ * that claims a word that common has to earn it, so the pace sense now needs its object: budgeting
+ * *what*. "Budget my capacity" still reads as a pace instruction; "a student budget app" no longer
+ * does, and neither does a budgeting tool, a budget tracker, or a household budget.
+ *
+ * This is the third appearance of one bug — a rule reading a word out of a sentence that was about
+ * something else entirely. It named a project "Yet" from "Do not build anything yet", it read a
+ * plan's promise not to merge as an intention to merge, and here it heard a request for advice as
+ * an order to slow down. The lesson each time is the same: prose is evidence, and a rule that
+ * treats one word of it as an instruction will eventually be wrong in public.
  */
 const PACE: readonly { readonly pace: PacePreference; readonly pattern: RegExp }[] = [
   {
     pace: 'conserve',
     pattern:
-      /\b(?:slow down|ease off|take it easy|conserve|go easy|budget|until my (?:claude )?(?:allowance|capacity|limit) resets|save (?:my )?(?:claude|capacity|allowance))\b/,
+      /\b(?:slow down|ease off|take it easy|conserve|go easy|budget (?:my |the |your )?(?:claude |api )?(?:capacity|allowance|usage|tokens|limit|spend)|until my (?:claude )?(?:allowance|capacity|limit) resets|save (?:my )?(?:claude|capacity|allowance))\b/,
   },
   { pace: 'fast', pattern: /\b(?:speed up|go faster|full speed|as fast as|flat out|push hard)\b/ },
   { pace: 'balanced', pattern: /\b(?:normal (?:pace|speed)|balanced|back to normal)\b/ },
@@ -464,7 +484,7 @@ export function interpretMessage(
       riskLevel: 'prohibited',
       riskRuleIds: risk.ruleIds,
       refusal: risk.refusal,
-      understanding: 'Jarvis will not do this.',
+      understanding: 'I will not do this.',
     });
   }
 
@@ -505,8 +525,26 @@ export function interpretMessage(
     });
   }
 
+  /*
+   * Is this message *about* something?
+   *
+   * Asked once, here, and used by every rule below that could otherwise claim a message on the
+   * strength of one word. A person commissioning an assessment — "Evaluate this idea: …", "what do
+   * you think of…", "is this worth building" — is talking about a subject, and an operator command
+   * is not: "slow down", "pause", "stop" are addressed to Jarvis and have no subject at all.
+   *
+   * The distinction matters because the command patterns are single words and the subjects people
+   * bring are arbitrary. Any word a command claims will eventually turn up inside somebody's idea,
+   * and when it does the command wins by being tested first — which is how a budgeting app became
+   * an instruction to run fewer missions in parallel. Reversing the precedence makes the failure
+   * mode the harmless one: a genuine command that happens to contain "evaluate" is read as a
+   * question, which costs one clarifying sentence rather than a wrong answer to the wrong subject.
+   */
+  const commissionsThinking =
+    (IDEA.test(text) || ADVICE.test(text)) && !IMPERATIVE_WORK.test(punctuated);
+
   const pace = PACE.find((entry) => entry.pattern.test(text));
-  if (pace) {
+  if (pace && !commissionsThinking) {
     return finish({
       kind: 'command',
       command: 'pace',
@@ -527,6 +565,8 @@ export function interpretMessage(
 
   for (const entry of COMMANDS) {
     if (!entry.pattern.test(text)) continue;
+    /* Same reasoning as the pace test above: a subject beats a bare imperative. */
+    if (commissionsThinking) break;
     return finish({
       kind: 'command',
       command: entry.command,
@@ -544,7 +584,7 @@ export function interpretMessage(
    * still wins if the sentence *also* gives an instruction — "I have an idea for an app, build it"
    * is a build — which is why the work test runs on the remainder.
    */
-  if ((IDEA.test(text) || ADVICE.test(text)) && !IMPERATIVE_WORK.test(punctuated)) {
+  if (commissionsThinking) {
     return finish({
       kind: 'idea',
       subject: subjectOf(text),

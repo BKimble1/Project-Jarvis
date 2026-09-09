@@ -313,10 +313,17 @@ export class CharterService {
       this.deps.currentLevel(),
     ]);
 
+    /*
+     * Said in the first person, because this sentence is spoken.
+     *
+     * It is interpolated into the question the dashboard reads aloud when a mission stops — "X is
+     * set up and waiting for you to approve the plan — …" — so a third-person clause lands in the
+     * middle of a sentence Jarvis is saying about itself. Diagnostics may name it; speech may not.
+     */
     const blockedReason = !modeGrantsStandingAuthority(state.mode)
-      ? `Jarvis is ${OPERATING_MODE_LABELS[state.mode].toLowerCase()}, so nothing runs on standing authority.`
+      ? `I am ${OPERATING_MODE_LABELS[state.mode].toLowerCase()}, so I run nothing on standing authority.`
       : !charter
-        ? 'No charter is in force, so standing authority grants nothing.'
+        ? 'No charter is in force, so standing authority grants me nothing.'
         : isCharterExpired(charter, now)
           ? `Charter version ${charter.version} expired on ${charter.content.expiresAt}.`
           : null;

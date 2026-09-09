@@ -41,9 +41,48 @@ const claimSchema = z.object({
  * off, muted, or a transcript being caught up after a reload. Nothing here changes `spoken_at`.
  */
 export const GET = ownerRoute(async ({ services }) => {
-  const pending = await services.operating.unspoken(20);
-  return json({ events: pending });
+  const [events, notices] = await Promise.all([
+    services.operating.unspoken(20),
+    services.notifications.unspoken(20),
+  ]);
+  return json({ events: [...events, ...notices.map(asSpeakable)] });
 });
+
+/**
+ * A notification, in the shape the narrator already speaks.
+ *
+ * ## Why reminders come through here rather than through a stream of their own
+ *
+ * Because the guarantee is the hard part, not the plumbing. "Said once, and never replayed after a
+ * refresh" needs a server-side claim on a watermark column, and that mechanism already exists and
+ * is already proven for an idea's progress. A second narration channel would be a second copy of
+ * it, and the copy is where the bug would live — most likely as a briefing read out again every
+ * time the dashboard loads.
+ *
+ * So a reminder is spoken by the same loop, from the same call, under the same claim. What the
+ * page receives is one ordered list of things to say; where each came from is not its concern.
+ */
+function asSpeakable(notice: {
+  id: string;
+  title: string;
+  body: string | null;
+  createdAt: string;
+}): {
+  id: string;
+  kind: 'progress';
+  message: string;
+  createdAt: string;
+  proposalId: null;
+} {
+  return {
+    id: notice.id,
+    kind: 'progress',
+    /* Title and body, joined exactly as they are shown. Spoken and seen must not drift. */
+    message: notice.body ? `${notice.title}. ${notice.body}` : notice.title,
+    createdAt: notice.createdAt,
+    proposalId: null,
+  };
+}
 
 /**
  * POST — claim the next few and speak them.
@@ -53,13 +92,40 @@ export const GET = ownerRoute(async ({ services }) => {
  */
 export const POST = ownerRoute(async ({ services, request }) => {
   const { limit } = await parseBody(request, claimSchema);
-  const pending = await services.operating.unspoken(limit);
-  if (pending.length === 0) return json({ events: [] });
+  const now = new Date();
 
-  const won = await services.operating.markSpoken(
-    pending.map((event) => event.id),
-    new Date(),
-  );
-  const claimed = new Set(won);
-  return json({ events: pending.filter((event) => claimed.has(event.id)) });
+  const [pending, notices] = await Promise.all([
+    services.operating.unspoken(limit),
+    services.notifications.unspoken(limit),
+  ]);
+  if (pending.length === 0 && notices.length === 0) return json({ events: [] });
+
+  /*
+   * Claimed independently, because they are two tables and a partial failure must not lose a
+   * sentence. Each side hands back only what it won, and anything the other tab took is simply
+   * absent — which is the correct outcome, not an error.
+   */
+  const [wonEvents, wonNotices] = await Promise.all([
+    pending.length > 0
+      ? services.operating.markSpoken(
+          pending.map((event) => event.id),
+          now,
+        )
+      : Promise.resolve([]),
+    notices.length > 0
+      ? services.notifications.markSpoken(
+          notices.map((notice) => notice.id),
+          now,
+        )
+      : Promise.resolve([]),
+  ]);
+
+  const claimedEvents = new Set(wonEvents);
+  const claimedNotices = new Set(wonNotices);
+  return json({
+    events: [
+      ...pending.filter((event) => claimedEvents.has(event.id)),
+      ...notices.filter((notice) => claimedNotices.has(notice.id)).map(asSpeakable),
+    ],
+  });
 });

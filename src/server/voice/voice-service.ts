@@ -1,4 +1,5 @@
 import { ValidationError } from '@/domain/errors';
+import type { IdeaEvaluation } from '@/domain/proposal';
 import {
   assertConfirmationMatches,
   assertNotSelfApproving,
@@ -12,6 +13,7 @@ import {
 } from '@/domain/voice';
 import type { MemoryService, CaptureResult } from '@/server/knowledge/memory-service';
 import type { ConversationService } from '@/server/conversation/conversation-service';
+import type { ThinkingState } from '@/server/conversation/reasoning-service';
 import type { StatusQueryRouter } from '@/server/query/router';
 import type { VoiceRepository } from '@/server/repositories/automation-types';
 
@@ -66,14 +68,42 @@ export interface VoiceSubmission {
   readonly preview: ConfirmationPreview;
 }
 
+/**
+ * What a spoken turn leaves on the screen, beyond the sentence it says back.
+ *
+ * ## Why the voice path has to carry this
+ *
+ * Because a spoken idea and a typed idea are the same turn — the voice path calls the same
+ * `ConversationService.handle` — and until now only the typed one told the screen about it. Speak
+ * "evaluate this idea…" and the proposal was opened, the question was queued and the worker
+ * answered it, and the dashboard learned none of that: no thinking panel, so nothing polled, and
+ * no standing proposal, so the "go ahead" that followed had nothing to accept. The answer arrived
+ * on a row nobody was watching and appeared only after a refresh.
+ *
+ * So the turn's own correlation — which proposal, which reasoning request — travels back with the
+ * outcome, and the screen applies it exactly as it applies a typed one. Two ways of saying the
+ * same thing, one conversation state.
+ */
+export interface VoiceTurnState {
+  readonly proposal: { readonly id: string; readonly summary: string } | null;
+  readonly thinking: ThinkingState | null;
+  readonly evaluation: IdeaEvaluation | null;
+}
+
 export type VoiceOutcome =
-  | { readonly kind: 'answer'; readonly said: string; readonly href: string | null }
+  | {
+      readonly kind: 'answer';
+      readonly said: string;
+      readonly href: string | null;
+      readonly turn?: VoiceTurnState;
+    }
   /** Work that is now under way, with somewhere to look at it. */
   | {
       readonly kind: 'started';
       readonly said: string;
       readonly href: string | null;
       readonly missionId: string | null;
+      readonly turn?: VoiceTurnState;
     }
   | { readonly kind: 'note'; readonly said: string; readonly href: string | null }
   | { readonly kind: 'refused'; readonly said: string }
@@ -101,10 +131,10 @@ export class VoiceService {
   }): Promise<VoiceSubmission> {
     const transcript = normaliseTranscript(input.transcript);
     if (transcript.length === 0) {
-      throw new ValidationError('Jarvis heard nothing. Try again, or type it.');
+      throw new ValidationError('I heard nothing. Try again, or type it.');
     }
     if (transcript.length > VOICE_LIMITS.maxTranscriptChars) {
-      throw new ValidationError('That is longer than Jarvis will take from one recording.');
+      throw new ValidationError('That is longer than I will take from one recording.');
     }
 
     const classification = classifyTranscript(transcript);
@@ -198,7 +228,7 @@ export class VoiceService {
       if (result.kind === 'refused') return { kind: 'refused', said: result.reason };
       return {
         kind: 'refused',
-        said: 'Jarvis could not tell what to keep from that. Say it again, or type it.',
+        said: 'I could not tell what to keep from that. Say it again, or type it.',
       };
     }
 
@@ -218,7 +248,7 @@ export class VoiceService {
       if (!this.deps.conversation) {
         return {
           kind: 'draft',
-          said: 'This Jarvis is running without the conversational half, so that has been put in the box for you instead. Nothing has started.',
+          said: 'I am running without my conversational half, so I have put that in the box for you instead. Nothing has started.',
           text,
         };
       }
@@ -228,13 +258,28 @@ export class VoiceService {
       });
       const said = turn.notes.length > 0 ? `${turn.said} ${turn.notes.join(' ')}` : turn.said;
       /*
+       * Exactly what the typed path returns, so the screen has no way to end up in a different
+       * state depending on how the words arrived.
+       */
+      const state: VoiceTurnState = {
+        proposal: turn.proposal,
+        thinking: turn.thinking,
+        evaluation: turn.evaluation,
+      };
+      /*
        * `started` only when something actually was. The conversation service returns an answer
        * instead when it cannot place the work — most often "which project did you mean?" — and
        * reporting that as a start would be the exact dishonesty this whole surface is trying to
        * avoid. The recording shows what happened, not what was hoped for.
        */
-      if (!turn.started) return { kind: 'answer', said, href: turn.href };
-      return { kind: 'started', said, href: turn.href, missionId: turn.started.missionId };
+      if (!turn.started) return { kind: 'answer', said, href: turn.href, turn: state };
+      return {
+        kind: 'started',
+        said,
+        href: turn.href,
+        missionId: turn.started.missionId,
+        turn: state,
+      };
     }
 
     if (intent === 'project_update') {
@@ -245,14 +290,14 @@ export class VoiceService {
        */
       return {
         kind: 'draft',
-        said: 'Jarvis has put that into the box for you to check. Nothing has started.',
+        said: 'I have put that into the box for you to check. Nothing has started.',
         text,
       };
     }
 
     return {
       kind: 'refused',
-      said: 'Jarvis is not sure what you meant. Edit the text, or type it instead.',
+      said: 'I am not sure what you meant. Edit the text, or type it instead.',
     };
   }
 }
