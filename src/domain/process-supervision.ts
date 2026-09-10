@@ -136,3 +136,65 @@ export function resolveWorkerPool(requested: number | null | undefined): {
   }
   return { size: whole, reason: null };
 }
+
+/**
+ * The environment variable each member of the pool takes its identity from.
+ *
+ * The first is the plain name every single-worker installation already uses; the rest are
+ * numbered from two, matching the `worker-2`, `worker-3` names the supervisor gives them.
+ */
+export function workerTokenVariable(index: number): string {
+  return index === 0 ? 'JARVIS_WORKER_TOKEN' : `JARVIS_WORKER_TOKEN_${index + 1}`;
+}
+
+/**
+ * One enrolment token per member of the pool, and a pool no larger than the tokens allow.
+ *
+ * ## Why a pool cannot share a token
+ *
+ * A token names one enrolled worker — one row, one `currentRunId`, one held assignment. Every
+ * process that presents it *is* that worker as far as the control plane is concerned, and
+ * `WorkerService.claim` hands a worker that already holds a run that same run back, because that
+ * is how a worker recovers its own work after a restart. So a pool of three sharing one token does
+ * not divide the work three ways: all three are handed the same mission, clone it into the same
+ * workspace directory, and run three agent sessions and three sets of git operations over one
+ * checkout.
+ *
+ * That was what `JARVIS_WORKER_POOL=3` did, silently, and the log said "3 worker(s)".
+ *
+ * ## Why this reduces rather than refuses
+ *
+ * The same reason `resolveWorkerPool` clamps rather than rejecting: an owner who mistyped a pool
+ * size should end up with a smaller pool and an explanation, not with no worker at all overnight.
+ * A pool asked for and not configured for runs at the size its tokens support, and says which
+ * variables would let it grow.
+ *
+ * Enrol the extra workers the way the first one was enrolled — Operations → Workers — and give
+ * each its own variable. Nothing here creates a credential.
+ */
+export function resolveWorkerTokens(
+  size: number,
+  env: Record<string, string | undefined>,
+): { readonly tokens: readonly string[]; readonly reason: string | null } {
+  const tokens: string[] = [];
+  for (let index = 0; index < size; index += 1) {
+    const value = env[workerTokenVariable(index)]?.trim();
+    if (!value) break;
+    tokens.push(value);
+  }
+
+  if (tokens.length === size) return { tokens, reason: null };
+
+  const missing = [];
+  for (let index = tokens.length; index < size; index += 1)
+    missing.push(workerTokenVariable(index));
+
+  return {
+    tokens,
+    reason:
+      `A pool of ${size} was asked for and ${tokens.length} worker token${tokens.length === 1 ? ' is' : 's are'} ` +
+      `set, so ${tokens.length} worker${tokens.length === 1 ? ' is' : 's are'} running. Processes cannot ` +
+      `share a token — the control plane would treat them as one worker and hand them all the same ` +
+      `mission. Enrol another worker and set ${missing.join(', ')}.`,
+  };
+}

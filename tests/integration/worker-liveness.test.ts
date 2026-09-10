@@ -288,6 +288,71 @@ describe('taking a task back from a worker that is still there', () => {
     expect(takenBack?.assignedWorkerId).toBeNull();
   }, 60_000);
 
+  /*
+   * A worker that restarted, which is neither of the two cases above and was covered by neither.
+   *
+   * `npm run worker:supervise` restarts a crashed child in seconds, and the child comes back with
+   * no memory of what it was doing: it did not resume the session, and it does not know the task
+   * exists. But the *row* is the same row, it beats again within seconds, and so the heartbeat
+   * window can never open. Measured before this: forty further minutes and `{reclaimed: 0}` — the
+   * task sat in `running` under a worker that had never heard of it, holding its write lease and
+   * a concurrency slot, for as long as the process stayed up.
+   *
+   * The heartbeat says so, and says so immediately: a worker that is not running the task reports
+   * `currentRunId: null`, or the id of whatever it is running instead. That is a statement about
+   * right now rather than an inference from silence, and it is the only thing here that can tell
+   * a restarted worker from a thinking one.
+   */
+  it('takes a task back from a worker that restarted and no longer has it', async () => {
+    const missionId = await missionWithApprovedGraph();
+    const workerId = await enrol('restarting-worker');
+    const held = await claimAndStart(workerId);
+
+    /* Nine minutes of real work, so nothing below is about the task having been quiet all along. */
+    for (let index = 0; index < 54; index += 1) {
+      advance(10_000);
+      await beat(workerId, { missionId, runId: held.runId });
+    }
+
+    /* The crash and the restart: a gap far too short to be a death, then beats holding nothing. */
+    advance(30_000);
+    for (let index = 0; index < 66; index += 1) {
+      advance(10_000);
+      await beat(workerId, null);
+    }
+
+    const summary = await harness.services.taskWorkerService.reclaimAbandoned();
+    expect(summary.reclaimed + summary.failed).toBe(1);
+    const task = await harness.services.tasks.findById(held.taskId);
+    expect(task?.activeRunId, 'the old run must not still fence out the next claim').toBeNull();
+  }, 60_000);
+
+  /*
+   * And the neighbouring input the rule above must not eat: a task just claimed, whose worker has
+   * not yet said what it is running.
+   *
+   * There is always a gap between the claim writing `activeRunId` and the next heartbeat naming
+   * it — in production a poll interval, one to three seconds. For that moment the worker row says
+   * it holds nothing, which is exactly the shape of a restart, and a rule that acted on it alone
+   * would take a task back the instant it was handed out. What stops that is the task's own
+   * silence still having to agree, and `claimNext` stamping `lastActivityAt` as it claims.
+   */
+  it('leaves a task it has only just handed out alone', async () => {
+    await missionWithApprovedGraph();
+    const workerId = await enrol('just-claimed');
+    const held = await claimAndStart(workerId);
+
+    /* Five minutes of the worker beating without naming the run: half the window, and no more. */
+    for (let index = 0; index < 30; index += 1) {
+      advance(10_000);
+      await beat(workerId, null);
+    }
+
+    expect((await harness.services.taskWorkerService.reclaimAbandoned()).reclaimed).toBe(0);
+    const task = await harness.services.tasks.findById(held.taskId);
+    expect(task?.activeRunId).toBe(held.runId);
+  }, 60_000);
+
   it('still takes a task back from a worker that has really gone', async () => {
     await missionWithApprovedGraph();
     const workerId = await enrol('crashes-after-claiming');

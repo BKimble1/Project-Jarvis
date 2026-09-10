@@ -719,6 +719,40 @@ export class TaskWorkerService {
       return state.heartbeatAgeSeconds * 1000 >= ABANDONED_AFTER_MS;
     };
 
+    /**
+     * Or has it come back without the task?
+     *
+     * The case neither the window nor the status can see. `npm run worker:supervise` restarts a
+     * crashed child within seconds and the child comes back with no memory of what it was doing:
+     * it did not resume the agent session, and it does not know the task exists. But it is the
+     * same worker row, it beats again immediately, so the heartbeat window above never opens —
+     * measured at forty minutes and still `{reclaimed: 0}`, with the task sitting in `running`
+     * under a worker that had never heard of it, holding its write lease and a concurrency slot
+     * for as long as the process stayed up.
+     *
+     * The heartbeat answers this directly and at once. A worker reports the run it is executing,
+     * and both claim paths in `worker/main.ts` clear that field in a `finally`, so a worker that
+     * is not running this task says so — `null`, or the id of whatever it is running instead. That
+     * is a statement about the present rather than an inference from silence, which is exactly
+     * what the restart case needs and what a window cannot give it.
+     *
+     * It is deliberately an *alternative* to the window rather than a replacement for it. A worker
+     * that has genuinely gone stops saying anything at all, and its last heartbeat may well still
+     * name the run it died holding.
+     *
+     * The one shape this misreads is a pool sharing a token, where several processes beat into one
+     * row and only the last one to beat is described: the others' runs would read as let go. That
+     * configuration is refused at the supervisor (see `resolveWorkerPool`) precisely because one
+     * row cannot describe several sessions, and this is one more thing that breaks if it is ever
+     * allowed back.
+     */
+    const workerLetGo = (task: MissionTask): boolean => {
+      if (!task.assignedWorkerId || !task.activeRunId) return false;
+      const worker = health.get(task.assignedWorkerId)?.worker;
+      if (!worker) return false;
+      return worker.currentRunId !== task.activeRunId;
+    };
+
     /*
      * The second half, which decides nothing on its own and exists for one narrow case.
      *
@@ -738,7 +772,8 @@ export class TaskWorkerService {
     let leasesReleased = 0;
 
     for (const task of await this.deps.tasks.listActive()) {
-      if (!workerGone(task.assignedWorkerId) || !taskQuiet(task)) continue;
+      if (!workerGone(task.assignedWorkerId) && !workerLetGo(task)) continue;
+      if (!taskQuiet(task)) continue;
 
       /*
        * The lease first. A task returning to `ready` that still holds a lease over its own files

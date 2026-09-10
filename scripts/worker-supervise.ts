@@ -22,6 +22,9 @@
  *   supervisor that quietly switched to a billed key would be spending money to fix a login.
  * - Run more than `MAX_WORKER_POOL` processes, whatever the configuration says. Every worker is a
  *   separate session on one subscription.
+ * - Run more processes than it has enrolment tokens for. A token names one enrolled worker, so
+ *   processes sharing one are handed the same mission and run it several times over one checkout.
+ *   A pool of two needs `JARVIS_WORKER_TOKEN_2` as well; see `resolveWorkerTokens`.
  * - Restart forever. Five failures inside ten minutes is a fault restarting will not fix, and the
  *   useful thing then is to stop and leave the error readable.
  *
@@ -61,7 +64,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
-import { decideRestart, resolveWorkerPool } from '@/domain/process-supervision';
+import {
+  decideRestart,
+  resolveWorkerPool,
+  resolveWorkerTokens,
+} from '@/domain/process-supervision';
 import { redactSecrets } from '@/domain/redaction';
 
 /* Both env files, more specific first, exactly as the launcher does. */
@@ -80,6 +87,14 @@ const pool = resolveWorkerPool(
 
 interface Child {
   readonly name: string;
+  /**
+   * This child's own enrolment token.
+   *
+   * Per child rather than inherited, because a token names one enrolled worker and every process
+   * presenting it is that worker: a pool sharing one would be handed the same mission each and run
+   * it several times over one checkout. See `resolveWorkerTokens`.
+   */
+  readonly token: string;
   child: ChildProcess | null;
   /** Epoch milliseconds of every restart, so the backoff window can forget old ones. */
   restarts: number[];
@@ -105,7 +120,7 @@ function start(entry: Child): void {
    * is signed in to.
    */
   const child = spawn('npx', ['tsx', 'scripts/worker.ts'], {
-    env: { ...process.env, JARVIS_WORKER_NAME: entry.name },
+    env: { ...process.env, JARVIS_WORKER_NAME: entry.name, JARVIS_WORKER_TOKEN: entry.token },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   entry.child = child;
@@ -233,14 +248,24 @@ function main(): void {
   }
 
   if (pool.reason) say(`[supervisor] ${pool.reason}`);
+
+  /*
+   * The pool the tokens support, which may be smaller than the one asked for. Said out loud rather
+   * than silently obeyed: `JARVIS_WORKER_POOL=3` with one token used to start three processes and
+   * report "3 worker(s)" while all three ran the same mission in the same directory.
+   */
+  const { tokens, reason } = resolveWorkerTokens(pool.size, process.env);
+  if (reason) say(`[supervisor] ${reason}`);
+
   say(
-    `[supervisor] control plane ${CONTROL_PLANE}, ${pool.size} worker(s), reclaim every ` +
+    `[supervisor] control plane ${CONTROL_PLANE}, ${tokens.length} worker(s), reclaim every ` +
       `${Math.round(RECLAIM_INTERVAL_MS / 1000)}s.`,
   );
 
-  for (let index = 0; index < pool.size; index += 1) {
+  for (const [index, token] of tokens.entries()) {
     const entry: Child = {
-      name: pool.size === 1 ? 'worker' : `worker-${index + 1}`,
+      name: tokens.length === 1 ? 'worker' : `worker-${index + 1}`,
+      token,
       child: null,
       restarts: [],
       stopped: false,

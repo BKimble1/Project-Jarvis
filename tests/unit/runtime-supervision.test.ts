@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_WORKER_POOL,
   resolveWorkerPool,
+  resolveWorkerTokens,
   decideRestart,
   LOG_KEEP,
   LOG_ROTATE_BYTES,
@@ -326,6 +327,60 @@ describe('the worker pool ceiling', () => {
       expect(pool.size, String(requested)).toBe(1);
       expect(pool.reason, String(requested)).toBeTruthy();
     }
+  });
+
+  /**
+   * And how many it has an identity for, which is a different and stricter number.
+   *
+   * A token names one enrolled worker: one row, one `currentRunId`, one held assignment. Every
+   * process presenting it *is* that worker, and `claim` hands a worker that already holds a run
+   * that same run back — which is how a worker recovers its work after a restart, and which means
+   * a pool of three sharing one token is handed the same mission three times and runs three agent
+   * sessions over one checkout. `JARVIS_WORKER_POOL=3` did exactly that and logged "3 worker(s)".
+   */
+  describe('and one identity per member of it', () => {
+    it('runs the size the tokens support, and says what would allow more', () => {
+      const resolved = resolveWorkerTokens(3, { JARVIS_WORKER_TOKEN: 'jarvisw_one.secret' });
+      expect(resolved.tokens).toEqual(['jarvisw_one.secret']);
+      expect(resolved.reason).toContain('JARVIS_WORKER_TOKEN_2');
+      expect(resolved.reason).toContain('JARVIS_WORKER_TOKEN_3');
+      expect(resolved.reason, 'the owner has to be told why, not just what').toContain(
+        'cannot share a token',
+      );
+    });
+
+    it('gives each member its own token when they are all there', () => {
+      const resolved = resolveWorkerTokens(3, {
+        JARVIS_WORKER_TOKEN: 'jarvisw_one.secret',
+        JARVIS_WORKER_TOKEN_2: 'jarvisw_two.secret',
+        JARVIS_WORKER_TOKEN_3: 'jarvisw_three.secret',
+      });
+      expect(resolved.tokens).toEqual([
+        'jarvisw_one.secret',
+        'jarvisw_two.secret',
+        'jarvisw_three.secret',
+      ]);
+      expect(resolved.reason).toBeNull();
+      expect(new Set(resolved.tokens).size, 'two members must never be the same worker').toBe(3);
+    });
+
+    /* The single-worker installation everybody has, which must be untouched by any of this. */
+    it('asks nothing new of a pool of one', () => {
+      const resolved = resolveWorkerTokens(1, { JARVIS_WORKER_TOKEN: 'jarvisw_one.secret' });
+      expect(resolved.tokens).toEqual(['jarvisw_one.secret']);
+      expect(resolved.reason).toBeNull();
+    });
+
+    /* A variable that is present but blank is not an identity, on the rule the rest of the config
+     * now follows: a blank value means unset. */
+    it('does not count a blank token as a worker', () => {
+      const resolved = resolveWorkerTokens(2, {
+        JARVIS_WORKER_TOKEN: 'jarvisw_one.secret',
+        JARVIS_WORKER_TOKEN_2: '   ',
+      });
+      expect(resolved.tokens).toHaveLength(1);
+      expect(resolved.reason).toContain('JARVIS_WORKER_TOKEN_2');
+    });
   });
 
   it('takes whole workers only', () => {
