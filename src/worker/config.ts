@@ -57,6 +57,33 @@ const bool = (fallback: boolean) =>
         : ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase()),
     );
 
+/**
+ * The environment with every blank value removed, so `KEY=` and no `KEY` line mean the same thing.
+ *
+ * `.env.example` says exactly that, at the top, about the whole file — and the second half of that
+ * file is this schema's. It was not true here. `JARVIS_WORKER_AUTH_MODE=` and
+ * `JARVIS_WORKER_RUNTIME=` failed their enums and took the worker down at boot with a message about
+ * an invalid option, for a line the template itself ships. `JARVIS_WORKER_MODEL=` became a model
+ * named the empty string. `JARVIS_WORKER_GITHUB_API_URL=` became an empty API base, silently
+ * replacing a default that was right. And `JARVIS_WORKER_GITHUB_TOKEN=` produced a `githubToken`
+ * of `''` beside a diagnostic in the same object saying the token is not set — one value, two
+ * answers, which is the shape the control plane's own copy of this fix exists to remove.
+ *
+ * A copy of `withoutBlankValues` from `src/server/config/env.ts` rather than an import, because
+ * the worker is a separate process and may not reach into `@/server`. Ten lines duplicated is the
+ * price of that boundary; a shared module that both may import is the better home if a third
+ * caller ever appears.
+ */
+function withoutBlankValues(source: unknown): unknown {
+  if (typeof source !== 'object' || source === null) return source;
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim() === '') continue;
+    kept[key] = value;
+  }
+  return kept;
+}
+
 const schema = z.object({
   JARVIS_CONTROL_PLANE_URL: z.string().trim().optional(),
   JARVIS_WORKER_TOKEN: z.string().trim().optional(),
@@ -198,8 +225,11 @@ export interface WorkerConfig {
  */
 export { WORKER_VERSION };
 
+/** What every caller parses. `schema` alone never sees a blank value. */
+const envSchema = z.preprocess(withoutBlankValues, schema);
+
 export function buildWorkerConfig(source: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  const parsed = schema.safeParse(source);
+  const parsed = envSchema.safeParse(source);
   if (!parsed.success) {
     throw new ConfigurationError(
       `Invalid worker configuration:\n - ${parsed.error.issues
