@@ -103,9 +103,14 @@ test('req6.1 a whole project runs through chat: change, question, recovery, spee
 
   // --- 6. Speech was meaningful, deduplicated and never replayed.
   app.speech.flushBatch();
-  assert.ok(spoken.length >= 2, 'it spoke about the things that mattered');
-  assert.ok(spoken.length <= 8, `it did not narrate every step (${spoken.length} utterances)`);
-  assert.ok(spoken.some((s) => /deliver/i.test(s.text)), 'it announced the delivery');
+  const saidInChat = new Set(app.conversations.history('blake', 50).filter((x) => x.role === 'assistant').map((x) => x.text));
+  const replies = spoken.filter((s) => saidInChat.has(s.text));
+  const announcements = spoken.filter((s) => !saidInChat.has(s.text));
+
+  assert.equal(replies.length, saidInChat.size, 'every reply shown in chat was also spoken, verbatim');
+  assert.ok(announcements.length >= 2, 'it announced the things that mattered on its own');
+  assert.ok(announcements.length <= 6, `it did not narrate every step (${announcements.length} announcements)`);
+  assert.ok(spoken.some((s) => /^I delivered\b/.test(s.text)), 'it announced the delivery');
   assert.ok(spoken.some((s) => /sync|need to know|reading list/i.test(s.text)), 'it announced the question');
   const keys = spoken.map((s) => s.key);
   assert.equal(new Set(keys).size, keys.length, 'nothing was spoken twice');

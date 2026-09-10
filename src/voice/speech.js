@@ -270,6 +270,8 @@ export function salientId(type, payload = {}) {
       return p.reason ?? p.project?.blockedReason ?? 'blocked';
     case 'project.phase':
       return p.phase ?? '';
+    case 'chat.message':
+      return p.turn?.id ?? p.turn?.at ?? p.turn?.text ?? '';
     default:
       return p.id ?? p.taskId ?? p.questionId ?? '';
   }

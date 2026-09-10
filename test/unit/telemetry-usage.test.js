@@ -467,6 +467,21 @@ test('worstRemaining picks the tightest window and is null when unknown', async 
   assert.equal(worstRemaining(report), 9);
   assert.equal(worstRemaining({ status: 'unavailable', windows: [] }), null);
   assert.equal(worstRemaining(null), null);
+  assert.equal(worstRemaining({ windows: 'nope' }), null);
+
+  // It is exported, so it must be safe on a report that never passed through
+  // UsageService. Out-of-range numbers are not readings: an impossible 150%
+  // remaining must not be reported as the roomiest window in the account.
+  assert.equal(worstRemaining({ windows: [{ key: 'a', remainingPercent: 150, usedPercent: -50 }] }), null);
+  assert.equal(worstRemaining({ windows: [{ key: 'a', remainingPercent: -5 }] }), null);
+  assert.equal(
+    worstRemaining({ windows: [{ key: 'a', remainingPercent: 150 }, { key: 'b', usedPercent: 70 }] }),
+    30,
+    'the one real window decides, the impossible one is ignored',
+  );
+  // A missing remainingPercent still falls back to a usable usedPercent.
+  assert.equal(worstRemaining({ windows: [{ key: 'a', usedPercent: 88 }] }), 12);
+  assert.equal(worstRemaining({ windows: [{ key: 'a', remainingPercent: null, usedPercent: null }] }), null);
 });
 
 test('summarizeForSpeech stays quiet unless something is worth saying', async (t) => {

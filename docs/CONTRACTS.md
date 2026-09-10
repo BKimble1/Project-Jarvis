@@ -323,7 +323,9 @@ export class SpeechService {
   spoken (or already queued) is dropped.
 - **Never replay old updates after refresh**: `unspoken(sinceSeq)` returns only items newer than the
   client's acknowledged sequence AND not acknowledged; acknowledgements persist in `store`.
-- The spoken text must be the SAME concise sentence shown in chat.
+- The spoken text must be the SAME concise sentence shown in chat. An assistant
+  `chat.message` turn is therefore spoken verbatim (user turns never are), which
+  is what "automatically speak the same concise message shown in chat" means.
 
 ## F. `public/*` — dashboard (acceptance req. 4)
 

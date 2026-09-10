@@ -42,7 +42,7 @@ test('req3.2 the spoken sentence is exactly the sentence shown in chat', async (
   await app.orchestrator.run(start.projectId);
   app.speech.flushBatch();
 
-  const delivered = spoken.find((s) => /deliver/i.test(s.text));
+  const delivered = spoken.find((s) => /^I delivered\b/.test(s.text));
   assert.ok(delivered, `expected a spoken delivery announcement, got: ${spoken.map((s) => s.text).join(' | ')}`);
   const action = app.orchestrator.currentAction(start.projectId);
   assert.equal(delivered.text, action, 'spoken text and on-screen text are the same sentence');
@@ -66,7 +66,7 @@ test('req3.3 the same event is never spoken twice', async (t) => {
   app.bus.emit('project.delivered', { projectId: project.id, project, deliverable: { id: 'x', title: project.title } });
   app.speech.flushBatch();
 
-  const deliveries = spoken.filter((s) => /deliver/i.test(s.text));
+  const deliveries = spoken.filter((s) => /^I delivered\b/.test(s.text));
   assert.equal(deliveries.length, 1, `delivery spoken ${deliveries.length} times`);
   assert.equal(spoken.length, before, 'duplicate events produced no new speech');
 
@@ -117,7 +117,9 @@ test('req3.5 minor progress is batched, important events are not', async (t) => 
   const high = spoken.filter((s) => s.priority === 'high');
   assert.ok(high.length >= 1, 'the delivery was announced immediately at high priority');
   assert.ok(after >= beforeFlush, 'batched progress is summarized on flush');
-  assert.ok(spoken.length <= 6, `speech stayed concise (${spoken.length} utterances for a 4-feature build)`);
+  const announcements = spoken.filter((s) => !/^I'm on it\b|^I'm evaluating\b/.test(s.text));
+  assert.ok(announcements.length <= 6, `announcements stayed concise (${announcements.length} for a 4-feature build)`);
+  assert.ok(spoken.length <= 8, `speech stayed concise overall (${spoken.length} utterances)`);
 });
 
 test('req3.6 mute silences everything; quiet hours still let blockers through', async (t) => {

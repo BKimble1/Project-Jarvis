@@ -26,8 +26,15 @@ export const HIGH_PRIORITY = ['project.delivered', 'project.blocked', 'question.
 /** The only two things allowed to break quiet hours. */
 export const QUIET_HOURS_EXEMPT = ['project.blocked', 'question.asked'];
 
+/**
+ * An assistant reply is already the one concise sentence shown in chat, so it
+ * is spoken as-is: "automatically speak the same concise message shown in
+ * chat". Only assistant turns qualify; Blake's own words are never read back.
+ */
+export const SPOKEN_CHAT = 'chat.message';
+
 /** Everything else that earns an immediate (unbatched) utterance. */
-const IMMEDIATE = [...SPEAK_ALWAYS, 'project.evaluated'];
+const IMMEDIATE = [...SPEAK_ALWAYS, 'project.evaluated', SPOKEN_CHAT];
 
 const SPEAKABLE = new Set([...IMMEDIATE, ...BATCHABLE]);
 const BATCHABLE_SET = new Set(BATCHABLE);
@@ -53,6 +60,9 @@ export function shouldSpeak(event, { settings = {}, clock } = {}) {
   if (settings.muted) return { speak: false, reason: 'muted', priority };
   if (settings.voiceEnabled === false) return { speak: false, reason: 'voice_disabled', priority };
   if (!SPEAKABLE.has(type)) return { speak: false, reason: 'not_notable', priority };
+  if (type === SPOKEN_CHAT && payloadOf(event)?.turn?.role !== 'assistant') {
+    return { speak: false, reason: 'not_assistant_turn', priority };
+  }
 
   if (inQuietHours(clock, settings) && !EXEMPT_SET.has(type)) {
     return { speak: false, reason: 'quiet_hours', priority };
@@ -199,6 +209,13 @@ export function renderSentence(event, { projectTitle = null } = {}) {
     }
     case 'question.answered':
       return oneSentence(`Thanks, I am carrying on with ${name}.`);
+    case SPOKEN_CHAT: {
+      // Verbatim: the spoken line and the on-screen line must be identical.
+      const turn = p.turn ?? {};
+      if (turn.role !== 'assistant') return null;
+      const said = String(turn.text ?? '').trim();
+      return said || null;
+    }
     case 'task.started':
       return oneSentence(startedSentence(taskTitleOf(p)));
     case 'task.completed':

@@ -144,11 +144,18 @@ test('quiet hours suppress everything except blockers and questions', () => {
 
 test('events with nothing to say are refused', () => {
   const clock = new FakeClock(NOON, 'UTC');
-  for (const type of ['capacity.updated', 'chat.message', 'project.created', 'project.updated', 'worker.started', 'speech.say']) {
+  for (const type of ['capacity.updated', 'project.created', 'project.updated', 'worker.started', 'speech.say']) {
     const d = shouldSpeak({ type, payload: {} }, { settings: {}, clock });
     assert.equal(d.speak, false, `${type} is not worth speaking`);
     assert.equal(d.reason, 'not_notable', type);
   }
+  // Blake's own words are never read back to him; only assistant replies speak.
+  const mine = shouldSpeak({ type: 'chat.message', payload: { turn: { role: 'user', text: 'build a thing' } } }, { settings: {}, clock });
+  assert.equal(mine.speak, false);
+  assert.equal(mine.reason, 'not_assistant_turn');
+  const reply = shouldSpeak({ type: 'chat.message', payload: { turn: { role: 'assistant', text: "I'm on it." } } }, { settings: {}, clock });
+  assert.equal(reply.speak, true, 'an assistant reply is spoken as shown');
+  assert.equal(reply.priority, 'normal');
   assert.deepEqual(shouldSpeak(null, { settings: {}, clock }),
     { speak: false, reason: 'unknown_event', priority: 'normal' });
 });
