@@ -36,11 +36,62 @@ function formatLocal(epochMs, timeZone) {
 
 function cloneWindow(w) { return { ...w }; }
 
+function round(value, places) {
+  const f = 10 ** places;
+  return Math.round(value * f) / f;
+}
+
+/**
+ * The service's own validation gate. Every window that reaches the report, the
+ * scheduler or the store passes through here, whichever door it came in by:
+ * `refresh()`, `ingestWorkerReport()` or a snapshot reloaded from disk.
+ *
+ * A window survives only if it carries a key and a genuinely readable
+ * `usedPercent`. Nothing is invented and nothing is coerced: an unreadable
+ * reading is DROPPED so it can degrade to `stale`/`unavailable`, because a
+ * `usedPercent` of `null` reaching the dashboard is exactly the "unknown
+ * rendered as 0%" failure this module exists to prevent. `remainingPercent` and
+ * `utilization` are then re-derived from the validated `usedPercent`, so an
+ * internally inconsistent triple (say `usedPercent:-50, remainingPercent:150`
+ * from a buggy worker) can never tell the scheduler there is capacity to burn.
+ *
+ * @returns {object|null}
+ */
+function sanitizeWindow(w) {
+  if (!w || typeof w !== 'object' || Array.isArray(w)) return null;
+
+  const key = typeof w.key === 'string' && w.key.trim() ? w.key.trim() : null;
+  if (!key) return null;
+
+  const used = w.usedPercent;
+  if (typeof used !== 'number' || !Number.isFinite(used) || used < 0) return null;
+
+  const usedPercent = round(Math.min(100, used), 2);
+  return {
+    ...w,
+    key,
+    label: typeof w.label === 'string' && w.label ? w.label : key,
+    usedPercent,
+    remainingPercent: round(100 - usedPercent, 2),
+    utilization: round(usedPercent / 100, 4),
+    unit: 'percent',
+    resetsAt: Number.isFinite(w.resetsAt) ? w.resetsAt : null,
+  };
+}
+
+/** Validate a list of windows; repeated keys collapse (last wins). */
+function sanitizeWindows(list) {
+  const byKey = new Map();
+  for (const w of Array.isArray(list) ? list : []) {
+    const clean = sanitizeWindow(w);
+    if (clean) byKey.set(clean.key, clean);
+  }
+  return [...byKey.values()];
+}
+
 function usableWindows(measurement) {
   if (!measurement || measurement.ok !== true) return null;
-  const windows = Array.isArray(measurement.windows)
-    ? measurement.windows.filter((w) => w && typeof w === 'object' && Number.isFinite(w.usedPercent))
-    : [];
+  const windows = sanitizeWindows(measurement.windows);
   return windows.length ? windows : null;
 }
 
@@ -59,14 +110,25 @@ export class UsageService {
     this._lastError = null;     // { reason, message, remedy, at }
     this._failedSinceSuccess = false;
 
+    // Reload the last good snapshot through the SAME validation gate as a live
+    // measurement. A snapshot written by an older build, half-written, or edited
+    // by hand must not be able to resurrect an unreadable window as a reading:
+    // that would report `live` while handing the scheduler and the circles a
+    // `usedPercent` of null.
     const persisted = this.store.get(CAPACITY_COLLECTION, SNAPSHOT_ID);
-    if (persisted && Array.isArray(persisted.windows) && persisted.windows.length
-        && Number.isFinite(persisted.measuredAt)) {
+    const restored = persisted && Number.isFinite(persisted.measuredAt)
+      ? sanitizeWindows(persisted.windows)
+      : [];
+    if (restored.length) {
       this._snapshot = {
         measuredAt: persisted.measuredAt,
         source: persisted.source ?? 'unknown',
-        windows: persisted.windows.map(cloneWindow),
+        windows: restored,
       };
+    } else if (persisted) {
+      this.logger.warn('discarded an unreadable persisted capacity snapshot', {
+        windows: Array.isArray(persisted.windows) ? persisted.windows.length : 0,
+      });
     }
   }
 

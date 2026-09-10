@@ -193,3 +193,53 @@ test('idempotency survives a restart backed by the durable Store', (t) => {
   assert.equal(asked(events).length, 1);
   assert.deepEqual(reloaded.open('p1').map((q) => q.id), [first.id]);
 });
+
+// --- Added by audit -------------------------------------------------------
+// The hardest requirement in this module is `ask` idempotency, and it has two
+// failure directions that a single-phrasing test cannot separate: a duplicate
+// slipping through, and two genuinely different questions collapsing onto one
+// record (which loses a question the human never gets shown).
+
+test('ask never splits one question and never merges two', () => {
+  const { gate, store, events } = harness();
+
+  // Each group is one question written several ways; the groups are different
+  // questions. The last three normalize to nothing but punctuation.
+  const groups = [
+    ['Deploy to staging first?', '  deploy   to STAGING first  ', 'Deploy to staging first',
+     'DEPLOY TO STAGING FIRST!', 'Deploy to staging first.'],
+    ['Deploy to production first?', 'deploy to production first'],
+    ['???'],
+    ['...'],
+    ['!'],
+  ];
+
+  const ids = groups.map((variants) => {
+    const seen = variants.map((text) => gate.ask({ projectId: 'p1', text }).id);
+    assert.equal(new Set(seen).size, 1, `every phrasing of ${JSON.stringify(variants[0])} must reuse one question`);
+    return seen[0];
+  });
+
+  assert.equal(new Set(ids).size, groups.length, 'distinct questions must never collapse onto one id');
+  assert.equal(store.all('questions').length, groups.length, 'exactly one stored record per distinct question');
+  assert.equal(asked(events).length, groups.length, 'exactly one question.asked per distinct question');
+  assert.deepEqual(asked(events).map((e) => e.payload.questionId), ids);
+  assert.deepEqual(
+    asked(events).map((e) => e.payload.text),
+    ['Deploy to staging first?', 'Deploy to production first?', '???', '...', '!'],
+    'the first phrasing is the one that is stored and announced',
+  );
+});
+
+test('a duplicate ask leaves the stored question completely untouched', () => {
+  const { gate, store, clock } = harness();
+  const first = gate.ask({ projectId: 'p1', taskId: 't1', text: 'Use feature flags?', recommendedDefault: 'yes', options: ['yes', 'no'] });
+  const snapshot = { ...first };
+
+  clock.set(clock.now() + 90_000);
+  const again = gate.ask({ projectId: 'p1', taskId: 't2', text: 'use feature flags', recommendedDefault: 'no', options: ['later'] });
+
+  assert.equal(again.id, first.id);
+  assert.deepEqual(again, snapshot, 'the duplicate must not re-stamp askedAt or overwrite taskId/default/options');
+  assert.deepEqual(store.get('questions', first.id), snapshot);
+});

@@ -1,5 +1,6 @@
 import { classify } from './intent.js';
 import { resolveReference } from './reference.js';
+import { summarizeForSpeech } from '../telemetry/report.js';
 
 /**
  * Turns plain chat into action (acceptance requirement 2). Everything Blake can
@@ -109,11 +110,8 @@ export class ChatDispatcher {
   _status(ref, ctx) {
     const projectId = ref.projectId ?? ctx.activeProjectId;
     if (!projectId) {
-      const capacity = this.usage?.report?.();
-      const cap = capacity && capacity.status !== 'unavailable'
-        ? ` Capacity looks ${capacity.status}.`
-        : '';
-      return { projectId: null, ask: null, reply: `Nothing in flight — give me something to build.${cap}` };
+      const note = this._capacityNote();
+      return { projectId: null, ask: null, reply: `Nothing in flight — give me something to build.${note ? ` ${note}` : ''}` };
     }
     const s = this.orchestrator.status(projectId);
     if (!s) return { projectId: null, ask: null, reply: `I couldn't find that project.` };
@@ -122,8 +120,26 @@ export class ChatDispatcher {
     return {
       projectId,
       ask: null,
-      reply: `${s.currentAction} ${s.progress.done} of ${s.progress.total} steps done.`,
+      reply: [`${s.currentAction} ${s.progress.done} of ${s.progress.total} steps done.`, this._capacityNote()]
+        .filter(Boolean)
+        .join(' '),
     };
+  }
+
+  /**
+   * A sentence about capacity, but only when it is genuinely worth saying —
+   * it changes how fast the work can go, so it belongs in a status answer.
+   */
+  _capacityNote() {
+    if (!this.usage?.report) return null;
+    try {
+      const report = this.usage.report();
+      const note = summarizeForSpeech(report, { previous: this._lastCapacityForStatus ?? null });
+      this._lastCapacityForStatus = report;
+      return note;
+    } catch {
+      return null;
+    }
   }
 
   _answer(conversationId, text, ctx) {

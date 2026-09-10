@@ -183,3 +183,30 @@ test('req3.7 delivery, blockers and questions are announced; nothing else insist
     `the question must be announced, got: ${spoken.map((s) => s.text).join(' | ')}`);
   assert.ok(spoken.every((s) => sentenceCount(s.text) <= 2), 'spoken lines stay to one or two sentences');
 });
+
+test('req3.8 a status answer mentions capacity only when it genuinely matters', async (t) => {
+  const { StubProvider, liveMeasurement, AutoClock: Clock } = await import('../helpers/fakes.js');
+  const clock = new Clock();
+  const app = makeApp({ clock, provider: new StubProvider([liveMeasurement(clock, [{ key: 'five_hour', label: '5-hour', usedPercent: 20 }])]) });
+  t.after(() => app.cleanup());
+  await app.usage.refresh();
+
+  const start = await say(app, 'build a link checker');
+  const healthy = await say(app, "how's it going?");
+  assert.ok(!/capacity|limit|running low/i.test(healthy.reply), `a healthy plan is not mentioned: ${healthy.reply}`);
+  assert.ok(sentenceCount(healthy.reply) <= 3);
+
+  // Now the plan is nearly spent — that changes what Jarvis can do, so say it.
+  app.testProvider.push(liveMeasurement(clock, [{ key: 'five_hour', label: '5-hour', usedPercent: 96 }]));
+  app.testProvider.queue.shift();
+  await app.usage.refresh();
+
+  const tight = await say(app, "how's it going?");
+  assert.match(tight.reply, /nearly out of capacity|running low/i, `expected a capacity note, got: ${tight.reply}`);
+  assert.match(tight.reply, /4% left on the 5-hour limit/i);
+  assert.ok(sentenceCount(tight.reply) <= 3, 'it stays within three short sentences');
+
+  // Said once at that level, not on every status check.
+  const again = await say(app, "how's it going?");
+  assert.ok(!/nearly out of capacity|running low/i.test(again.reply), `it does not repeat itself: ${again.reply}`);
+});

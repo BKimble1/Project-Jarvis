@@ -9,10 +9,26 @@
 const LOW_PERCENT = 10;
 const CRITICAL_PERCENT = 5;
 
+/** A percentage is only a reading when it is a finite number inside 0..100. */
+function percentReading(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
+    ? value
+    : null;
+}
+
+/**
+ * Remaining capacity for one window, or null when it is not knowable.
+ * Out-of-range values are rejected rather than trusted: a `remainingPercent` of
+ * 150 must not be read as "plenty left", and `usedPercent: -50` must not become
+ * 150% remaining. Falling back to a usable sibling field is fine; inventing a
+ * number for a window that has none is not.
+ */
 function remainingOf(window) {
   if (!window || typeof window !== 'object') return null;
-  if (Number.isFinite(window.remainingPercent)) return window.remainingPercent;
-  if (Number.isFinite(window.usedPercent)) return 100 - window.usedPercent;
+  const remaining = percentReading(window.remainingPercent);
+  if (remaining !== null) return remaining;
+  const used = percentReading(window.usedPercent);
+  if (used !== null) return 100 - used;
   return null;
 }
 

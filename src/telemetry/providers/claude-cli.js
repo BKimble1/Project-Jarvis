@@ -144,18 +144,35 @@ function finiteNumber(value) {
   return null;
 }
 
-const UTILIZATION_FIELDS = ['utilization', 'utilization_percent', 'utilizationPercent', 'used_percent', 'usedPercent'];
+/**
+ * Utilization fields, in precedence order, each with its scale.
+ *
+ * `utilization` is scale-ambiguous — the endpoint sends either 0..1 or 0..100 —
+ * so it gets the contract's ">1 means it is already a percentage" heuristic.
+ * Fields that name a percentage are NEVER rescaled: `used_percent: 0.5` is half
+ * of one percent, not fifty. Running those through the fraction heuristic was a
+ * silent 100x error that would have made the scheduler throttle a nearly idle
+ * account (or, worse, read 0.9% as 90%).
+ */
+const UTILIZATION_FIELDS = [
+  ['utilization', 'ambiguous'],
+  ['utilization_percent', 'percent'],
+  ['utilizationPercent', 'percent'],
+  ['used_percent', 'percent'],
+  ['usedPercent', 'percent'],
+];
+const UTILIZATION_FIELD_NAMES = UTILIZATION_FIELDS.map(([name]) => name);
 const RESET_FIELDS = ['resets_at', 'resetsAt', 'reset_at', 'resetAt', 'resets'];
 
 /** @returns {number|null} used percentage in 0..100, or null when the value is unusable. */
 function usedPercentFrom(entry) {
-  for (const field of UTILIZATION_FIELDS) {
+  for (const [field, scale] of UTILIZATION_FIELDS) {
     if (!(field in entry)) continue;
     const n = finiteNumber(entry[field]);
     if (n === null) return null;      // present but unusable -> drop the window
     if (n < 0) return null;           // negative is aberrant -> drop, never clamp to 0
     // 0..1 fraction vs 0..100 percentage: anything above 1 is already a percentage.
-    const pct = n > 1 ? n : n * 100;
+    const pct = scale === 'percent' ? n : (n > 1 ? n : n * 100);
     return pct > 100 ? 100 : pct;
   }
   return null;
@@ -212,7 +229,7 @@ function collectEntries(payload) {
     : payload;
   for (const [key, value] of Object.entries(container)) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-    if (!UTILIZATION_FIELDS.some((f) => f in value)) continue;
+    if (!UTILIZATION_FIELD_NAMES.some((f) => f in value)) continue;
     out.push([key, value]);
   }
   return out;
@@ -222,7 +239,8 @@ function collectEntries(payload) {
  * Turn either payload shape into CapacityWindow[].
  * Windows whose utilization is missing, null, NaN, negative or otherwise not a
  * finite number are DROPPED — never coerced to 0, because "unknown" must never
- * render as "0% used".
+ * render as "0% used". Repeated keys collapse (last entry wins), so a payload
+ * that lists the same limit twice can never produce two circles for it.
  */
 export function normalizeUsagePayload(payload, { clock, measuredAt, source = 'claude-subscription' } = {}) {
   const at = Number.isFinite(measuredAt) ? measuredAt : (clock ? clock.now() : null);

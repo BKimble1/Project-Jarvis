@@ -102,3 +102,15 @@ test('canRun is false for a missing project', () => {
   assert.equal(canRun(undefined), false);
   assert.equal(canRun('p1'), false);
 });
+
+// --- Added by audit -------------------------------------------------------
+
+test('nextPhase reads a missing, null or empty options argument as "no repairs needed"', () => {
+  // The orchestrator forwards whatever options it was handed; a null must not
+  // crash the phase machine mid-project.
+  for (const opts of [undefined, null, {}, { repairsNeeded: undefined }, { repairsNeeded: false }]) {
+    assert.equal(nextPhase('reviewing', opts), 'delivering', `reviewing with opts=${JSON.stringify(opts) ?? 'undefined'}`);
+    assert.equal(nextPhase('planning', opts), 'implementing', `planning with opts=${JSON.stringify(opts) ?? 'undefined'}`);
+  }
+  assert.equal(nextPhase('reviewing', { repairsNeeded: true }), 'repairing', 'a real repair signal still branches');
+});

@@ -186,3 +186,37 @@ test('the queue and its FIFO order survive a restart on the durable Store', (t) 
   assert.equal(typed(events, 'backlog.picked').length, 2);
   assert.equal(typed(events, 'backlog.empty').length, 1);
 });
+
+// --- Added by audit -------------------------------------------------------
+
+test('an item stored without an explicit authorized flag is still available work', () => {
+  const { backlog, store, clock, events } = harness();
+  // `add` documents `authorized = true`, so only an explicit `false` holds an
+  // item back. A record that reached the store without the flag (an older
+  // writer, a seeded fixture, a hand-edited state file) must not be stranded
+  // in `pending` forever, invisible to both next() and size().
+  store.put('backlog', 'bk_legacy', {
+    id: 'bk_legacy', title: 'Imported item', goal: 'Imported item', source: 'import',
+    status: 'pending', seq: 1, projectId: null, createdAt: clock.now(), pickedAt: null, completedAt: null,
+  });
+
+  assert.equal(backlog.size(), 1, 'a flagless item is authorized by default');
+  assert.deepEqual(backlog.pending().map((i) => i.id), ['bk_legacy']);
+  assert.equal(backlog.next().id, 'bk_legacy');
+  assert.equal(store.get('backlog', 'bk_legacy').status, 'picked');
+
+  const held = backlog.add({ title: 'Held for approval', authorized: false });
+  assert.equal(backlog.size(), 0, 'an explicit false is still the only thing that holds work back');
+  assert.equal(backlog.next(), null);
+
+  const empty = typed(events, 'backlog.empty').at(-1).payload;
+  assert.equal(empty.size, 0, 'the empty payload reports the real available count');
+  assert.equal(empty.unauthorized, 1, 'and says how much work is waiting on authorization');
+  assert.equal(store.get('backlog', held.id).status, 'pending', 'held work stays pending, it is not dropped');
+});
+
+test('authorize() on an unknown id changes nothing and returns null', () => {
+  const { backlog, store } = harness();
+  assert.equal(backlog.authorize('bk_missing'), null);
+  assert.equal(store.all('backlog').length, 0, 'never synthesizes a record to authorize');
+});
