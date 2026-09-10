@@ -121,6 +121,11 @@ export class Orchestrator {
       // One change, one announcement: `project.changed` is emitted when the
       // change is actually folded in, not twice.
       this._setAction(`I am folding your change into ${project.title}.`, projectId);
+      // The loop may be finishing this very moment. run() returns the in-flight
+      // promise if there is one and starts a fresh loop if there is not, so a
+      // change can never be left sitting in the queue with nobody to drain it.
+      const resumed = this.run(projectId);
+      if (resumed && typeof resumed.catch === 'function') resumed.catch(() => {});
       return this._project(projectId);
     }
 
@@ -615,6 +620,11 @@ export class Orchestrator {
   }
 
   // ---------------------------------------------------------------- state
+
+  /** Changes accepted but not yet folded in. Always 0 once a run settles. */
+  pendingChanges(projectId) {
+    return (this._changeQueue.get(projectId) ?? []).length;
+  }
 
   status(projectId) {
     const project = this._project(projectId);

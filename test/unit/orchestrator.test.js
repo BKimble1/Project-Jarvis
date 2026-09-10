@@ -124,6 +124,25 @@ test('a change queued during a running phase is folded in at a task boundary', a
   assert.match(final.scope.join(' ').toLowerCase(), /audit trail/);
   assert.match(final.scope.join(' ').toLowerCase(), /ledger/);
   assert.equal(final.status, 'delivered');
+  assert.equal(h.orchestrator.pendingChanges(project.id), 0, 'no change was left stranded in the queue');
+});
+
+test('a change accepted as the loop settles is still folded in', async (t) => {
+  const h = build();
+  t.after(h.cleanup);
+
+  const project = await h.orchestrator.submit({ title: 'App', goal: 'a chart' });
+  const run = h.orchestrator.run(project.id);
+  // Land the change on the same turn the loop is finishing on.
+  const change = run.then(() => h.orchestrator.applyChange(project.id, 'also add a legend'));
+  await run;
+  await change;
+  await h.orchestrator.run(project.id);
+
+  assert.equal(h.orchestrator.pendingChanges(project.id), 0);
+  assert.equal(h.store.ids('projects').length, 1);
+  assert.match(h.store.get('projects', project.id).scope.join(' ').toLowerCase(), /legend/);
+  assert.equal(h.store.get('projects', project.id).status, 'delivered');
 });
 
 test('applying a change to a delivered project reopens it instead of forking one', async (t) => {

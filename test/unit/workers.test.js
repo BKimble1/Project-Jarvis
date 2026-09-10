@@ -301,8 +301,14 @@ test('capacity AND pace are re-read before every dispatch, and each task runs ex
   };
 
   const pool = new WorkerPool({ clock, bus: new EventBus(), scheduler, size: 4, executor, logger: silentLogger() });
-  const state = await drive(clock, Promise.all(Array.from({ length: 5 }, (_, i) => pool.submit(task(i), {}))));
+  const all = Promise.all(Array.from({ length: 5 }, (_, i) => pool.submit(task(i), {})));
 
+  // Let the unpaced dispatches happen before virtual time moves at all, so the
+  // timestamps below are the pacing itself rather than the test's step size.
+  await settle();
+  assert.deepEqual(entries.map((e) => e.at), [0, 0], 'two tasks went straight out while the pace was 0');
+
+  const state = await drive(clock, all);
   assert.equal(state.ok, true, state.error?.message);
   assert.deepEqual(state.value, ['t0', 't1', 't2', 't3', 't4'], 'every task resolves, in order, exactly once');
 
