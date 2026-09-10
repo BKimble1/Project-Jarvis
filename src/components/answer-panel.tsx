@@ -37,10 +37,21 @@ export function AnswerPanel({
   answer,
   asked,
   onPick,
+  showSummary = true,
 }: {
   answer: QueryAnswer;
   asked: string;
   onPick: (text: string) => void;
+  /**
+   * Whether to print the summary sentence.
+   *
+   * On the Jarvis screen the same sentence is already under the core — `turn.said` for a question
+   * *is* `answer.summary` — so printing it here repeats it a few centimetres lower. Everywhere else
+   * this panel appears, the command bar included, there is no core above it and the summary is the
+   * only copy of the answer, which is why the default is to print it and the screen opts out rather
+   * than the other way round.
+   */
+  showSummary?: boolean;
 }) {
   /*
    * An ambiguous project name is answered before any preview is built, so the request has to be
@@ -56,7 +67,9 @@ export function AnswerPanel({
         <h3 className="text-sm font-semibold">{answer.title}</h3>
         <ProvenanceBadge level={answer.summaryProvenance} />
       </div>
-      <p className="mt-1 text-sm text-[var(--color-text-muted)]">{answer.summary}</p>
+      {showSummary ? (
+        <p className="mt-1 text-sm text-[var(--color-text-muted)]">{answer.summary}</p>
+      ) : null}
 
       {answer.notice ? (
         <p className="mt-3 rounded-lg bg-[var(--color-caution-soft)] px-3 py-2 text-xs text-[var(--color-caution-text)]">

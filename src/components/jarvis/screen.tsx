@@ -506,10 +506,18 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * is on the screen around it: the command bar renders the same component with no core above it,
    * and there the summary is the only place the answer appears at all.
    */
-  const printedAnswer = React.useMemo(() => {
-    if (!answer) return null;
+  /*
+   * The summary is already under the core, so the panel must not print it again.
+   *
+   * For a question `turn.said` *is* `answer.summary` (see `ConversationService`), and the screen
+   * shows that sentence under the core, speaks it, and lists it in the history. Printing it a
+   * fourth time in the panel a few centimetres below is the duplication, not the panel itself —
+   * the title, provenance, notice and sections below it are all still worth having.
+   */
+  const summaryIsAlreadyOnScreen = React.useMemo(() => {
+    if (!answer) return false;
     const underTheCore = latest?.who === 'jarvis' ? latest.text.trim() : null;
-    return answer.summary.trim() === underTheCore ? { ...answer, summary: '' } : answer;
+    return underTheCore !== null && answer.summary.trim() === underTheCore;
   }, [answer, latest]);
 
   const markCompleted = React.useCallback(() => {
@@ -1528,10 +1536,11 @@ export function JarvisScreen(props: JarvisScreenProps) {
                   />
                 ) : null}
                 {evaluation && !pendingThought ? <EvaluationBody evaluation={evaluation} /> : null}
-                {printedAnswer ? (
+                {answer ? (
                   <AnswerPanel
-                    answer={printedAnswer}
+                    answer={answer}
                     asked={asked}
+                    showSummary={!summaryIsAlreadyOnScreen}
                     onPick={(text) => void askJarvis(text)}
                   />
                 ) : null}
