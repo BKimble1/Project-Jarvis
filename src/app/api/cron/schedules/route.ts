@@ -1,11 +1,14 @@
 import type { NextResponse } from 'next/server';
 import { assertCronAuthorised } from '@/server/auth/guard';
 import { getServices } from '@/server/container';
-import { errorResponse, json } from '@/server/http/handler';
+import { errorResponse, json, ownerRoute } from '@/server/http/handler';
 import { logger } from '@/server/logging/logger';
+import type { ScheduleTickReport } from '@/server/schedules/schedule-service';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+
+type Services = Awaited<ReturnType<typeof getServices>>;
 
 /**
  * The tick that makes schedules happen.
@@ -18,6 +21,19 @@ export const maxDuration = 60;
  * not a schedule. So the tick is a route, and whatever wakes it — the worker supervisor's own
  * timer, a Windows scheduled task, a platform cron — only has to be able to make an HTTP request.
  *
+ * ## Why this route is not, on its own, enough
+ *
+ * It was written and nothing called it. No timer, no worker loop, no scheduled function anywhere
+ * in the repository named it, so on the documented single-machine deployment every reminder was
+ * accepted, stored, and never delivered — while the interface told the owner it had been set. A
+ * route with no caller is not a backstop, it is a comment.
+ *
+ * The caller that fixes that is the operating loop, because the enrolled worker already drives it
+ * on a timer and is the only thing on a single-machine install that reliably runs at all. This
+ * route stays for the deployments where something else can do the waking, and gains the owner
+ * below so the tick is reachable from a signed-in session too — the same pair, and for the same
+ * reason, as `/api/operator/tick`.
+ *
  * ## Why calling it too often is harmless
  *
  * Every occurrence is claimed by a key derived from its *local wall-clock time*. A tick every
@@ -27,14 +43,7 @@ export const maxDuration = 60;
  *
  * Protected by `CRON_SECRET`, compared in constant time, and closed when that secret is absent.
  */
-export async function POST(request: Request): Promise<NextResponse> {
-  try {
-    assertCronAuthorised(request);
-  } catch (error) {
-    return errorResponse(error);
-  }
-
-  const services = await getServices();
+async function tick(services: Services): Promise<ScheduleTickReport> {
   const report = await services.scheduleService.tick();
 
   /*
@@ -50,5 +59,24 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
   }
 
-  return json(report);
+  return report;
 }
+
+export async function POST(request: Request): Promise<NextResponse> {
+  try {
+    assertCronAuthorised(request);
+    /*
+     * The tick is inside the `try` deliberately. It used to sit outside it, so anything the pass
+     * could not swallow — a database that went away between two schedules — left this handler as a
+     * thrown exception rather than an error response, and the caller most likely to meet that is a
+     * timer with nobody watching it.
+     */
+    const services = await getServices();
+    return json(await tick(services));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+/** The same pass, run by the owner from the interface. */
+export const PUT = ownerRoute(async ({ services }) => json(await tick(services)));
