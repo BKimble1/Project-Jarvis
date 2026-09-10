@@ -78,6 +78,28 @@ proves it. Run everything with `npm test`.
 | No replayed speech | `req3.4`, `req6.1` |
 | Usage circles against real provider readings | `npm run usage` — see "Verified against this environment" below |
 
+## Verified in a real browser
+
+Beyond the automated suites, the running server was driven in Chromium
+(`node src/server.js`, then Playwright against the real page). What was
+observed, with no console errors, no failed requests and no horizontal scroll
+at 400px wide:
+
+| Checked | Result |
+| --- | --- |
+| Default view | Core, one action sentence, chat, mode/health controls, usage circles. Decision card, deliverables strip and all three drawers hidden. |
+| A build driven entirely from the chat box | Reply, live action line, then the deliverables strip appearing on delivery and the action line ending at "I delivered …". |
+| Usage circles, no credential | Dashed grey ring reading "Unavailable", "No reading — capacity is unknown, not zero.", an expandable explanation and a "Retry usage check" button. Never a 0% ring. |
+| Usage circles, live reading | Three rings (5-hour 41%, 7-day 68%, 7-day (Opus) 91%) with used/remaining, reset times in the operator's timezone, and "Live reading, measured 12s ago". |
+| Scheduling off that reading | `/api/diagnostics` showed `concurrency: 1, paceDelayMs: 2000, worstRemainingPercent: 9` — the 9%-remaining window really throttled the work. |
+| Speech | Four items offered and all acknowledged; after a full page refresh, zero items re-offered. |
+| Decision card and mode control | Switching to "Ask first" produced a plan-approval card with a recommended default; approving delivered the project, declining paused it rather than building anyway. |
+
+The live-reading rows were produced by pointing `ANTHROPIC_BASE_URL` at a local
+stub of the usage endpoint with `CLAUDE_CODE_OAUTH_TOKEN` set, so the real
+provider code path — request, headers, normalization, storage, render — ran end
+to end over HTTP. No production credential was available in this container.
+
 ## Verified against this environment
 
 `npm run usage` walks the real path on the machine Jarvis is running on and
