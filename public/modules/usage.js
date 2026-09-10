@@ -43,21 +43,35 @@ export function formatAge(ms) {
   return restHours ? `${days}d ${restHours}h` : `${days}d`;
 }
 
-/** Stroke maths for a used-fraction arc drawn on a circle of `radius`. */
+/**
+ * Stroke maths for a used-fraction arc drawn on a circle of `radius`.
+ *
+ * A non-numeric input is NOT silently coerced to zero — that is the one thing
+ * this file exists to prevent. It comes back `known: false` with nothing
+ * painted, so a caller that reaches here with rubbish cannot accidentally draw
+ * a confident "0% used" arc.
+ */
 export function ringGeometry(usedPercent, radius = RING_RADIUS) {
   const circumference = 2 * Math.PI * radius;
-  const pct = Math.min(100, Math.max(0, Number(usedPercent) || 0));
+  const known = isReading(usedPercent);
+  const pct = known ? Math.min(100, Math.max(0, usedPercent)) : 0;
   return {
     radius,
     circumference,
+    known,
     dashArray: circumference,
-    dashOffset: circumference * (1 - pct / 100),
+    dashOffset: known ? circumference * (1 - pct / 100) : circumference,
   };
 }
 
 /** A reading is an actual finite number. Strings, null and NaN are not. */
 function isReading(value) {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** A percentage is only usable when it is a finite number inside 0..100. */
+function isPercent(value) {
+  return isReading(value) && value >= 0 && value <= 100;
 }
 
 function toneFor(usedPercent) {
@@ -78,12 +92,15 @@ function displayPercent(value) {
 function circleModel(window, { freshness, staleNote, timezone }) {
   if (!window || typeof window !== 'object') return null;
   // Never coerce an unusable value into a ring: `null` is not 0%, and
-  // `Number(null)` is. Only an actual finite number counts as a reading.
-  if (!isReading(window.usedPercent)) return null;
+  // `Number(null)` is. Only an actual finite number inside 0..100 counts as a
+  // reading — an aberrant one (negative, > 100, NaN) is DROPPED, exactly as the
+  // telemetry contract requires, and never clamped into a plausible-looking
+  // "0% used" or "100% used" ring that a reader would trust.
+  if (!isPercent(window.usedPercent)) return null;
 
-  const usedClamped = Math.min(100, Math.max(0, window.usedPercent));
-  const remaining = isReading(window.remainingPercent)
-    ? Math.min(100, Math.max(0, window.remainingPercent))
+  const usedClamped = window.usedPercent;
+  const remaining = isPercent(window.remainingPercent)
+    ? window.remainingPercent
     : 100 - usedClamped;
 
   const key = String(window.key ?? 'window');

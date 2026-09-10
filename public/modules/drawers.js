@@ -38,12 +38,17 @@ export function createDrawers({ root = document, onOpen, onClose } = {}) {
     if (!id) return;
     const panel = panels.get(id);
     if (!panel) return;
+    const wasOpen = openId === id;
     panel.hidden = true;
-    if (openId === id) openId = null;
+    if (wasOpen) openId = null;
     syncToggles();
     onClose?.(id);
-    if (restoreFocus && opener) { opener.focus(); }
-    opener = null;
+    // Only the drawer that actually held focus owns the return journey; closing
+    // some other panel must not throw away the open one's opener.
+    if (wasOpen) {
+      if (restoreFocus) opener?.focus?.();
+      opener = null;
+    }
   }
 
   function open(id, from = null) {

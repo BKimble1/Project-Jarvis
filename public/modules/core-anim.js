@@ -175,6 +175,9 @@ export function createCore({ canvas, state = 'idle', reducedMotion, describe = (
 
   function start() {
     if (destroyed || still || frame !== null) return;
+    // No rAF at all (a non-browser host, or a very locked-down one): paint the
+    // state as a still frame rather than throwing on the way up.
+    if (typeof globalThis.requestAnimationFrame !== 'function') { paint(); return; }
     last = 0;
     frame = globalThis.requestAnimationFrame(tick);
   }
@@ -222,7 +225,9 @@ export function createCore({ canvas, state = 'idle', reducedMotion, describe = (
       if (!PALETTE[next] || next === current) return current;
       current = next;
       applyLabel();
-      if (still) paint(); // reduced motion: the change is visible, it just does not move
+      // Whenever no frame loop is running — reduced motion, a hidden tab, no
+      // rAF — the new state has to be painted here or it would never appear.
+      if (frame === null) paint();
       return current;
     },
     redraw,

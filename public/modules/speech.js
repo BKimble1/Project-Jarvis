@@ -33,6 +33,7 @@ export function createSpeech({
   let activationShown = false;
   let isMuted = Boolean(muted);
   let stopped = false;
+  let current = null;              // the item being spoken right now, if any
 
   function hasGesture() {
     if (unlocked) return true;
@@ -73,6 +74,7 @@ export function createSpeech({
     showActivation(false);
 
     const item = queue.shift();
+    current = item;
     let started = false;
     let settled = false;
 
@@ -84,6 +86,7 @@ export function createSpeech({
     const finish = (didSpeak) => {
       if (settled) return;
       settled = true;
+      current = null;
       clearTimeout(watchdog);
       setSpeaking(false);
       if (didSpeak) acknowledge(item);
@@ -93,6 +96,7 @@ export function createSpeech({
     const blocked = () => {
       if (settled) return;
       settled = true;
+      current = null;
       clearTimeout(watchdog);
       setSpeaking(false);
       unlocked = false;
@@ -106,6 +110,11 @@ export function createSpeech({
     utterance.onerror = (event) => {
       const reason = event?.error ?? '';
       if (reason === 'not-allowed' || reason === 'blocked') blocked();
+      // `cancel()` and mute cut the utterance off mid-word. Acknowledging it
+      // would tell the server Blake heard something he did not, and the server
+      // would never offer it again. Settle it without an ack instead — the
+      // deliberate-silence paths ack for themselves.
+      else if (reason === 'interrupted' || reason === 'canceled' || reason === 'cancelled') finish(false);
       else finish(true);           // a voice fault is not a reason to repeat forever
     };
 
@@ -161,6 +170,11 @@ export function createSpeech({
     setMuted(next) {
       isMuted = Boolean(next);
       if (isMuted) {
+        // A deliberate silence, so the item that was mid-sentence is dropped on
+        // purpose: ack it, or it comes back as stale news the next time the
+        // page loads. (An *undeliberate* interruption is handled in `onerror`,
+        // where the item is deliberately NOT acknowledged.)
+        if (current) { acknowledge(current); current = null; }
         try { synth?.cancel(); } catch { /* ignore */ }
         setSpeaking(false);
         drainMuted();

@@ -44,7 +44,8 @@ function orderOf(turn) {
 export function createChat({ form, input, transcript, empty, onSend, onActivity } = {}) {
   if (!form || !input || !transcript) throw new TypeError('createChat requires form, input and transcript');
 
-  const seen = new Map();          // key -> { order, node }
+  const seen = new Map();          // key  -> { order, node }
+  const nodeOrder = new Map();     // node -> order, so insertion reads DOM order
   let busy = false;
 
   function setBusy(next) {
@@ -94,6 +95,23 @@ export function createChat({ form, input, transcript, empty, onSend, onActivity 
     if (empty) empty.hidden = seen.size > 0;
   }
 
+  /**
+   * The first turn already on screen that belongs AFTER `order`.
+   *
+   * This has to walk the transcript in DOM order, not the order the turns
+   * happened to arrive in: once anything has been inserted out of order the two
+   * disagree, and trusting arrival order drops a late turn in the wrong slot
+   * (e.g. inserting #2 into [#1,#3,#5] lands it after #3).
+   */
+  function insertionPoint(order) {
+    for (const child of transcript.children ?? []) {
+      const childOrder = nodeOrder.get(child);
+      if (childOrder === undefined) continue;   // not one of ours; step over it
+      if (childOrder > order) return child;
+    }
+    return null;
+  }
+
   /** Append one turn; returns false when it was a duplicate. */
   function appendTurn(turn) {
     if (!turn || typeof turn !== 'object') return false;
@@ -104,13 +122,11 @@ export function createChat({ form, input, transcript, empty, onSend, onActivity 
     const order = orderOf(turn);
 
     // Out-of-order arrival (a replay racing a live event) still lands correctly.
-    let before = null;
-    for (const entry of seen.values()) {
-      if (entry.order > order) { before = entry.node; break; }
-    }
+    const before = insertionPoint(order);
     if (before) transcript.insertBefore(node, before);
     else transcript.appendChild(node);
 
+    nodeOrder.set(node, order);
     seen.set(key, { order, node });
     syncEmpty();
     scrollIfFollowing(wasAtBottom);

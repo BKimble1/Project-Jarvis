@@ -424,14 +424,13 @@ main {
 /* ------------------------------------------------------------- deliverables */
 
 .deliverable-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.deliverable summary {
-  cursor: pointer;
+.deliverable-head {
   display: flex;
   gap: 10px;
   align-items: baseline;
   justify-content: space-between;
-  font-weight: 600;
 }
+.deliverable-title { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .deliverable-kind {
   font-size: 10.5px;
   text-transform: uppercase;
@@ -500,7 +499,6 @@ main {
   margin-bottom: 12px;
 }
 .panel-head .panel-title { margin: 0; }
-.panel-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 
 .event-list, .project-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 
@@ -519,9 +517,21 @@ main {
 .project-title { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .project-meta { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
 
-.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 13.5px; }
-.kv dt { color: var(--muted); }
-.kv dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+/* Diagnostics JSON. It must scroll inside the drawer rather than stretching it:
+   a single long line would otherwise push the close button off screen. */
+.code {
+  margin: 0;
+  font: 12px/1.5 var(--mono);
+  color: var(--muted);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 2;
+}
 
 /* ------------------------------------------------------------------ motion */
 
