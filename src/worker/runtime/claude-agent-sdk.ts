@@ -595,12 +595,161 @@ function describe(error: unknown): string {
   return String(error);
 }
 
-function isRetryable(error: unknown): boolean {
+/* ----------------------------------------------- structured error signals */
+
+/**
+ * How far down an error's `cause` chain the structured signals are looked for.
+ *
+ * Four links, because the chains that actually arrive here are short: the SDK wraps a transport
+ * failure, the transport wraps a socket error, and a worker helper occasionally wraps that again.
+ * A bound is needed at all because `cause` is an ordinary property that anything may set —
+ * including, on a hand-built error object, back to the error itself, which an unbounded walk
+ * would follow for ever.
+ */
+export const ERROR_CAUSE_DEPTH = 4;
+
+/** What an error knows about itself, as opposed to what it says. */
+export interface ErrorSignals {
+  /** An HTTP status, from `status`, `statusCode`, `httpStatus` or `response.status`. */
+  readonly status: number | null;
+  /** A machine code: a Node `errno` such as `ECONNRESET`, or a domain error's `JarvisErrorCode`. */
+  readonly code: string | null;
+}
+
+/**
+ * Read what an unknown error knows about itself, before reading what it says.
+ *
+ * The worker's classifiers used to read `error.message` and nothing else, and a message is the
+ * least dependable thing an error carries: prose, written by a provider, free to be reworded in
+ * a point release. An Anthropic 403 whose text mentioned a timeout was retried on the strength of
+ * that one word, and a 529 — overloaded, the most retryable status there is — was given up on
+ * because its text contained no phrase the classifier knew.
+ *
+ * The shape is read rather than a class tested, because for the SDK there is no class to test
+ * against: the package is an optional dynamic import whose types are declared locally (see the
+ * note at the top of this file), so `instanceof` has nothing to name. Reading the shape also
+ * survives a subprocess boundary, which turns an error into a plain object with no prototype.
+ */
+export function readErrorSignals(error: unknown): ErrorSignals {
+  let status: number | null = null;
+  let code: string | null = null;
+
+  let current: unknown = error;
+  for (let depth = 0; depth < ERROR_CAUSE_DEPTH; depth += 1) {
+    if (typeof current !== 'object' || current === null) break;
+    const record = current as Record<string, unknown>;
+    const response =
+      typeof record.response === 'object' && record.response !== null
+        ? (record.response as Record<string, unknown>)
+        : null;
+    status ??=
+      httpStatus(record.status) ??
+      httpStatus(record.statusCode) ??
+      httpStatus(record.httpStatus) ??
+      httpStatus(response?.status);
+    code ??= typeof record.code === 'string' && record.code.length > 0 ? record.code : null;
+    current = record.cause;
+  }
+
+  return { status, code };
+}
+
+/**
+ * A status, or null for a property that merely shares the name.
+ *
+ * Range-checked rather than merely numeric, because `status` is a popular property name and one
+ * of the things carrying it is the worker's own `ControlPlaneError`, whose status is `0` when the
+ * request never reached the control plane at all. Read as an HTTP status that zero would say "a
+ * server answered, and not with a 5xx" — the exact opposite of what it means.
+ */
+function httpStatus(value: unknown): number | null {
+  const numeric = typeof value === 'string' ? Number(value) : value;
+  if (typeof numeric !== 'number' || !Number.isInteger(numeric)) return null;
+  return numeric >= 100 && numeric <= 599 ? numeric : null;
+}
+
+/**
+ * At and above this status the server is describing its own trouble rather than judging the
+ * request, so the identical request is worth sending again.
+ *
+ * A floor rather than a list, because the set is open at the top: 500, 502, 503 and 504 come from
+ * the API and from whatever proxy sits in front of it, and Anthropic's own overload status is 529
+ * — outside every published enumeration of HTTP status codes, and the single most retryable thing
+ * the API can return.
+ */
+export const RETRYABLE_STATUS_FLOOR = 500;
+
+/**
+ * The two 4xx that mean "later" rather than "no".
+ *
+ * Every other 4xx is a verdict on the request itself — a rejected key, a model this account may
+ * not use, a body the API would refuse a thousand times over — and retrying one spends the
+ * mission's attempts to arrive at the same answer more slowly. 408 is the server saying it gave
+ * up waiting; 429 is it saying to come back.
+ */
+export const RETRYABLE_CLIENT_STATUSES: ReadonlySet<number> = new Set([408, 429]);
+
+/**
+ * Node error codes that describe the connection rather than the request.
+ *
+ * These arrive with no status at all, because nothing that could assign one was ever reached.
+ * `EAI_AGAIN` is the DNS resolver explicitly asking to be asked again, and the `UND_ERR_` pair is
+ * what Node's own `fetch` throws for a connection that timed out or died in flight.
+ *
+ * `ENOTFOUND` is deliberately absent. A hostname that does not resolve is almost always a
+ * misconfigured base URL rather than a passing condition, and retrying it spends the run's
+ * remaining attempts on a name that will still not resolve a minute later.
+ */
+export const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+/**
+ * The last resort: phrases worth acting on when the error carries nothing else.
+ *
+ * The SDK runs `claude` in a subprocess, and a failure that crosses that boundary can reach the
+ * worker as a sentence and nothing more — no status, no code, no prototype. These four are what
+ * this classifier was originally built from; they are kept, one rung below the structured signals
+ * instead of in front of them.
+ */
+export const RETRYABLE_MESSAGE_HINTS: readonly string[] = [
+  'overloaded',
+  'rate limit',
+  'timeout',
+  'econnreset',
+];
+
+/**
+ * Is the identical request worth making again?
+ *
+ * A status decides whenever there is one, in both directions: it is the API's own account of what
+ * happened, and no phrase in the body of a 403 turns a permanent refusal into a passing
+ * condition. A recognised network code decides next, for the failures that never reached a server
+ * to be given a status by.
+ *
+ * Prose speaks only when the error carries neither. A code that is present but unrecognised falls
+ * through to it rather than being read as a refusal: an unknown code is evidence about where the
+ * failure came from, not about whether it will recur, and treating it as "not retryable" would
+ * quietly stop the worker retrying a genuinely overloaded API.
+ */
+export function isRetryable(error: unknown): boolean {
+  const signals = readErrorSignals(error);
+  if (signals.status !== null) {
+    return (
+      signals.status >= RETRYABLE_STATUS_FLOOR || RETRYABLE_CLIENT_STATUSES.has(signals.status)
+    );
+  }
+  if (signals.code !== null && RETRYABLE_NETWORK_CODES.has(signals.code)) return true;
+
   const message = describe(error).toLowerCase();
-  return (
-    message.includes('overloaded') ||
-    message.includes('rate limit') ||
-    message.includes('timeout') ||
-    message.includes('econnreset')
-  );
+  return RETRYABLE_MESSAGE_HINTS.some((hint) => message.includes(hint));
 }

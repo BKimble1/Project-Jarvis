@@ -14,6 +14,7 @@ import {
   type MissionTask,
   type TaskState,
 } from '@/domain/mission-task';
+import type { MissionFailureCode } from '@/domain/mission';
 import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
 import { deriveWorkerHealth } from '@/domain/worker';
 
@@ -73,6 +74,7 @@ import type { ProjectRepository, SourceRepository } from '../repositories/types'
 import type {
   ReviewRepository,
   TaskGraphRepository,
+  TaskPatch,
   TaskRepository,
   WriteLeaseRepository,
 } from '../repositories/factory-types';
@@ -186,102 +188,210 @@ export class TaskWorkerService {
     if (!claimed) return null;
 
     /*
-     * The exact gate, and the unwind that has to come with it.
+     * Past this line the row is `claimed`: it holds a run, it counts against every ceiling, and it
+     * is no longer visible to any queue. So every way out of here has to either hand the task to
+     * the worker or put it back — including the ways out nobody wrote deliberately, which is what
+     * the `try` is for.
      *
-     * Reaching the refusal is a bug — the two filters above should have skipped the row — but a
-     * gate that only holds while an adjacent SQL clause is correct is not a gate. If it fires, the
-     * task has to go back to `ready` rather than sit in `claimed` with a run nobody is executing,
-     * where it is invisible to every ceiling and blocks its own mission indefinitely.
-     *
-     * It returns null rather than throwing: a 403 would kill the worker's poll loop over a
-     * control-plane defect the worker had no part in.
+     * There was no `try`. `orchestrator.tick` and `buildAssignment` both run after the claim, and
+     * `buildAssignment` throws `NotFoundError` outright for a mission that has gone; the route
+     * turned that into a 404, and the worker's client refuses to retry anything under 500, so the
+     * worker never came back for it. The task then sat in `claimed` for ever, doing no work and
+     * holding a slot against `maxActiveRuns`, `maxRunsPerMission` and `maxParallelWriters` — and
+     * `reclaimAbandoned` could not rescue it, because that acts on tasks whose *worker* looks
+     * gone and this worker is alive and heartbeating.
      */
-    const mission = await this.deps.missions.findById(claimed.task.missionId);
-    if (mission?.autonomous) {
-      const verdict = unattendedVerdict(
-        taskUnattendedCapabilities(claimed.task.role, claimed.task.taskType),
-        level,
-      );
-      if (!verdict.allowed) {
-        await this.deps.runs.patch(claimed.runId, {
-          state: 'failed',
-          finishedAt: this.clock(),
-          failureCode: 'policy_violation',
-          failureMessage: verdict.reason ?? 'Not qualified to run unattended.',
-        });
-        await this.deps.tasks.transition(
-          claimed.task.id,
-          'ready',
-          { assignedWorkerId: null, activeRunId: null, lastActivityAt: this.clock() },
-          'claimed',
+    try {
+      const mission = await this.deps.missions.findById(claimed.task.missionId);
+      if (mission?.autonomous) {
+        /*
+         * The exact gate, and the unwind that has to come with it.
+         *
+         * Reaching the refusal is a bug — the two filters above should have skipped the row — but
+         * a gate that only holds while an adjacent SQL clause is correct is not a gate. If it
+         * fires, the task has to go back to `ready` rather than sit in `claimed` with a run nobody
+         * is executing, where it is invisible to every ceiling and blocks its own mission
+         * indefinitely.
+         *
+         * It returns null rather than throwing: a 403 would kill the worker's poll loop over a
+         * control-plane defect the worker had no part in.
+         */
+        const verdict = unattendedVerdict(
+          taskUnattendedCapabilities(claimed.task.role, claimed.task.taskType),
+          level,
         );
-        await this.deps.events.record(claimed.task.missionId, {
-          type: 'policy_refusal',
-          actor: 'system',
-          level: 'warning',
-          summary: verdict.reason ?? 'Not qualified to run unattended.',
-          detail: { taskKey: claimed.task.key, runId: claimed.runId },
-        });
-        return null;
-      }
+        if (!verdict.allowed) {
+          await this.releaseClaim(claimed.task, claimed.runId, {
+            returnTo: 'ready',
+            failureCode: 'policy_violation',
+            failureMessage: verdict.reason ?? 'Not qualified to run unattended.',
+            eventType: 'policy_refusal',
+          });
+          return null;
+        }
 
-      /*
-       * The write-scope gate, and why it ends the task rather than releasing it.
-       *
-       * `deriveWriteSet` falls back to the whole repository when a plan named no path-like areas,
-       * and the deterministic planner's only `affectedAreas` entry is the sentence "To be confirmed
-       * by inspection before any change is made." That is not a path, so every deterministically
-       * planned write mission was granted the entire repository — which turned the write-set
-       * control off end to end for precisely the missions nobody was watching.
-       *
-       * The gate above releases back to `ready`, because reaching it is a bug and the row should
-       * be reconsidered. This one must not: the write set is fixed for the attempt, so releasing
-       * would re-claim and re-refuse for ever, burning a claim cycle every few seconds and never
-       * telling anybody. Failing it stops the loop and puts the reason where the owner reads it —
-       * and the mission's own repair and attempt rules then apply as they would to any failure.
-       */
-      const scope = autonomousWriteScopeVerdict({
-        writeSet: claimed.task.declaredWriteSet,
-        unattended: true,
-      });
-      if (!scope.allowed) {
-        await this.deps.runs.patch(claimed.runId, {
-          state: 'failed',
-          finishedAt: this.clock(),
-          failureCode: 'policy_violation',
-          failureMessage: scope.reason,
+        /*
+         * The write-scope gate, and why it ends the task rather than releasing it.
+         *
+         * `deriveWriteSet` falls back to the whole repository when a plan named no path-like
+         * areas, and the deterministic planner's only `affectedAreas` entry is the sentence "To be
+         * confirmed by inspection before any change is made." That is not a path, so every
+         * deterministically planned write mission was granted the entire repository — which turned
+         * the write-set control off end to end for precisely the missions nobody was watching.
+         *
+         * The gate above releases back to `ready`, because reaching it is a bug and the row should
+         * be reconsidered. This one must not: the write set is fixed for the attempt, so releasing
+         * would re-claim and re-refuse for ever, burning a claim cycle every few seconds and never
+         * telling anybody. Failing it stops the loop and puts the reason where the owner reads it —
+         * and the mission's own repair and attempt rules then apply as they would to any failure.
+         */
+        const scope = autonomousWriteScopeVerdict({
+          writeSet: claimed.task.declaredWriteSet,
+          unattended: true,
         });
-        await this.deps.tasks.transition(
-          claimed.task.id,
-          'failed',
-          {
-            assignedWorkerId: null,
-            activeRunId: null,
-            lastActivityAt: this.clock(),
+        if (!scope.allowed) {
+          await this.releaseClaim(claimed.task, claimed.runId, {
+            returnTo: 'failed',
+            failureCode: 'policy_violation',
             failureMessage: scope.reason,
-          },
-          'claimed',
-        );
-        await this.deps.events.record(claimed.task.missionId, {
-          type: 'policy_refusal',
-          actor: 'system',
-          level: 'warning',
-          summary: scope.reason,
-          detail: { taskKey: claimed.task.key, runId: claimed.runId, rule: scope.rule },
-        });
-        return null;
+            eventType: 'policy_refusal',
+            detail: { rule: scope.rule },
+          });
+          return null;
+        }
       }
+
+      await this.deps.events.record(claimed.task.missionId, {
+        type: 'run_started',
+        actor: 'system',
+        summary: `${claimed.task.key} (${claimed.task.role}) was claimed by ${worker.name}.`,
+        detail: { taskKey: claimed.task.key, runId: claimed.runId },
+      });
+      await this.deps.orchestrator.tick(claimed.task.missionId);
+
+      /* Awaited rather than returned: a bare `return` hands the rejection past this `catch`. */
+      return await this.buildAssignment(claimed.task, claimed.runId);
+    } catch (error) {
+      await this.unwindFailedHandOut(claimed.task, claimed.runId, error);
+      throw error;
     }
+  }
 
-    await this.deps.events.record(claimed.task.missionId, {
-      type: 'run_started',
-      actor: 'system',
-      summary: `${claimed.task.key} (${claimed.task.role}) was claimed by ${worker.name}.`,
-      detail: { taskKey: claimed.task.key, runId: claimed.runId },
+  /**
+   * Put back a task Jarvis claimed and then could not hand out.
+   *
+   * ## Why the attempt has to come back with it
+   *
+   * `claimNext` increments `attempt` as part of the claim, and every built-in playbook allows a
+   * single attempt. Releasing the row to `ready` and stopping there would leave it claimable in
+   * name only: the claim filters on `attempt < max_attempts`, so nothing would ever look at the
+   * row again and its mission would stall at exactly the point where it looked healthy. Raising
+   * `maxAttempts` by one gives back the attempt this consumed, the same trade the reclaim path
+   * makes — and for the same reason it does *not* simply decrement `attempt` instead:
+   * `mission_runs_task_attempt_idx` is unique on `(task_id, attempt)`, so re-using the number
+   * would make the next claim's run insert fail and turn a recoverable hand-out into a dead task.
+   *
+   * ## Why it can only happen once
+   *
+   * `reclaimCount`, bounded by `RECLAIM_GRACE`, exactly as a crashed worker's task is bounded. A
+   * hand-out that fails for a permanent reason — a mission that has genuinely gone — would
+   * otherwise be re-claimed and re-failed on every poll for ever, writing rows every few seconds
+   * and telling nobody. The second failure ends the task instead, where an owner can see it.
+   */
+  private async unwindFailedHandOut(
+    task: MissionTask,
+    runId: string,
+    cause: unknown,
+  ): Promise<void> {
+    const reason = boundText(
+      redactSecrets(
+        `Jarvis claimed ${task.key} and could not finish handing it out: ${
+          cause instanceof Error ? cause.message : 'the reason was not recorded'
+        }`,
+      ),
+      500,
+    );
+    const canRetry = task.reclaimCount < RECLAIM_GRACE;
+    /*
+     * The unwind must not replace the failure that caused it. The worker still has to be told why
+     * its claim failed, and a control plane that cannot write these rows cannot write better ones
+     * either — a swallowed release leaves a stranded task *and* an unexplained one.
+     */
+    await this.releaseClaim(task, runId, {
+      returnTo: canRetry ? 'ready' : 'failed',
+      failureCode: 'unknown',
+      failureMessage: reason,
+      eventType: 'warning',
+      taskPatch: {
+        reclaimCount: task.reclaimCount + 1,
+        ...(canRetry ? { maxAttempts: task.maxAttempts + 1 } : { failureCode: 'unknown' as const }),
+      },
+    }).catch(() => undefined);
+  }
+
+  /**
+   * Let go of a claim, whatever the reason for letting go.
+   *
+   * Two refusals and one failure land here, because the unwind is the part that is easy to get
+   * subtly wrong three times over: the row has to leave `claimed`, the run has to be closed with a
+   * reason, the write lease has to go back, and an owner has to be able to see that the task was
+   * picked up and put down again — which otherwise looks exactly like nothing having happened.
+   * `WorkerService.releaseClaim` is the same idea for a mission, and this is deliberately its
+   * shape rather than a second one.
+   *
+   * The transition leads, because it is the compare-and-set: it is what proves the claim was still
+   * this caller's to release. A `null` from it means something else moved the row first, and every
+   * write below it describes *this* release — writing them over somebody else's would replace a
+   * true record with a guess.
+   *
+   * The lease goes back immediately after, before anything that could fail. A task returning to
+   * `ready` while still holding a lease over its own files blocks its own next attempt, because
+   * the acquire path only hands a task its existing lease back after the overlap check has already
+   * refused every other writer. It is a no-op when nothing is held, which is the ordinary case
+   * here — a lease is taken by the worker, after the hand-out this is undoing.
+   */
+  private async releaseClaim(
+    task: MissionTask,
+    runId: string,
+    input: {
+      readonly returnTo: 'ready' | 'failed';
+      readonly failureCode: MissionFailureCode;
+      readonly failureMessage: string;
+      readonly eventType: 'policy_refusal' | 'warning';
+      /** Anything the caller needs on the task row beyond letting go of the claim. */
+      readonly taskPatch?: TaskPatch;
+      readonly detail?: Readonly<Record<string, unknown>>;
+    },
+  ): Promise<void> {
+    const now = this.clock();
+    const released = await this.deps.tasks.transition(
+      task.id,
+      input.returnTo,
+      {
+        assignedWorkerId: null,
+        activeRunId: null,
+        lastActivityAt: now,
+        ...(input.returnTo === 'failed' ? { failureMessage: input.failureMessage } : {}),
+        ...input.taskPatch,
+      },
+      'claimed',
+    );
+    if (!released) return;
+
+    await this.deps.leases.release(task.id, input.failureMessage);
+    await this.deps.runs.patch(runId, {
+      state: 'failed',
+      finishedAt: now,
+      failureCode: input.failureCode,
+      failureMessage: input.failureMessage,
     });
-    await this.deps.orchestrator.tick(claimed.task.missionId);
-
-    return this.buildAssignment(claimed.task, claimed.runId);
+    await this.deps.events.record(task.missionId, {
+      type: input.eventType,
+      actor: 'system',
+      level: 'warning',
+      summary: input.failureMessage,
+      detail: { taskKey: task.key, runId, ...input.detail },
+    });
   }
 
   /**

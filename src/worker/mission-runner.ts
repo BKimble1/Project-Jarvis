@@ -10,7 +10,7 @@ import { boundText, redactSecrets } from '@/domain/redaction';
 import { ControlPlaneError, type ControlPlaneClient } from './client';
 import type { WorkerConfig } from './config';
 import { DeliveryError, buildPullRequestBody, type GitHubDelivery } from './delivery';
-import { changedFiles, git, headSha, pushMissionBranch } from './git';
+import { GitError, changedFiles, git, headSha, pushMissionBranch } from './git';
 import { filesAgainstBase } from './integration';
 import {
   buildPolicyPrompt,
@@ -18,6 +18,12 @@ import {
   type PolicyContext,
   type PolicyDecision,
 } from './policy';
+/*
+ * The runtime's own error reader, not the runtime itself. Both classifiers have to agree on
+ * where a status and a code live on an unknown error before they can differ about what to do
+ * with one, and two copies of that reading is how they came to disagree in the first place.
+ */
+import { readErrorSignals } from './runtime/claude-agent-sdk';
 import type { AgentEvent, AgentRuntime, AgentSession } from './runtime/types';
 import { discoverCommands, runVerification, summariseVerification } from './verification';
 import {
@@ -1319,14 +1325,62 @@ function hashInput(input: Record<string, unknown>): string {
   return Math.abs(hash).toString(36);
 }
 
-function classifyFailure(error: unknown): MissionFailureCode {
+/**
+ * Error codes the worker can meet, mapped onto the mission taxonomy.
+ *
+ * The vocabulary is `JarvisErrorCode` in both places this is consulted: it is what the control
+ * plane puts on the wire and `ControlPlaneError` stores verbatim, and it is what every domain
+ * error the worker throws locally already carries. One table, because they are the same codes.
+ *
+ * `validation_failed` is a policy violation because nothing in the worker validates owner input.
+ * Every `ValidationError` it can raise is a guard rail refusing an operation before it happens:
+ * the git subcommand allow-list, the ban on merge flags that resolve conflicts by discarding
+ * work, the push safety check, the workspace-root containment check.
+ *
+ * Codes with no honest equivalent are absent rather than approximated. A control-plane
+ * `rate_limited` is not `github_rate_limited`, and answering with the nearest-looking code would
+ * send an owner to look at the wrong system entirely; they fall through to the caller's default.
+ */
+const MISSION_FAILURE_BY_ERROR_CODE: Readonly<Partial<Record<string, MissionFailureCode>>> = {
+  forbidden: 'policy_violation',
+  validation_failed: 'policy_violation',
+  conflict: 'plan_superseded',
+  timeout: 'timeout',
+};
+
+/**
+ * Why a mission failed, in the taxonomy the owner reads.
+ *
+ * Class and code first, prose last, for the same reason as in the runtime's retry classifier: a
+ * class is a fact about what failed, and a message is a sentence about it. Everything the classes
+ * below do not cover used to be decided by substring, which is how `git rebase is not available
+ * to the worker.` — the worker's own allow-list refusing an operation, before any git ran — was
+ * filed under "a git operation failed" on the strength of the word "git". The substring it
+ * matched could only ever have been right by accident: `git()` composes every message it throws
+ * as `git <subcommand> failed …`, so the rule was standing in for the class now tested directly,
+ * and it matched anything else that quoted a command line just as readily.
+ *
+ * `ControlPlaneError` gets the table rather than one answer. Its `code` is the control plane's
+ * own, so a 403 refusing a plan and a 409 saying the run has been superseded arrive already
+ * identified, and collapsing both into `worker_lost` tells an owner the worker stopped reporting
+ * when it did nothing of the kind. `worker_lost` stays the default for the codes the table does
+ * not name, because a report that did not land is the one thing every one of them has in common.
+ */
+export function classifyFailure(error: unknown): MissionFailureCode {
   if (error instanceof WorkspaceError) {
     return error.code === 'clone_failed' ? 'git_error' : 'workspace_error';
   }
   if (error instanceof DeliveryError) return error.failureCode;
-  if (error instanceof ControlPlaneError) return 'worker_lost';
+  if (error instanceof GitError) return 'git_error';
+  if (error instanceof ControlPlaneError) {
+    return MISSION_FAILURE_BY_ERROR_CODE[error.code] ?? 'worker_lost';
+  }
+
+  const { code } = readErrorSignals(error);
+  const structured = code === null ? undefined : MISSION_FAILURE_BY_ERROR_CODE[code];
+  if (structured) return structured;
+
   const message = describe(error).toLowerCase();
-  if (message.includes('git ')) return 'git_error';
   if (message.includes('not allowed') || message.includes('policy')) return 'policy_violation';
   if (message.includes('timeout') || message.includes('time limit')) return 'timeout';
   return 'agent_error';

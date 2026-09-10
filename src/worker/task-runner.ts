@@ -52,6 +52,16 @@ export interface TaskRunnerDeps {
   readonly runtime: AgentRuntime;
   readonly delivery: GitHubDelivery | null;
   readonly clock?: () => Date;
+  /**
+   * Where the worker process writes its own lines.
+   *
+   * There is exactly one thing this class cannot record anywhere else: a terminal report the
+   * control plane refused. Every other failure ends up on the mission timeline, and that one
+   * cannot, because the refusal *is* the timeline being unreachable. Optional, and the fallback
+   * writes to the same stream with the same prefix `main` uses, so a runner built without one is
+   * still heard in `docker logs` rather than silently not.
+   */
+  readonly log?: (message: string) => void;
 }
 
 /**
@@ -98,6 +108,15 @@ export class TaskRunner {
 
   private get clock(): Date {
     return this.deps.clock?.() ?? new Date();
+  }
+
+  /** Worker-level logging, prefixed as `main` prefixes it so both halves read as one process. */
+  private log(message: string): void {
+    if (this.deps.log) {
+      this.deps.log(message);
+      return;
+    }
+    console.error(`[jarvis-worker] ${message}`);
   }
 
   private get role(): AgentRole {
@@ -1210,19 +1229,70 @@ export class TaskRunner {
     if (response.stopRequested) this.stopRequested = true;
   }
 
+  /**
+   * End the task badly, and make sure the control plane hears about it.
+   *
+   * ## Why the emit no longer decides whether the report happens
+   *
+   * `emit` rethrows a fatal 401/403, and the report used to sit behind it. So a revoked worker
+   * token turned every failing task into a task that was never reported at all: the throw left
+   * `fail`, left `run`'s catch — which is where `fail` is called from — left `claimAndRunTask`'s
+   * try/finally and stopped the work loop, with the task still `claimed` on the control plane and
+   * nothing left in the system able to close it. `reclaimAbandoned` cannot: it acts on tasks whose
+   * *worker* looks gone, and a worker that exited a minute ago still looks like one that is there.
+   * The fatal error is kept and rethrown afterwards, because stopping a revoked worker is right —
+   * it is only doing it instead of reporting that was wrong.
+   *
+   * ## Why the emit still goes first
+   *
+   * The terminal report clears the task's `activeRunId`, and `authoriseRun` refuses any event
+   * against a run that is no longer the task's active one. Reporting first would therefore trade a
+   * lost report for a lost explanation: the row would close with a failure code and no error on
+   * the timeline saying what happened. Independent, not reordered.
+   */
   private async fail(
     code: string,
     message: string,
     extra: Record<string, unknown> = {},
   ): Promise<void> {
-    await this.emit('error', message, { code }, 'error');
-    await this.report('failed', {
-      failureCode: code,
-      failureMessage: boundText(redactSecrets(message), 1500),
-      workspacePreserved: true,
-      currentAction: null,
-      ...extra,
-    }).catch(() => undefined);
+    let fatal: unknown = null;
+    try {
+      await this.emit('error', message, { code }, 'error');
+    } catch (error) {
+      fatal = error;
+    }
+
+    try {
+      await this.report('failed', {
+        failureCode: code,
+        failureMessage: boundText(redactSecrets(message), 1500),
+        workspacePreserved: true,
+        currentAction: null,
+        ...extra,
+      });
+    } catch (error) {
+      /*
+       * A terminal report that was refused, said out loud.
+       *
+       * This was `.catch(() => undefined)`, which is the difference between a task that ends badly
+       * and a task that never ends. A 409 — the run is no longer the task's active run — or a 5xx
+       * that outlived the client's retries leaves the row non-terminal with nothing else to close
+       * it, holding a slot against every ceiling, and the only trace of it was a worker moving on
+       * to its next poll in silence. It still cannot be *fixed* here; it can be findable.
+       */
+      this.log(
+        boundText(
+          redactSecrets(
+            `${this.assignment.taskKey} failed (${code}) but the control plane would not accept ` +
+              `the report: ${describeReportRefusal(error)}. The task is still open there and will ` +
+              `close only when Jarvis reclaims it.`,
+          ),
+          1000,
+        ),
+      );
+    }
+
+    if (fatal !== null) throw fatal;
   }
 
   private async confirmStopped(): Promise<void> {
@@ -1315,6 +1385,19 @@ export class TaskRunner {
       `You may change files only within: ${describeWriteSet(a.declaredWriteSet)}.`,
     ].join('\n');
   }
+}
+
+/**
+ * Why the control plane would not take a terminal report, in the words the log line needs.
+ *
+ * The status matters more than the sentence: 409 means this run is no longer the task's active
+ * one and somebody else already owns the row, while a 5xx or a `network_error` means the report is
+ * simply lost and the task is still open. `ControlPlaneError` messages are redacted where they are
+ * built, so nothing here re-introduces a token.
+ */
+function describeReportRefusal(error: unknown): string {
+  if (error instanceof ControlPlaneError) return `${error.status} ${error.code} — ${error.message}`;
+  return error instanceof Error ? error.message : 'the reason was not recorded';
 }
 
 /* ------------------------------------------------------------ review parsing */
