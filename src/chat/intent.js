@@ -74,6 +74,13 @@ const NEW_PROJECT_LEAD_RE = new RegExp(`^${POLITE_PREFIX}${REQUEST_PREFIX}(?:${N
 const BUILD_LEAD_RE = new RegExp(`^${POLITE_PREFIX}${REQUEST_PREFIX}(?:${NEW_PROJECT_VERBS}|add|ship|fix|automate|refactor)\\b`, 'i');
 /** Work language anywhere in the sentence. */
 const BUILD_ANY_RE = new RegExp(`\\b(?:${NEW_PROJECT_VERBS}|add|ship|automate|refactor|prototype)\\b`, 'i');
+/**
+ * The filler a fresh brief can hide behind once a preamble is trimmed off:
+ * "go ahead and *now* build me a CLI", "carry on and *then* write the exporter".
+ */
+const REMAINDER_LEAD = '(?:(?:now|next|then|also|to|and|just)\\s+)*';
+/** A brand new brief starting the *remainder* of a sentence, not the sentence. */
+const NEW_WORK_LEAD_RE = new RegExp(`^${POLITE_PREFIX}${REMAINDER_LEAD}${REQUEST_PREFIX}(?:${NEW_PROJECT_VERBS})\\b`, 'i');
 
 const STATUS_PHRASE_RE = new RegExp([
   "what'?s the status", 'what is the status',
@@ -110,7 +117,7 @@ const EVALUATION_MARKERS = [
   /\b(?:but|and)?\s*(?:evaluation|assessment|analysis|research|feasibility)\s+only\b(?:\s+(?:first|for now|please))?/gi,
   // Verb forms are only an instruction when nothing follows that "only" could
   // be qualifying — "let users review only their own posts" must stay a build.
-  /\b(?:but|and)?\s*(?:evaluate|assess|analy[sz]e|review)\s+only\b(?=\s*(?:[,.;!?]|$|first\b|for\b|then\b|and\b|please\b|no\b))(?:\s+(?:first|for now|please))?/gi,
+  /\b(?:but|and)?\s*(?:evaluate|assess|analy[sz]e|review)\s+only\b(?=\s*(?::|—|–|-|[,.;!?]|$|first\b|for\b|then\b|and\b|please\b|no\b))(?:\s+(?:first|for now|please))?/gi,
   /\b(?:but|and)?\s*no\s+(?:code|coding|implementation|building|changes)\s*(?:yet|for now|please)?/gi,
   /\b(?:but|and)?\s*without\s+(?:building|implementing|writing (?:any )?code|any code)(?:\s+it)?/gi,
   /\b(?:but|and)?\s*evaluate\s+(?:it\s+|this\s+|that\s+)?first(?:\s+please)?/gi,
@@ -158,11 +165,28 @@ function extractReminder(clean) {
   return { text: body || clean, when: whenText, raw: clean };
 }
 
+/**
+ * What is left of a sentence after a marker, with the punctuation and
+ * connectives that joined the two halves trimmed away. Only ever fed to
+ * regexes — never shown to anyone — so lower-casing it first is safe.
+ */
+function afterMarker(lower, from) {
+  let rest = String(lower).slice(from);
+  for (let i = 0; i < 4; i++) {
+    const next = rest
+      .replace(/^[\s,;:.!?—–-]+/, '')
+      .replace(/^(?:but|and|then|so|ok(?:ay)?|please)\b/i, '');
+    if (next === rest) break;
+    rest = next;
+  }
+  return rest.replace(/\s+/g, ' ').trim();
+}
+
 /** Strip conversational scaffolding so the change reads as an instruction. */
 function changeText(clean) {
   let t = clean;
   for (let i = 0; i < 3; i++) {
-    const next = t.replace(/^(?:ok(?:ay)?|actually|hey|jarvis|well|so|um|hmm|wait|right|please)\b[,!.]?\s+/i, '');
+    const next = t.replace(/^(?:ok(?:ay)?|actually|hey|jarvis|well|so|um|hmm|wait|hold on|hold up|hang on|right|please)\b[,!.]?\s+/i, '');
     if (next === t) break;
     t = next;
   }
@@ -241,6 +265,21 @@ export function classify(text, ctx = {}) {
    */
   const commanding = (re) => re.test(head) || (wordCount <= 6 && !buildAny && !evaluation.matched);
 
+  /**
+   * "go ahead and build me a Slack bot", "carry on and add dark mode" — the
+   * go-ahead is a preamble and the instruction is what follows it. Only
+   * *permissive* markers get this exception: an explicit stop or pause is never
+   * overridden by build language (contract D), so those stay strict.
+   */
+  const preambleTo = (re) => {
+    const m = lower.match(re);
+    if (!m) return false;
+    const rest = afterMarker(lower, m.index + m[0].length);
+    if (!rest) return false;
+    if (NEW_WORK_LEAD_RE.test(rest)) return true;
+    return Boolean(active) && (CHANGE_EXPLICIT_RE.test(rest) || CHANGE_IMPLIED_RE.test(rest));
+  };
+
   if (STOP_RE.test(lower) && commanding(STOP_RE)) {
     return intent('stop', CONFIDENCE.explicitCommand, { text: clean, raw: clean, projectId: active });
   }
@@ -253,13 +292,14 @@ export function classify(text, ctx = {}) {
       text: goal, goal, title: titleFrom(goal), evaluationOnly: true, raw: clean,
     });
   }
-  if (RESUME_RE.test(lower) && commanding(RESUME_RE) && !(changeExplicit && active)) {
+  if (RESUME_RE.test(lower) && commanding(RESUME_RE) && !(changeExplicit && active) && !preambleTo(RESUME_RE)) {
     return intent('resume', CONFIDENCE.explicitCommand, { text: clean, raw: clean, projectId: active });
   }
   if (REMINDER_RE.test(lower)) {
     return intent('reminder', CONFIDENCE.reminder, extractReminder(clean));
   }
-  if (AFFIRM_EXPLICIT_RE.test(lower) || (openQuestion && AFFIRM_BARE_RE.test(lower))) {
+  const affirmed = AFFIRM_EXPLICIT_RE.test(lower) && !preambleTo(AFFIRM_EXPLICIT_RE);
+  if (affirmed || (openQuestion && AFFIRM_BARE_RE.test(lower))) {
     return intent('approve', CONFIDENCE.approve, {
       text: clean, raw: clean,
       questionId: openQuestion?.id ?? null,

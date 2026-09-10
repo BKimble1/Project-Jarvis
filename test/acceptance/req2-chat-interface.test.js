@@ -222,3 +222,51 @@ test('req2.11 reminders are listed, started and dropped entirely from chat', asy
   const empty = await say(app, 'any reminders left?');
   assert.match(empty.reply, /no reminders/i);
 });
+
+test('req2.12 "evaluate only" is honoured however it is punctuated', async (t) => {
+  const app = makeApp();
+  t.after(() => app.cleanup());
+
+  for (const [i, phrasing] of [
+    'evaluate only: should we move the queue to Redis',
+    'evaluate only — should we move the queue to Redis',
+    'evaluate only, should we move the queue to Redis',
+    'review only: no code please, should we move the queue to Redis',
+  ].entries()) {
+    const out = await say(app, phrasing, `eval-${i}`);
+    assert.equal(out.intent.kind, 'evaluate_only', `"${phrasing}" must not start a build`);
+    await app.orchestrator.run(out.projectId);
+    const project = app.store.get('projects', out.projectId);
+    assert.equal(project.status, 'evaluated');
+    assert.equal(
+      app.store.find('tasks', (x) => x.projectId === project.id && x.kind === 'implement').length,
+      0,
+      `"${phrasing}" built something it was told not to`,
+    );
+  }
+});
+
+test('req2.13 "carry on and add X" extends the project instead of forking one', async (t) => {
+  const app = makeApp();
+  t.after(() => app.cleanup());
+
+  const start = await say(app, 'build a photo gallery with albums');
+  await app.orchestrator.run(start.projectId);
+
+  const extended = await say(app, 'carry on and add dark mode');
+  assert.equal(extended.intent.kind, 'change', 'a continuation plus an addition is a change');
+  assert.equal(extended.projectId, start.projectId);
+  await app.orchestrator.run(start.projectId);
+
+  assert.equal(app.store.ids('projects').length, 1, 'no second project');
+  const scope = app.store.get('projects', start.projectId).scope.join(' ').toLowerCase();
+  assert.match(scope, /albums/, 'original scope kept');
+  assert.match(scope, /dark mode/, 'the addition landed');
+
+  // A genuinely new brief while something is active still starts its own project.
+  const fresh = await say(app, 'build a separate invoicing tool');
+  assert.equal(fresh.intent.kind, 'build');
+  assert.notEqual(fresh.projectId, start.projectId);
+  await app.orchestrator.run(fresh.projectId);
+  assert.equal(app.store.ids('projects').length, 2);
+});

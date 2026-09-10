@@ -245,8 +245,22 @@ export class ChatDispatcher {
  */
 function reclassify(intent, text, ctx) {
   if (intent.kind !== 'build') return intent;
-  if (!looksLikeChange(text) || !hasReferent(ctx)) return intent;
+  if (!hasReferent(ctx)) return intent;
+  if (!looksLikeChange(text) && !continuedAddition(text, ctx)) return intent;
   return { ...intent, kind: 'change', payload: { ...intent.payload, text, reclassified: 'build->change' } };
+}
+
+/**
+ * "carry on and add dark mode" — a continuation followed by an addition is a
+ * change to the work in flight, not a second project. A bare "build X" while
+ * something is running still starts a new project; only the continuation
+ * preamble makes it an addition.
+ */
+function continuedAddition(text, ctx) {
+  if (!ctx?.activeProjectId) return false;
+  const m = /^\s*(?:ok(?:ay)?[,\s]+)?(?:carry on|keep going|continue|go ahead|resume)\b[,\s]*(?:and|then|also)?\s*(.+)$/i.exec(String(text ?? ''));
+  if (!m) return false;
+  return /^(?:also\s+)?(?:add|include|support|throw in|chuck in|make it|use)\b/i.test(m[1].trim());
 }
 
 /** "change that", "update it", "instead of ..." — an edit to existing work. */
