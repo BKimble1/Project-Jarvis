@@ -353,3 +353,32 @@ test('req1.11 in-flight work survives a restart and resumes from the journal', a
   await revived.orchestrator.run(project.id);
   assert.equal(revived.store.get('projects', project.id).status, 'delivered', 'it finished the saved work');
 });
+
+test('req1.13 a restarted process picks up in-flight work by itself', async (t) => {
+  const { createGatedExecutor } = await import('../helpers/harness.js');
+  const { startBackgroundWork } = await import('../../src/server.js');
+  const { silentLogger } = await import('../helpers/fakes.js');
+
+  // Leave a project genuinely mid-build, then drop the process.
+  const gated = createGatedExecutor();
+  const first = makeApp({ executor: gated.executor });
+  const project = await first.orchestrator.submit({ conversationId: 'c1', title: 'Ledger', goal: 'a ledger and a report' });
+  await gated.firstArrival;
+  const dataDir = first.testDataDir;
+  const clock = first.testClock;
+  const provider = first.testProvider;
+  assert.equal(first.store.get('projects', project.id).status, 'active', 'it was still running when we stopped');
+  gated.release();
+  await first.close();
+
+  // A fresh process over the same data directory, with nobody asking it to continue.
+  const revived = createApp({ dataDir, clock, provider, executor: createScriptedExecutor(), logger: silentLogger() });
+  t.after(async () => { await revived.close(); });
+
+  const background = startBackgroundWork(revived, { logger: silentLogger(), capacityIntervalMs: 0 });
+  t.after(() => background.stop());
+
+  assert.deepEqual(background.resumed, [project.id], 'it found the saved work on boot');
+  await revived.orchestrator.run(project.id);
+  assert.equal(revived.store.get('projects', project.id).status, 'delivered', 'and carried it to delivery unprompted');
+});

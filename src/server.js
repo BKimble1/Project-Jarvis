@@ -94,31 +94,53 @@ function serveStatic({ res, url, publicDir, logger }) {
   });
 }
 
+/**
+ * Everything the process does besides serve HTTP: pick up work that was
+ * in flight when we last stopped, and keep the capacity reading current.
+ * Exported so both halves are testable without booting a process.
+ *
+ * @returns {{resumed: string[], stop: () => void}}
+ */
+export function startBackgroundWork(app, { logger = createLogger('server'), capacityIntervalMs = 120_000 } = {}) {
+  const active = app.store.find('projects', (p) => p.status === 'active');
+  if (active.length) {
+    logger.info(`resuming ${active.length} project(s) from saved state`);
+    for (const p of active) {
+      const run = app.orchestrator.run(p.id);
+      if (run && typeof run.catch === 'function') run.catch((err) => logger.error('resume failed', err?.message));
+    }
+  }
+
+  // Failures degrade the reading to stale, never to a fake zero.
+  const refresh = () => app.usage.refresh().catch((err) => logger.error('capacity refresh failed', err?.message));
+  const first = refresh();
+  const timer = capacityIntervalMs > 0 ? setInterval(refresh, capacityIntervalMs) : null;
+  timer?.unref?.();
+
+  return {
+    resumed: active.map((p) => p.id),
+    firstRefresh: first,
+    stop() { if (timer) clearInterval(timer); },
+  };
+}
+
 async function main() {
   const logger = createLogger('server');
   const port = Number(process.env.PORT ?? 8787);
   const host = process.env.HOST ?? '127.0.0.1';
   const app = createApp({ dataDir: process.env.JARVIS_DATA_DIR ?? path.join(process.cwd(), 'data') });
 
-  // Resume anything that was mid-flight when we last stopped.
-  const resumed = app.store.find('projects', (p) => p.status === 'active');
-  if (resumed.length) {
-    logger.info(`resuming ${resumed.length} project(s) from saved state`);
-    for (const p of resumed) app.orchestrator.run(p.id).catch((err) => logger.error('resume failed', err?.message));
-  }
-
-  // Keep the capacity reading current; failures degrade to stale, never to a fake zero.
-  const refresh = () => app.usage.refresh().catch((err) => logger.error('capacity refresh failed', err?.message));
-  refresh();
-  const timer = setInterval(refresh, Number(process.env.JARVIS_CAPACITY_INTERVAL_MS ?? 120_000));
-  timer.unref?.();
+  const background = startBackgroundWork(app, {
+    logger,
+    capacityIntervalMs: Number(process.env.JARVIS_CAPACITY_INTERVAL_MS ?? 120_000),
+  });
 
   const server = createServer({ app, logger });
   server.listen(port, host, () => logger.info(`Jarvis listening on http://${host}:${port}`));
 
   const shutdown = async () => {
     logger.info('shutting down');
-    clearInterval(timer);
+    background.stop();
     server.close();
     await app.close();
     process.exit(0);

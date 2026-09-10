@@ -72,6 +72,7 @@ export class WorkerPool {
   get inFlight() { return this._active; }
   get peakConcurrency() { return this._peak; }
   get queued() { return this._queue.length; }
+  get completed() { return this._completed; }
   get workers() { return [...this._workers]; }
 
   stats() {
@@ -109,12 +110,27 @@ export class WorkerPool {
       this.logger.warn('scheduler.concurrency() threw; falling back to 1', err?.message);
       return 1;
     }
-    if (!Number.isFinite(requested)) return this.size;
+    if (!Number.isFinite(requested)) {
+      // An unreadable capacity signal is *unknown*, not "unlimited" — the same
+      // rule telemetry follows. Fall back to one, exactly as the throw path does.
+      this.logger.warn('scheduler.concurrency() returned a non-numeric value; falling back to 1');
+      return 1;
+    }
     return Math.max(0, Math.min(this.size, requested));
   }
 
+  /**
+   * Pace between dispatches. A scheduler that throws must not stop the pool:
+   * the pump is the only thing that settles a submitted job, so a broken gate
+   * costs us the pacing, never the work.
+   */
   async _gate() {
-    if (this.scheduler && typeof this.scheduler.gate === 'function') await this.scheduler.gate();
+    if (!this.scheduler || typeof this.scheduler.gate !== 'function') return;
+    try {
+      await this.scheduler.gate();
+    } catch (err) {
+      this.logger.warn('scheduler.gate() failed; dispatching without pacing', err?.message);
+    }
   }
 
   /** Promise that resolves the next time a slot frees up (or on shutdown). */
@@ -154,6 +170,9 @@ export class WorkerPool {
         await this._gate();
         if (this._closed) break;
 
+        // Shutdown may have drained the queue while we were pacing.
+        if (this._closed || this._queue.length === 0) continue;
+
         // Capacity may have moved while we paced — ask again before committing.
         const limitNow = this._limit();
         if (limitNow <= 0) {
@@ -164,20 +183,35 @@ export class WorkerPool {
         }
         if (this._active >= limitNow) continue;
 
-        const job = this._queue.shift();
-        if (job) this._dispatch(job);
+        const worker = this._free.shift();
+        if (!worker) {
+          // `_free.length + _active === size` is an invariant (every worker is
+          // returned, crashed ones after a restart), and `limitNow <= size`, so
+          // this cannot happen. If it ever does, fail the job loudly rather than
+          // spinning the loop or parking on a wake-up that will never come.
+          this._queue.shift().reject(new Error('worker pool invariant violated: no free worker below the concurrency limit'));
+          continue;
+        }
+        this._dispatch(this._queue.shift(), worker);
       }
     } catch (err) {
-      this.logger.error('pump loop failed', err?.message);
+      // The pump is the only thing that settles a submitted job. If it dies,
+      // every queued caller would wait forever — reject them instead.
+      this._failQueue(err);
     } finally {
       this._pumping = false;
     }
   }
 
-  _dispatch(job) {
-    const worker = this._free.shift();
-    if (!worker) { this._queue.unshift(job); return; }
+  /** Settle everything still queued; a dead pump must never strand a caller. */
+  _failQueue(cause) {
+    const err = cause instanceof Error ? cause : new Error(String(cause));
+    this.logger.error('pump loop failed; failing queued work', err.message);
+    const queued = this._queue.splice(0, this._queue.length);
+    for (const job of queued) job.reject(err);
+  }
 
+  _dispatch(job, worker) {
     this._active += 1;
     if (this._active > this._peak) this._peak = this._active;
     job.attempts += 1;
@@ -201,12 +235,13 @@ export class WorkerPool {
 
       if (ok) {
         this._completed += 1;
-        this._free.push(worker);
         job.resolve(result);
       } else {
         this._handleFailure(job, worker, error);
-        if (worker.state !== 'crashed') this._free.push(worker);
       }
+      // Every worker comes back: `_handleFailure` restarts a crashed one before
+      // returning, which is what keeps `_free.length + _active === size` true.
+      this._free.push(worker);
 
       this._notify();
       this._pump();
