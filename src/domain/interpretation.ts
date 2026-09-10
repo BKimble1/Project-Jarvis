@@ -1059,7 +1059,26 @@ function resolveFollowUp(
   punctuated: string,
   context: ConversationContext,
 ): FollowUp | null {
-  if (CONTINUE.test(text)) return { kind: 'continue' };
+  /*
+   * "Continue" — but only when that is the whole message.
+   *
+   * `CONTINUE` is anchored at the start and used to claim everything after it, so "carry on and add
+   * dark mode" was read as a bare "continue" and the instruction was discarded: measured as
+   * `{kind:'follow_up', action:'none', subject:null}`, and the dark mode was never mentioned again.
+   *
+   * A continuation followed by an instruction is a preamble, not a message. Falling through lets
+   * the instruction be read by the ordinary rules — which, with a proposal standing, is a
+   * refinement of it, and that is exactly "keep going, and also this" rather than "start a second
+   * thing". What must not happen is the instruction vanishing, and that is what this stops.
+   */
+  const continuation = CONTINUE.exec(text);
+  if (continuation) {
+    const rest = text
+      .slice(continuation[0].length)
+      .replace(/^(?:\s|,|;|:|-|and|then|also|please|now|with)+/g, '')
+      .trim();
+    if (rest.length === 0) return { kind: 'continue' };
+  }
 
   const affirms = AFFIRM.test(text);
   const ordinalMatch = ORDINAL.exec(text);
@@ -1131,8 +1150,28 @@ function describeFollowUp(followUp: FollowUp, context: ConversationContext): str
  * here is harmless; the resolver will fail to match it and fall back.
  */
 function subjectOf(text: string): string | null {
-  /* "…on CoreCredit today" / "…for Holograph" — the trailing prepositional phrase. */
-  const scoped = /\b(?:on|for|about|in|with|of)\s+([a-z0-9][\w' -]{1,60})$/.exec(text);
+  /*
+   * "…on CoreCredit today" / "…for Holograph" / "…to QuickPick" — the trailing prepositional phrase.
+   *
+   * `to` was missing from this list, and it is the preposition people reach for when the sentence is
+   * a change rather than a report: "add dark mode to QuickPick" extracted the subject "dark" (from
+   * the word-after-the-verb rule below), which matches no project, and the request quietly became a
+   * status answer. Adding it can only turn a miss into a match, because a match still requires the
+   * captured phrase to be an actual project name — "deploy the site to production" resolves to
+   * nothing unless there is a project called production, in which case that is the right answer.
+   */
+  const scoped =
+    /\b(?:on|for|about|in|with|of)\s+([a-z0-9][\w' -]{1,60})$/.exec(text) ??
+    /*
+     * `to` is separated because it is the one preposition that also introduces a purpose clause.
+     * "change Pomodoro to have a long break" names Pomodoro and then says what to do to it; reading
+     * the tail as the subject would name the project "have a long break". The lookahead is a short
+     * closed list of bare infinitives, which is what a purpose clause starts with and what a project
+     * name almost never is.
+     */
+    /\bto\s+(?!(?:have|be|use|make|include|support|show|run|do|get|go|look|stop|start|say|add|remove|keep|allow|take|give|put|set)\b)([a-z0-9][\w' -]{1,60})$/.exec(
+      text,
+    );
   if (scoped?.[1]) {
     const trimmed = trailingNoise(scoped[1]);
     if (trimmed && !STOP_WORDS.has(trimmed)) return trimmed;
@@ -1150,10 +1189,19 @@ function subjectOf(text: string): string | null {
  * list — guessing more aggressively would start trimming real names.
  */
 function trailingNoise(value: string): string {
-  return value
-    .trim()
-    .replace(/\s+(?:today|tomorrow|tonight|this week|next|now|please|first)$/, '')
-    .trim();
+  return (
+    value
+      .trim()
+      .replace(/\s+(?:today|tomorrow|tonight|this week|next|now|please|first)$/, '')
+      /*
+       * "add a long break to the Pomodoro project" names Pomodoro. The article and the word "project"
+       * are how people refer to one in a sentence, not part of what it is called, and leaving them on
+       * means the name never matches a row.
+       */
+      .replace(/^(?:the|my|our)\s+/, '')
+      .replace(/\s+(?:project|repo|repository|app)$/, '')
+      .trim()
+  );
 }
 
 const STOP_WORDS = new Set([

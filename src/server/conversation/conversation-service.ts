@@ -164,7 +164,7 @@ export class ConversationService {
 
     switch (interpretation.kind) {
       case 'work':
-        return this.startWork(interpretation, input.message, input.ownerLogin ?? null);
+        return this.startWork(interpretation, input.message, input.ownerLogin ?? null, context);
       case 'idea':
         return this.proposeIdea(interpretation, input.message);
       case 'follow_up':
@@ -315,10 +315,32 @@ export class ConversationService {
     interpretation: Interpretation,
     raw: string,
     ownerLogin: string | null,
+    context: ConversationContext,
   ): Promise<ConversationTurn> {
     const notes: string[] = [];
     let project = await this.resolveProject(interpretation.subject);
     let repositoryUrl: string | null = null;
+
+    /*
+     * The project the owner was looking at, when the sentence did not name one.
+     *
+     * `focusedProjectId` has been on the context type since it was written, described there as
+     * "used only to resolve a bare 'it' or 'that'", and until now nothing read it. The cost of that
+     * showed up as a second project: "now build a dark mode app for QuickPick" resolves its subject
+     * to "quickpick", and when that name does not match a row — an ambiguous name counts as no
+     * match — `describesNewProject` is true and `deriveProjectName` returns "Dark Mode", so the next
+     * few lines provision a project called Dark Mode with a repository of its own, beside the one
+     * the owner was working in.
+     *
+     * Reading the focus first makes a change to work in flight land on that work. It is only ever a
+     * fallback: a sentence that names a project it can find still goes to the project it named,
+     * because the person said so. And it is verified against the repository rather than trusted,
+     * since the id arrives from the browser.
+     */
+    if (!project && context.focusedProjectId) {
+      project = await this.deps.projects.findById(context.focusedProjectId);
+      if (project) notes.push(`Continued in ${project.name}, which you had open.`);
+    }
 
     /*
      * Nothing matched, and the sentence describes something that does not exist yet. This is the

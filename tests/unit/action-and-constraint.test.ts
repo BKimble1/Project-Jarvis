@@ -349,3 +349,54 @@ describe('narrowing a request to judgement forbids the build, whatever follows i
     }
   });
 });
+
+/**
+ * A continuation with something after it.
+ *
+ * ## What was measured before
+ *
+ * `CONTINUE` is anchored at the start of the message and claimed everything after it, so
+ * `interpretMessage('carry on and add dark mode', standing)` came back as
+ * `{ kind: 'follow_up', followUp: { kind: 'continue' }, subject: null }`. The service has no
+ * `continue` branch, so the turn fell through to a status answer and the dark mode was never
+ * mentioned again — not built, not refused, not recorded. An instruction disappeared.
+ *
+ * The fix is not to invent a new intent: a continuation followed by an instruction is a preamble,
+ * and the instruction should be read by the rules that already exist. With a proposal standing that
+ * makes it a refinement of the standing work, which is precisely "keep going, and also this" rather
+ * than "start a second thing" — the property the port was asked for.
+ *
+ * The bare forms are pinned alongside, because the easy way to get this wrong is to stop
+ * recognising "continue" at all.
+ */
+describe('a continuation does not swallow the instruction after it', () => {
+  for (const message of ['continue', 'carry on', 'keep going', 'go on', 'resume', 'go on then']) {
+    it(`still reads "${message}" on its own as a continuation`, () => {
+      const result = interpretMessage(message, STANDING);
+      expect(result.kind).toBe('follow_up');
+      expect(result.followUp).toEqual({ kind: 'continue' });
+    });
+  }
+
+  for (const message of [
+    'carry on and add dark mode',
+    'continue, also add CSV export',
+    'keep going and use euros instead',
+  ]) {
+    it(`keeps what follows in "${message}" as a change to the standing work`, () => {
+      const result = interpretMessage(message, STANDING);
+      expect(result.kind, 'it must not be read as a bare continuation').toBe('refine');
+      expect(result.followUp, 'and not as a follow-up at all').toBeNull();
+    });
+  }
+
+  it('does not turn a continuation with an instruction into new work when nothing stands', () => {
+    /*
+     * With no proposal there is nothing to refine and no subject named, so the honest reading is a
+     * question. What matters is the negative: it must not become `work`, because `work` with no
+     * resolvable subject is the path that provisions a second project.
+     */
+    const result = interpretMessage('carry on and add dark mode');
+    expect(result.kind).not.toBe('work');
+  });
+});
