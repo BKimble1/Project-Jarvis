@@ -230,3 +230,28 @@ test('paused mode records the work without starting it', async (t) => {
   await h.orchestrator.run(project.id);
   assert.equal(h.store.get('projects', project.id).status, 'delivered', 'it picks up where it was held');
 });
+
+test('a step that keeps asking the same question gets the answer, not another question', async (t) => {
+  const asked = {
+    needsAnswer: { text: 'Which storage should this use?', recommendedDefault: 'SQLite', options: ['SQLite', 'Postgres'], impact: 'high' },
+  };
+  const h = build({ executor: createScriptedExecutor({ script: { implement: asked } }) });
+  t.after(h.cleanup);
+  let questions = 0;
+  h.bus.on('question.asked', () => { questions += 1; });
+
+  const project = await h.orchestrator.submit({ title: 'App', goal: 'a store' });
+  await h.orchestrator.run(project.id);
+  assert.equal(questions, 1);
+
+  const q = h.questions.open(project.id)[0];
+  h.questions.answer(q.id, 'Postgres');
+  await h.orchestrator.run(project.id);
+  await h.orchestrator.run(project.id);
+
+  assert.equal(questions, 1, 'it did not ask the same thing twice');
+  const reused = h.store.find('tasks', (x) => x.result?.reusedAnswer);
+  assert.equal(reused.length, 1);
+  assert.equal(reused[0].result.answer, 'Postgres', 'the answer Blake gave was applied');
+  assert.equal(h.store.get('projects', project.id).status, 'delivered');
+});

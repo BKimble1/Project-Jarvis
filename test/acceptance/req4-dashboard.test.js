@@ -40,7 +40,8 @@ test('req4.2 the decision card appears only while a decision is genuinely needed
   const app = makeApp({
     executor: createScriptedExecutor({
       script: {
-        'Build a paywall': {
+        'Build paywall': [
+          {
           needsAnswer: {
             text: 'Should the paywall be hard or soft?',
             recommendedDefault: 'soft',
@@ -48,6 +49,8 @@ test('req4.2 the decision card appears only while a decision is genuinely needed
             impact: 'high',
           },
         },
+          {},
+        ],
       },
     }),
   });

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Jarvis</title>
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='7' fill='%237ec8e3'/%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%233a7a9e' stroke-width='2'/%3E%3C/svg%3E">
+</head>
+<body>
+<a class="skip-link" href="#composer-input">Skip to the chat box</a>
+
+<header class="topbar">
+  <h1 class="wordmark">Jarvis</h1>
+
+  <div class="controls" role="group" aria-label="Operating mode and health">
+    <span class="field">
+      <label for="mode-select">Mode</label>
+      <select id="mode-select" name="mode">
+        <option value="autonomous">Autonomous</option>
+        <option value="ask-first">Ask first</option>
+        <option value="paused">Paused</option>
+      </select>
+    </span>
+
+    <button id="mute-toggle" class="pill" type="button" aria-pressed="false">
+      <span aria-hidden="true" class="pill-glyph">&#9834;</span>
+      <span id="mute-label">Voice on</span>
+    </button>
+
+    <button id="enable-voice" class="pill pill-accent" type="button" hidden>Enable voice</button>
+
+    <span id="link-state" class="chip" role="status" hidden>Reconnecting&hellip;</span>
+
+    <span id="health-dot" class="health-dot" data-level="ok" role="img" aria-label="Health: all systems nominal"></span>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="core-pane" aria-labelledby="action-line">
+    <div class="core-frame">
+      <canvas id="core-canvas" width="320" height="320"></canvas>
+    </div>
+    <p id="action-line" class="action-line">Starting up&hellip;</p>
+  </section>
+
+  <section id="decision" class="card card-decision" hidden aria-labelledby="decision-title">
+    <h2 id="decision-title" class="card-title">One decision, please</h2>
+    <p id="decision-text" class="decision-text"></p>
+    <div id="decision-options" class="option-row"></div>
+    <form id="decision-form" class="decision-form">
+      <label class="visually-hidden" for="decision-input">Your answer</label>
+      <input id="decision-input" type="text" autocomplete="off" placeholder="Or type an answer">
+      <button type="submit" class="ghost">Answer</button>
+    </form>
+  </section>
+
+  <section id="attention" class="card card-attention" hidden aria-labelledby="attention-title">
+    <h2 id="attention-title" class="card-title">Blocked</h2>
+    <p id="attention-text" class="attention-text"></p>
+    <p id="attention-remedy" class="attention-remedy"></p>
+  </section>
+
+  <section class="panel panel-usage" aria-labelledby="usage-title">
+    <h2 id="usage-title" class="panel-title">Subscription usage</h2>
+    <div id="usage-root" class="usage-body"></div>
+  </section>
+
+  <section class="panel panel-chat" aria-labelledby="chat-title">
+    <h2 id="chat-title" class="panel-title">Conversation</h2>
+    <ol id="transcript" class="transcript" role="log" aria-live="polite" aria-relevant="additions text"
+        aria-label="Conversation transcript" tabindex="0"></ol>
+    <p id="transcript-empty" class="empty-hint">Nothing yet. Tell me what to build.</p>
+    <form id="composer" class="composer">
+      <label class="visually-hidden" for="composer-input">Message Jarvis</label>
+      <textarea id="composer-input" name="text" rows="2" autocomplete="off"
+                placeholder="Describe the work, change direction, or ask how it is going"></textarea>
+      <button type="submit" class="send">Send</button>
+    </form>
+  </section>
+
+  <section id="deliverables" class="panel panel-strip" hidden aria-labelledby="deliverables-title">
+    <h2 id="deliverables-title" class="panel-title">Deliverables</h2>
+    <ul id="deliverables-list" class="deliverable-list"></ul>
+  </section>
+
+</main>
+
+<nav class="tray" aria-label="Secondary views">
+  <button type="button" class="tray-button" data-panel="panel-activity">Activity</button>
+  <button type="button" class="tray-button" data-panel="panel-projects">Projects</button>
+  <button type="button" class="tray-button" data-panel="panel-diagnostics">Diagnostics</button>
+</nav>
+
+<aside id="panel-activity" class="drawer" hidden tabindex="-1" aria-labelledby="activity-title">
+  <div class="panel-head">
+    <h2 id="activity-title" class="panel-title">Activity</h2>
+    <button type="button" class="ghost" data-close-panel>Close</button>
+  </div>
+  <ol id="activity-list" class="event-list"></ol>
+</aside>
+
+<aside id="panel-projects" class="drawer" hidden tabindex="-1" aria-labelledby="projects-title">
+  <div class="panel-head">
+    <h2 id="projects-title" class="panel-title">Projects</h2>
+    <button type="button" class="ghost" data-close-panel>Close</button>
+  </div>
+  <ul id="projects-list" class="project-list"></ul>
+</aside>
+
+<aside id="panel-diagnostics" class="drawer" hidden tabindex="-1" aria-labelledby="diagnostics-title">
+  <div class="panel-head">
+    <h2 id="diagnostics-title" class="panel-title">Diagnostics</h2>
+    <button type="button" class="ghost" data-close-panel>Close</button>
+  </div>
+  <div id="diagnostics-body" class="panel-body"></div>
+</aside>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

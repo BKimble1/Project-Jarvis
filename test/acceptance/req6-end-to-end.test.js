@@ -21,7 +21,8 @@ test('req6.1 a whole project runs through chat: change, question, recovery, spee
     executor: createScriptedExecutor({
       script: {
         // A material question on one feature.
-        'Build a reading list': {
+        'Build reading list': [
+          {
           needsAnswer: {
             text: 'Should the reading list sync across devices?',
             recommendedDefault: 'yes, sync it',
@@ -29,6 +30,8 @@ test('req6.1 a whole project runs through chat: change, question, recovery, spee
             impact: 'high',
           },
         },
+          {},
+        ],
         // A worker crash that must recover on its own.
         'Build tag filtering': [
           { throw: { message: 'socket hang up', code: 'ECONNRESET' } },

@@ -2,6 +2,7 @@ import { newId } from '../core/ids.js';
 import { createLogger } from '../core/logger.js';
 import { canRun, isTerminal, nextPhase } from './lifecycle.js';
 import { classifyError, RetryBudget } from './retry.js';
+import { normalizeQuestionText } from './question.js';
 import { DeterministicPlanner } from './planner.js';
 
 const MAX_REPAIR_ROUNDS = 3;
@@ -117,7 +118,8 @@ export class Orchestrator {
       const queue = this._changeQueue.get(projectId) ?? [];
       queue.push(changeText);
       this._changeQueue.set(projectId, queue);
-      this.bus.emit('project.changed', { projectId, change: changeText, queued: true });
+      // One change, one announcement: `project.changed` is emitted when the
+      // change is actually folded in, not twice.
       this._setAction(`I am folding your change into ${project.title}.`, projectId);
       return this._project(projectId);
     }
@@ -538,6 +540,21 @@ export class Orchestrator {
 
   _handleNeedsAnswer(project, task, result) {
     const spec = result.needsAnswer;
+
+    // Already answered once? Apply the answer instead of asking again. Without
+    // this, a step that keeps asking the same thing would park the project
+    // forever, one question at a time.
+    const prior = this._answeredQuestion(project.id, spec.text);
+    if (prior) {
+      this.store.patch('tasks', task.id, {
+        status: 'done',
+        result: { ...result, answer: prior.answer, answeredBy: prior.id, reusedAnswer: true },
+        finishedAt: this.clock.now(),
+      });
+      this.bus.emit('task.completed', { projectId: project.id, taskId: task.id, title: task.title, reusedAnswer: true });
+      return { ok: true };
+    }
+
     if (!this.questions.isMaterial(spec)) {
       // Routine choice: decide it and keep moving. No approval stop.
       const answer = spec.recommendedDefault;
@@ -575,7 +592,9 @@ export class Orchestrator {
       return { blockedProject: true };
     }
 
-    const retryable = kind === 'transient' || kind === 'capacity';
+    // The pool already spends a bounded restart budget on transient crashes;
+    // retrying those again here would multiply the two budgets together.
+    const retryable = (kind === 'transient' || kind === 'capacity') && !err?.poolRestartsExhausted;
     if (retryable && this._retries.consume(task.id)) {
       this.store.patch('tasks', task.id, { status: 'pending', startedAt: null });
       this.bus.emit('task.retrying', { projectId: project.id, taskId: task.id, attempt: attempts, reason: kind });
@@ -650,6 +669,14 @@ export class Orchestrator {
   _latestPlan(projectId) {
     const plans = this.store.find('plans', (p) => p.projectId === projectId);
     return plans.sort((a, b) => (a.revision ?? 0) - (b.revision ?? 0)).at(-1) ?? null;
+  }
+
+  _answeredQuestion(projectId, text) {
+    const wanted = normalizeQuestionText(text);
+    if (!wanted) return null;
+    return this.store
+      .find('questions', (q) => q.projectId === projectId && q.status === 'answered' && normalizeQuestionText(q.text) === wanted)
+      .at(-1) ?? null;
   }
 
   _answers(projectId) {

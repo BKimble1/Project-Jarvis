@@ -156,7 +156,8 @@ test('req3.7 delivery, blockers and questions are announced; nothing else insist
   const app = makeApp({
     executor: createScriptedExecutor({
       script: {
-        'Build a sync engine': {
+        'Build sync engine': [
+          {
           needsAnswer: {
             text: 'Should sync be last-write-wins or merge?',
             recommendedDefault: 'merge',
@@ -164,6 +165,8 @@ test('req3.7 delivery, blockers and questions are announced; nothing else insist
             impact: 'high',
           },
         },
+          {},
+        ],
       },
     }),
   });

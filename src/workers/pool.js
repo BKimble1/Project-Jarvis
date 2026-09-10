@@ -248,6 +248,8 @@ export class WorkerPool {
     worker.restart();
 
     if (!willRestart) {
+      // The caller must not spend a second retry budget on top of ours.
+      if (err && typeof err === 'object') err.poolRestartsExhausted = true;
       job.reject(err);
       return;
     }

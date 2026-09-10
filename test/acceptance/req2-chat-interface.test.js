@@ -101,7 +101,8 @@ test('req2.6 a question asked by Jarvis is answered in chat and the answer is no
   const app = makeApp({
     executor: createScriptedExecutor({
       script: {
-        'Build a wishlist': {
+        'Build wishlist': [
+          {
           needsAnswer: {
             text: 'Should the wishlist be public or private by default?',
             recommendedDefault: 'private',
@@ -109,6 +110,8 @@ test('req2.6 a question asked by Jarvis is answered in chat and the answer is no
             impact: 'high',
           },
         },
+          {},
+        ],
       },
     }),
   });

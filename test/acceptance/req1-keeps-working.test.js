@@ -117,10 +117,32 @@ test('req1.4 a transient failure is retried, then repaired, and the build still 
   const project = await app.orchestrator.submit({ conversationId: 'c1', title: 'Importer', goal: 'a CSV importer' });
   await app.orchestrator.run(project.id);
 
-  assert.ok(events.count('task.retrying') >= 1, 'transient errors were retried, not surfaced');
+  const recovered = events.count('worker.crashed') + events.count('worker.recovered') + events.count('task.retrying');
+  assert.ok(recovered >= 2, `transient errors were recovered from, not surfaced (saw ${recovered} recovery events)`);
+  assert.equal(events.count('project.blocked'), 0, 'a recoverable error never reached Blake as a blocker');
   const final = app.store.get('projects', project.id);
   assert.equal(final.status, 'delivered', 'a recoverable error did not stop the loop');
-  assert.notEqual(final.status, 'blocked');
+  assert.ok(attempts.length >= 3, 'the failing step was genuinely retried');
+});
+
+test('req1.4b a permanently transient failure is bounded, repaired, and still delivers', async (t) => {
+  let implementCalls = 0;
+  const app = makeApp({
+    executor: createScriptedExecutor({
+      script: { implement: { throw: { message: 'socket hang up', code: 'ECONNRESET' } } },
+      onTask: (task) => { if (task.kind === 'implement') implementCalls += 1; },
+    }),
+  });
+  t.after(() => app.cleanup());
+  const events = recordEvents(app.bus);
+
+  const project = await app.orchestrator.submit({ conversationId: 'c1', title: 'Flaky', goal: 'one flaky feature' });
+  await app.orchestrator.run(project.id);
+
+  assert.ok(implementCalls <= 6, `retries stayed bounded (${implementCalls} attempts), not multiplied across layers`);
+  assert.ok(events.count('task.failed') >= 1, 'it gave up on the failing step rather than retrying forever');
+  assert.ok(app.store.find('tasks', (x) => x.kind === 'repair').length >= 1, 'and repaired it');
+  assert.equal(app.store.get('projects', project.id).status, 'delivered');
 });
 
 test('req1.5 a credential failure blocks with a precise ask and stops retrying', async (t) => {
@@ -194,14 +216,17 @@ test('req1.7b a material question blocks one task while independent work continu
     clock,
     executor: createScriptedExecutor({
       script: {
-        'Build invoices': {
-          needsAnswer: {
-            text: 'Should invoices be numbered per-customer or globally?',
-            recommendedDefault: 'globally',
-            options: ['per-customer', 'globally'],
-            impact: 'high',
+        'Build invoices': [
+          {
+            needsAnswer: {
+              text: 'Should invoices be numbered per-customer or globally?',
+              recommendedDefault: 'globally',
+              options: ['per-customer', 'globally'],
+              impact: 'high',
+            },
           },
-        },
+          {},
+        ],
       },
     }),
   });
