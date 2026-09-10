@@ -596,12 +596,37 @@ export class ConversationService {
   ): Promise<ConversationTurn> {
     const followUp = interpretation.followUp;
 
+    /*
+     * A reply that pointed at a list which is no longer there.
+     *
+     * This is not agreement and must never be treated as it. "The second option", typed after the
+     * list scrolled away, used to fall into the branch below and accept whatever proposal happened
+     * to be open — provisioning a repository for a message that named no subject. The honest answer
+     * is the one the domain type already prescribes: say the list moved, and show it again.
+     */
+    if (followUp?.kind === 'stale' && followUp.was === 'selection') {
+      return {
+        kind: 'follow_up',
+        understanding: interpretation.understanding,
+        said: `${followUp.reason} Tell me which one you meant and I will do it.`,
+        href: null,
+        answer: null,
+        started: null,
+        proposal: null,
+        evaluation: null,
+        thinking: null,
+        noBuildYet: interpretation.noBuildYet,
+        notes: [],
+      };
+    }
+
     if (followUp?.kind === 'accept' || followUp?.kind === 'stale') {
       /*
        * Bound to the proposal the page was showing when the owner answered, and to the newest open
        * one when it was not showing any — which is what makes "go ahead" work after a refresh, from
-       * a phone, or the morning after. `stale` reaches here too: the interpreter calls a bare "yes"
-       * stale because it has no *page* context, but a stored proposal is context enough.
+       * a phone, or the morning after. `stale` reaches here too, but only the `acceptance` kind:
+       * the interpreter calls a bare "yes" stale because it has no *page* context, and a stored
+       * proposal is context enough for that. A stale *selection* is handled above and never binds.
        */
       const bound =
         (followUp.kind === 'accept'

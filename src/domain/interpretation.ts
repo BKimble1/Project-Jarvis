@@ -231,8 +231,28 @@ export type FollowUp =
    *
    * Not an error and not a guess: the list moved, and the honest response is to say so and show it
    * again. Acting on the new first item would be acting on something never read.
+   *
+   * ## Why `was` exists
+   *
+   * Because the two ways a reply can dangle need opposite treatment, and for a while they did not
+   * get it. A bare "yes" with no page context is stale only in the sense that the browser sent no
+   * snapshot — there is very often a proposal in the database waiting for exactly that yes, and
+   * binding to it is what makes "go ahead" work from a phone or the morning after. An ordinal with
+   * no list is the other thing entirely: the person was pointing at something they read, it is not
+   * there, and the newest open proposal is not what they pointed at.
+   *
+   * Both used to arrive here as `{kind:'stale'}` with nothing but a sentence to tell them apart, and
+   * the service treated the pair as agreement. So "the second option", typed when the list had
+   * scrolled away, accepted and built whatever proposal happened to be open — a repository, from a
+   * message that named no subject at all. `was` is the discriminator that keeps that decision in the
+   * type rather than in a string comparison.
    */
-  | { readonly kind: 'stale'; readonly reason: string };
+  | {
+      readonly kind: 'stale';
+      readonly reason: string;
+      /** `acceptance` may be bound to a stored proposal; `selection` may never be. */
+      readonly was: 'acceptance' | 'selection';
+    };
 
 const normalise = (value: string): string =>
   value
@@ -1058,6 +1078,7 @@ function resolveFollowUp(
     if (!chosen) {
       return {
         kind: 'stale',
+        was: 'selection',
         reason:
           context.actions.length === 0
             ? 'There is no numbered list on screen to pick from.'
@@ -1084,6 +1105,7 @@ function resolveFollowUp(
    */
   return {
     kind: 'stale',
+    was: 'acceptance',
     reason: 'There is nothing waiting for a yes — say what you would like done.',
   };
 }
