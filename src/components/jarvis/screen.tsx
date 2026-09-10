@@ -18,6 +18,7 @@ import {
 
 import { interpretReply } from '@/domain/reply-intent';
 import type { NextAction } from '@/domain/next-actions';
+import { splitDecision } from '@/lib/screen-actions';
 import type { MorningBriefing } from '@/domain/briefing-shape';
 import type { QueryAnswer } from '@/domain/query';
 import { CORE_STATE_TONE, coreState, coreStatusLine, type CoreState } from '@/domain/core-state';
@@ -451,6 +452,26 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * "continue" means, and going to a different mission than the one that was on screen is the
    * same failure as opening a different "first one".
    */
+  /*
+   * The list a number actually refers to.
+   *
+   * `MattersPanel` shows the first action that needs a person as an unnumbered decision card and
+   * numbers everything else from 1. The reply path resolved the same number against the *unsplit*
+   * list, so visible item N ran `actions[N-1]` while the screen had labelled `rest[N-1]`. On a
+   * default install the decision is `actions[0]`, which makes every number on the screen act on the
+   * item above the one carrying it — measured in the browser: typing "1" opened the item labelled
+   * nothing, "2" opened the item labelled 1, and "4" was accepted with nothing on screen numbered 4.
+   *
+   * That last part is why the count travels with the list: `interpretReply` was told
+   * `props.actions.length`, one more than the numbered list, so an out-of-range ordinal passed its
+   * own guard. One derivation, used by the numbering, by the local resolution and by the snapshot
+   * sent to the server, is what keeps the three from disagreeing again.
+   */
+  const { decision: decisionAction, numbered: numberedActions } = React.useMemo(
+    () => splitDecision(props.actions),
+    [props.actions],
+  );
+
   const listKey = [
     ...props.actions.map((action) => action.id),
     '~',
@@ -729,7 +750,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
         body: JSON.stringify({
           message: text,
           context: {
-            actions: props.actions.map((action) => ({ id: action.id, label: action.label })),
+            actions: numberedActions.map((action) => ({ id: action.id, label: action.label })),
             proposal,
             lastJarvisTurn: turns[turns.length - 1]?.text ?? null,
           },
@@ -898,7 +919,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
       return;
     }
 
-    const intent = interpretReply(text, props.actions.length);
+    const intent = interpretReply(text, numberedActions.length);
 
     /*
      * A yes to something Jarvis offered goes to the server, not to the list reader.
@@ -937,7 +958,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
         );
         return;
       }
-      const chosen = props.actions[intent.index];
+      const chosen = numberedActions[intent.index];
       if (!chosen) {
         say('There is nothing at that number.');
         return;
@@ -1432,7 +1453,8 @@ export function JarvisScreen(props: JarvisScreenProps) {
 
           <MattersPanel
             className="xl:col-start-3 xl:row-start-1"
-            actions={props.actions}
+            decision={decisionAction}
+            numbered={numberedActions}
             completions={props.completions}
             focused={focusedProject}
             running={props.running}
@@ -1819,27 +1841,33 @@ function CoreStage({
 /* ------------------------------------------------------------------ the right column */
 
 function MattersPanel({
-  actions,
+  decision,
+  numbered,
   completions,
   focused,
   running,
   className,
 }: {
-  actions: readonly NextAction[];
+  /**
+   * The one thing genuinely requiring a person, shown as a card rather than a numbered row.
+   *
+   * The owner asked for "one focused card with its relevant choices" rather than a numbered list of
+   * everything at once. Anything else that needs them is listed under it, quietly, so nothing is
+   * hidden and nothing shouts.
+   */
+  decision: NextAction | null;
+  /**
+   * Everything else, in the order it is numbered — and the same array the reply path resolves a
+   * number against. Both used to be derived separately from one list, which is how the screen came
+   * to label an item 2 and act on the item above it. The split happens once, in the parent.
+   */
+  numbered: readonly NextAction[];
   completions: readonly ScreenCompletion[];
   focused: ScreenProject | null;
   running: readonly { missionId: string; title: string; state: string }[];
   className?: string;
 }) {
-  /*
-   * One decision, then the rest.
-   *
-   * The owner asked for "one focused card with its relevant choices" rather than a numbered list of
-   * everything at once. The first thing genuinely requiring a person is that card; anything else
-   * that needs them is listed under it, quietly, so nothing is hidden and nothing shouts.
-   */
-  const decision = actions.find((action) => action.requiresOwner) ?? null;
-  const rest = actions.filter((action) => action.id !== decision?.id);
+  const rest = numbered;
 
   return (
     <div className={cn('flex min-h-0 flex-col gap-3', className)}>
