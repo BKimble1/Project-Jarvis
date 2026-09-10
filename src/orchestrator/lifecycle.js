@@ -22,11 +22,15 @@ const TERMINAL = new Set(TERMINAL_STATUSES);
  * needed and to `delivering` otherwise. `repairing` always re-verifies, which
  * is what makes the repair loop a loop.
  *
+ * A missing, null or non-object second argument means "no repairs needed"
+ * rather than a destructuring crash — callers forward whatever they were given.
+ *
  * @param {string|null|undefined} current
  * @param {{repairsNeeded?: boolean}} [opts]
  * @returns {'planning'|'implementing'|'verifying'|'reviewing'|'repairing'|'delivering'|'done'}
  */
-export function nextPhase(current, { repairsNeeded = false } = {}) {
+export function nextPhase(current, opts) {
+  const repairsNeeded = Boolean(opts?.repairsNeeded);
   switch (current) {
     case 'planning': return 'implementing';
     case 'implementing': return 'verifying';

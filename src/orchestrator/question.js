@@ -15,6 +15,18 @@ export function normalizeQuestionText(text) {
     .toLowerCase();
 }
 
+/**
+ * The key `ask` de-duplicates on. Normally the normalized text, but text made
+ * only of punctuation normalizes to '' — and an empty key would silently merge
+ * two genuinely different questions into one, so fall back to the case-folded
+ * text in that case.
+ */
+function dedupeKeyFor(text) {
+  const normalized = normalizeQuestionText(text);
+  if (normalized) return normalized;
+  return String(text ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 function hasDefault(recommendedDefault) {
   if (recommendedDefault === null || recommendedDefault === undefined) return false;
   if (typeof recommendedDefault === 'string') return recommendedDefault.trim().length > 0;
@@ -50,8 +62,8 @@ export class QuestionGate {
     const clean = String(text ?? '').trim().replace(/\s+/g, ' ');
     if (!clean) throw new TypeError('QuestionGate.ask: text is required');
 
-    const key = normalizeQuestionText(clean);
-    const existing = this.open(projectId).find((q) => normalizeQuestionText(q.text) === key);
+    const key = dedupeKeyFor(clean);
+    const existing = this.open(projectId).find((q) => dedupeKeyFor(q.text) === key);
     if (existing) return existing;
 
     const question = {

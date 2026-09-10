@@ -11,20 +11,44 @@ export const ERROR_CLASSES = Object.freeze(['transient', 'capacity', 'permission
 /** Only these classes are worth trying again. */
 export const RETRYABLE_CLASSES = Object.freeze(['transient', 'capacity']);
 
-const TRANSIENT_CODES = new Set([
-  'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNREFUSED', 'EPIPE', 'ENETUNREACH', 'ENETRESET',
-  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+const RETRYABLE = new Set(RETRYABLE_CLASSES);
+
+/** How many `err.cause` links to follow before giving up (also breaks cycles). */
+const MAX_CAUSE_DEPTH = 3;
+
+/**
+ * `err.code` / `err.errno` values that name their class outright. In-repo
+ * producers tag errors this way on purpose (see `src/workers/claude-executor.js`)
+ * so the class survives any rewording of the human-readable message.
+ */
+const CODE_CLASS = new Map([
+  ['ECONNRESET', 'transient'], ['ETIMEDOUT', 'transient'], ['EAI_AGAIN', 'transient'],
+  ['ECONNREFUSED', 'transient'], ['EPIPE', 'transient'], ['ENETUNREACH', 'transient'],
+  ['ENETRESET', 'transient'], ['ECONNABORTED', 'transient'], ['EHOSTUNREACH', 'transient'],
+  ['UND_ERR_CONNECT_TIMEOUT', 'transient'], ['UND_ERR_SOCKET', 'transient'],
+  ['UND_ERR_HEADERS_TIMEOUT', 'transient'], ['UND_ERR_BODY_TIMEOUT', 'transient'],
+  ['ECREDENTIAL', 'credential'],
+  ['EFATAL', 'fatal'],
 ]);
-const TRANSIENT_STATUS = new Set([502, 503, 504]);
-const TRANSIENT_TEXT = ['timeout', 'timed out', 'socket hang up', 'econnreset', 'etimedout', 'eai_again'];
 
-const CAPACITY_STATUS = new Set([429, 529]);
-const CAPACITY_TEXT = ['rate limit', 'rate-limit', 'ratelimit', 'capacity', 'overloaded', 'too many requests', 'quota'];
+/** HTTP statuses that name their class outright. */
+const STATUS_CLASS = new Map([
+  [502, 'transient'], [503, 'transient'], [504, 'transient'],
+  [429, 'capacity'], [529, 'capacity'],
+  [401, 'permission'], [403, 'permission'],
+]);
 
-const PERMISSION_STATUS = new Set([401, 403]);
-const PERMISSION_TEXT = ['unauthorized', 'forbidden', 'permission'];
-
-const CREDENTIAL_TEXT = ['credential', 'not authenticated', 'api key', 'api-key', 'token expired', 'expired token', 'setup-token'];
+/**
+ * Message substrings, in the contract's class order. These are a fallback only:
+ * a keyword that happens to appear in prose must never override a structured
+ * signal (see `classifyOne`).
+ */
+const TEXT_CLASSES = Object.freeze([
+  ['transient', ['timeout', 'timed out', 'socket hang up', 'econnreset', 'etimedout', 'eai_again']],
+  ['capacity', ['rate limit', 'rate-limit', 'ratelimit', 'capacity', 'overloaded', 'too many requests', 'quota']],
+  ['permission', ['unauthorized', 'forbidden', 'permission']],
+  ['credential', ['credential', 'not authenticated', 'api key', 'api-key', 'token expired', 'expired token', 'setup-token']],
+]);
 
 function statusOf(err) {
   const raw = err?.status ?? err?.statusCode ?? err?.response?.status ?? err?.res?.statusCode;
@@ -37,45 +61,57 @@ function textOf(err) {
   return parts.filter(Boolean).map(String).join(' ').toLowerCase();
 }
 
-function includesAny(haystack, needles) {
-  return needles.some((n) => haystack.includes(n));
+/**
+ * Classify one error object without following `err.cause`.
+ * @returns {string|null} null when this error carries no usable signal.
+ */
+function classifyOne(err) {
+  // Structured signals win. An explicit code or HTTP status is what the
+  // producer *meant*; a message is just prose that may mention anything. A 403
+  // whose body happens to say "timed out" is still a permission failure, and
+  // retrying it would burn the budget and skip the "I need permission" block.
+  const code = String(err?.code ?? err?.errno ?? '').toUpperCase();
+  if (CODE_CLASS.has(code)) return CODE_CLASS.get(code);
+
+  const status = statusOf(err);
+  if (status !== null && STATUS_CLASS.has(status)) return STATUS_CLASS.get(status);
+
+  const text = textOf(err);
+  if (text) {
+    for (const [klass, needles] of TEXT_CLASSES) {
+      if (needles.some((n) => text.includes(n))) return klass;
+    }
+  }
+  return null;
+}
+
+function classifyDeep(err, depth) {
+  if (err === null || err === undefined) return 'fatal';
+  const direct = classifyOne(err);
+  if (direct !== null) return direct;
+  // Wrapped errors (fetch/undici style) carry the real cause underneath.
+  if (depth < MAX_CAUSE_DEPTH && err.cause !== undefined && err.cause !== null) {
+    return classifyDeep(err.cause, depth + 1);
+  }
+  return 'fatal';
 }
 
 /**
  * Classify a thrown value so callers know whether to retry, block on a
  * credential, or give up.
+ *
+ * Takes exactly one argument on purpose: the recursion depth is private, so
+ * `errors.map(classifyError)` cannot smuggle an array index in as state.
+ *
  * @returns {'transient'|'capacity'|'permission'|'credential'|'fatal'}
  */
-export function classifyError(err, depth = 0) {
-  if (err === null || err === undefined) return 'fatal';
-
-  const code = String(err.code ?? err.errno ?? '').toUpperCase();
-  const status = statusOf(err);
-  const text = textOf(err);
-
-  if (TRANSIENT_CODES.has(code)) return 'transient';
-  if (status !== null && TRANSIENT_STATUS.has(status)) return 'transient';
-  if (includesAny(text, TRANSIENT_TEXT)) return 'transient';
-
-  if (status !== null && CAPACITY_STATUS.has(status)) return 'capacity';
-  if (includesAny(text, CAPACITY_TEXT)) return 'capacity';
-
-  if (status !== null && PERMISSION_STATUS.has(status)) return 'permission';
-  if (includesAny(text, PERMISSION_TEXT)) return 'permission';
-
-  if (includesAny(text, CREDENTIAL_TEXT)) return 'credential';
-
-  // Wrapped errors (fetch/undici style) carry the real cause underneath.
-  if (depth < 3 && err.cause !== undefined && err.cause !== null) {
-    const inner = classifyError(err.cause, depth + 1);
-    if (inner !== 'fatal') return inner;
-  }
-  return 'fatal';
+export function classifyError(err) {
+  return classifyDeep(err, 0);
 }
 
 /** Default retry predicate: transient and capacity failures only. */
 export function defaultIsRetryable(err, classification = classifyError(err)) {
-  return classification === 'transient' || classification === 'capacity';
+  return RETRYABLE.has(classification);
 }
 
 /**

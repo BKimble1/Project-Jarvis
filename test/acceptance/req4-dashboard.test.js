@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { once } from 'node:events';
 import { makeApp, createScriptedExecutor, StubProvider, failedMeasurement } from '../helpers/harness.js';
+import { createServer } from '../../src/server.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const say = (app, text, conversationId = 'c1') => app.dispatcher.handle({ conversationId, text });
@@ -164,4 +166,63 @@ test('req4.7 the default view stays legible when capacity is unreadable', async 
   assert.ok(state.capacity.recovery, 'and offers a recovery action');
   assert.equal(state.health.level, 'degraded');
   assert.equal(state.decision, null, 'an unreadable meter is not a decision Blake must make');
+});
+
+
+/** Collect every same-origin asset the page pulls in, following module imports. */
+function collectAssets(startFiles) {
+  const seen = new Set();
+  const queue = [...startFiles];
+  while (queue.length) {
+    const rel = queue.shift();
+    if (seen.has(rel)) continue;
+    const abs = path.join(ROOT, 'public', rel);
+    assert.ok(fs.existsSync(abs), `public/${rel} is referenced but does not exist`);
+    seen.add(rel);
+    const body = fs.readFileSync(abs, 'utf8');
+    const refs = [
+      ...body.matchAll(/(?:src|href)="(?!https?:|data:|#)([^"]+)"/g),
+      ...body.matchAll(/\bfrom\s+['"](\.[^'"]+)['"]/g),
+      ...body.matchAll(/\bimport\(\s*['"](\.[^'"]+)['"]\s*\)/g),
+    ].map((m) => m[1]);
+    for (const ref of refs) {
+      queue.push(path.normalize(path.join(path.dirname(rel), ref)));
+    }
+  }
+  return [...seen];
+}
+
+test('req4.8 every asset the page references exists and is actually served', async (t) => {
+  const assets = collectAssets(['index.html']);
+  assert.ok(assets.includes('app.js'), 'the page boots from a real script');
+  assert.ok(assets.includes('styles.css'), 'the page has a real stylesheet');
+  assert.ok(assets.some((a) => a.startsWith('modules/')), 'the page loads its modules');
+
+  const app = makeApp();
+  const server = createServer({ app });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => { server.close(); await app.cleanup(); });
+
+  for (const asset of assets) {
+    const res = await fetch(`${base}/${asset}`);
+    assert.equal(res.status, 200, `GET /${asset} should serve`);
+    const type = res.headers.get('content-type') ?? '';
+    if (asset.endsWith('.js')) assert.match(type, /javascript/, `/${asset} must be served as JavaScript`);
+    if (asset.endsWith('.css')) assert.match(type, /text\/css/, `/${asset} must be served as CSS`);
+    const body = await res.text();
+    assert.ok(body.length > 0, `/${asset} must not be empty`);
+    // The SPA fallback must not silently stand in for a missing asset.
+    if (asset !== 'index.html') assert.ok(!body.includes('<!DOCTYPE html>'), `/${asset} fell back to index.html`);
+  }
+});
+
+test('req4.9 the page boots its modules without a syntax error', async () => {
+  // Importing every module proves they parse; DOM-touching code stays in
+  // functions, so a bare import must not throw.
+  for (const file of ['usage.js', 'core-anim.js', 'chat.js', 'speech.js', 'drawers.js']) {
+    const mod = await import(`../../public/modules/${file}`);
+    assert.ok(Object.keys(mod).length > 0, `public/modules/${file} exports nothing`);
+  }
 });

@@ -5,6 +5,16 @@ const COLLECTION = 'backlog';
 export const BACKLOG_STATUSES = Object.freeze(['pending', 'picked', 'done']);
 
 /**
+ * `add` documents `authorized = true`, so only an explicit `false` holds an
+ * item back. The read path has to use exactly the same rule as the write path:
+ * a stricter `=== true` would strand any record whose flag went missing in
+ * `status:'pending'` forever, invisible to both `next()` and `size()`.
+ */
+function isAuthorized(item) {
+  return item?.authorized !== false;
+}
+
+/**
  * FIFO queue of authorized future work.
  *
  * `next()` returning null is a real answer: when the backlog is empty Jarvis
@@ -30,7 +40,7 @@ export class Backlog {
       title: cleanTitle,
       goal: cleanGoal || cleanTitle,
       source: source ?? 'user',
-      authorized: authorized !== false,
+      authorized: isAuthorized({ authorized }),
       status: 'pending',
       seq: this._nextSeq(),
       projectId: null,
@@ -52,7 +62,7 @@ export class Backlog {
 
   /** Items `next()` would serve, oldest first. */
   pending() {
-    return this.items().filter((i) => i.status === 'pending' && i.authorized === true);
+    return this.items().filter((i) => i.status === 'pending' && isAuthorized(i));
   }
 
   /**
@@ -64,8 +74,8 @@ export class Backlog {
     if (ready.length === 0) {
       this.bus.emit('backlog.empty', {
         projectId: null,
-        size: 0,
-        unauthorized: this.items().filter((i) => i.status === 'pending' && i.authorized !== true).length,
+        size: ready.length,
+        unauthorized: this.items().filter((i) => i.status === 'pending' && !isAuthorized(i)).length,
       });
       return null;
     }
