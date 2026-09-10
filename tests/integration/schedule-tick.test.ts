@@ -116,6 +116,25 @@ describe('a schedule tick something can drive', () => {
       },
     });
 
+  /*
+   * The caller. Everything else in this file assumes something calls `tick`; this is the assertion
+   * that something does.
+   *
+   * Through `operatorService.tick()` — the pass the enrolled worker drives on its own timer, which
+   * on the documented single-machine install is the only thing that reliably runs at all. Nothing
+   * stubbed: the reminder is created through the real schedule service, and the only call made is
+   * the one the worker makes every minute.
+   */
+  it('is called by the pass of the operating loop the worker already drives', async () => {
+    await remindDaily({ hour: 9, text: 'Ring the dentist' });
+
+    at('2026-03-10T09:00:30.000Z');
+    await harness.services.operatorService.tick();
+
+    const delivered = await unread();
+    expect(delivered.map((notification) => notification.title)).toContain('Ring the dentist');
+  }, 60_000);
+
   it('fires a schedule once and only once across two ticks', async () => {
     await remindDaily({ hour: 9, text: 'Ring the dentist' });
 

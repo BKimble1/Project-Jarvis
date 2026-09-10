@@ -917,6 +917,15 @@ export function buildServices(
      */
     reclaimAbandonedTasks: () => taskWorkerService.reclaimAbandoned(),
     nudgeActiveMissions: () => orchestrator.sweepActive(),
+    /*
+     * And the same argument for the schedule tick, which had no caller at all: `scheduleService`
+     * is built below, so this is a thunk for the same forward reference `currentMode` above makes.
+     * Only the two counts travel — the loop's summary is one sentence, not a per-reminder log.
+     */
+    runSchedules: async () => {
+      const report = await scheduleService.tick();
+      return { delivered: report.delivered, failed: report.failed };
+    },
     outcomes,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });

@@ -134,6 +134,31 @@ function sweepSentence(sweep: MissionSweepSummary): string | null {
   return `Could not move ${sweep.failed} mission${sweep.failed === 1 ? '' : 's'} on — their graphs need looking at.`;
 }
 
+/** What a pass of the schedule tick did. The shape of `ScheduleTickReport`, minus its prose. */
+export interface ScheduleSweepSummary {
+  readonly delivered: number;
+  readonly failed: number;
+}
+
+const NO_SCHEDULES: ScheduleSweepSummary = { delivered: 0, failed: 0 };
+
+/**
+ * A sentence only when something happened, on the same rule as `sweepSentence`.
+ *
+ * A pass with nothing due is the normal case — reminders are due once a day, and this runs every
+ * minute — so narrating it would fill the operator's history with a line meaning "nothing was due".
+ */
+function schedulesSentence(schedules: ScheduleSweepSummary): string | null {
+  const parts = [
+    schedules.delivered > 0
+      ? `sent ${schedules.delivered} reminder${schedules.delivered === 1 ? '' : 's'}`
+      : null,
+    schedules.failed > 0 ? `could not send ${schedules.failed}` : null,
+  ].filter((part): part is string => part !== null);
+  if (parts.length === 0) return null;
+  return `Also ${parts.join(' and ')}.`;
+}
+
 export const OPERATOR_LEASE_SCOPE = 'operator';
 export const OPERATOR_TICK_KEY = 'tick';
 
@@ -307,6 +332,19 @@ export interface OperatorServiceDeps {
    * calls re-derives its decisions from the graph rather than from what it did last time.
    */
   readonly nudgeActiveMissions: () => Promise<MissionSweepSummary>;
+  /**
+   * One pass of the reminder machinery.
+   *
+   * Here because the tick had no caller anywhere in the repository. `/api/cron/schedules` was
+   * written, documented and never invoked — no timer, no worker loop, no scheduled function — so
+   * on the documented single-machine deployment every reminder an owner set was accepted, stored,
+   * and never delivered, while the interface said it was on.
+   *
+   * The operating loop is the caller because the enrolled worker already drives it on a timer and
+   * is the only thing on such an install that reliably runs at all. The route stays for the
+   * deployments where something else can do the waking; nothing about this replaces it.
+   */
+  readonly runSchedules: () => Promise<ScheduleSweepSummary>;
   /** Where the loop writes down what it expects, and later what actually happened. */
   readonly outcomes: OutcomeRepository;
   readonly clock?: () => Date;
@@ -676,6 +714,24 @@ export class OperatorService {
       sweep = NO_SWEEP;
     }
 
+    /*
+     * The reminders the owner set, delivered on the same pass and before the mode gate.
+     *
+     * Before the gate for the same reason the reclaim above is: a reminder is something the owner
+     * asked for, not something Jarvis chose, and an owner who switched Jarvis to observing did not
+     * thereby cancel their daily briefing. What the mode governs is Jarvis's own initiative.
+     *
+     * Swallowed for the reason the other two are. A pass is cheap when nothing is due — three
+     * indexed reads and no writes — and `ScheduleService.tick` stands a second caller down by
+     * itself, so calling it every minute from here costs nothing and cannot overlap.
+     */
+    let schedules = NO_SCHEDULES;
+    try {
+      schedules = await this.deps.runSchedules();
+    } catch {
+      schedules = NO_SCHEDULES;
+    }
+
     const finish = async (
       result: Omit<TickResult, 'tickId' | 'reclaim'> & { readonly projectsObserved?: number },
     ): Promise<TickResult> => {
@@ -683,6 +739,7 @@ export class OperatorService {
         result.summary,
         reclaimSentence(reclaim),
         sweepSentence(sweep),
+        schedulesSentence(schedules),
         measured > 0
           ? `Went back and judged ${measured} thing${measured === 1 ? '' : 's'} it had started itself.`
           : null,

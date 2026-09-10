@@ -28,11 +28,12 @@ type Services = Awaited<ReturnType<typeof getServices>>;
  * accepted, stored, and never delivered — while the interface told the owner it had been set. A
  * route with no caller is not a backstop, it is a comment.
  *
- * The caller that fixes that is the operating loop, because the enrolled worker already drives it
- * on a timer and is the only thing on a single-machine install that reliably runs at all. This
- * route stays for the deployments where something else can do the waking, and gains the owner
- * below so the tick is reachable from a signed-in session too — the same pair, and for the same
- * reason, as `/api/operator/tick`.
+ * The caller that fixes that is the operating loop: `OperatorService.run` takes a schedule pass
+ * beside its reclaim and its sweep, because the enrolled worker already drives that loop on a
+ * timer and is the only thing on a single-machine install that reliably runs at all. This route
+ * stays for the deployments where something else can do the waking, and gains the owner below so
+ * the tick is reachable from a signed-in session too — the same pair, and for the same reason, as
+ * `/api/operator/tick`.
  *
  * ## Why calling it too often is harmless
  *
