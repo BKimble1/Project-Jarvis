@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { requireOwnerPage } from '@/server/auth/guard';
 import { getServices } from '@/server/container';
 import { PROVIDER_CATALOGUE } from '@/domain/connection-catalogue';
 import type { ConnectionStatus, ConnectionView } from '@/domain/connection';
@@ -39,6 +40,17 @@ function when(value: string | null): string {
 }
 
 export default async function ConnectionsPage() {
+  /*
+   * Guarded here, not only in the layout.
+   *
+   * A client-side navigation asks the server for the segments that changed, and a request
+   * carrying a router state tree that claims the (app) layout is already mounted renders this
+   * page without ever calling that layout. Measured against the running app: with no cookie at
+   * all, this page returned its fully rendered contents while a page that guards itself
+   * returned a redirect. The layout is a convenience; the page is the boundary.
+   */
+  await requireOwnerPage('/connections');
+
   const services = await getServices();
   const views = await services.connections.list();
   const vaultReady = services.connections.vaultReady();

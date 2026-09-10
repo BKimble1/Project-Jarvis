@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { requireOwnerPage } from '@/server/auth/guard';
 import { CircleAlert, CircleCheck, ShieldCheck } from 'lucide-react';
 import { describeConfigHealth } from '@/server/config/env';
 import { getServices } from '@/server/container';
@@ -21,6 +22,20 @@ export const metadata: Metadata = { title: 'Settings' };
  * page is built so that a screenshot of it can never leak a secret.
  */
 export default async function SettingsPage() {
+  /*
+   * Guarded here, not only in the layout.
+   *
+   * A client-side navigation asks the server for the segments that changed, and a request carrying
+   * a router state tree that claims the (app) layout is already mounted renders this page without
+   * ever calling that layout. This page is the worst one to lose that way: measured against the
+   * running app with no cookie at all, it returned 123 KB naming the owner, the base URL and which
+   * credentials are configured.
+   *
+   * `readSession()` below is deliberately left as it is — it answers "who is signed in" for the
+   * row that displays it, and it returns null rather than redirecting. That is the right shape for
+   * a display value and the wrong shape for a boundary, which is what this line supplies.
+   */
+  await requireOwnerPage('/settings');
   const health = describeConfigHealth();
   const services = await getServices();
   const askProvider = services.answerProvider;

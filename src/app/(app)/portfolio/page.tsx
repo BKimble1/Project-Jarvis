@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { requireOwnerPage } from '@/server/auth/guard';
 import Link from 'next/link';
 import { Suspense } from 'react';
 import { FolderPlus, FolderGit2 } from 'lucide-react';
@@ -30,6 +31,17 @@ const one = (value: string | string[] | undefined): string | undefined =>
   Array.isArray(value) ? value[0] : value;
 
 export default async function PortfolioPage({ searchParams }: { searchParams: Promise<Search> }) {
+  /*
+   * Guarded here, not only in the layout.
+   *
+   * A client-side navigation asks the server for the segments that changed, and a request
+   * carrying a router state tree that claims the (app) layout is already mounted renders this
+   * page without ever calling that layout. Measured against the running app: with no cookie at
+   * all, this page returned its fully rendered contents while a page that guards itself
+   * returned a redirect. The layout is a convenience; the page is the boundary.
+   */
+  await requireOwnerPage('/portfolio');
+
   const params = await searchParams;
   const services = await getServices();
   const [history, readiness, picture] = await Promise.all([

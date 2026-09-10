@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { requireOwnerPage } from '@/server/auth/guard';
 import Link from 'next/link';
 import { FolderGit2, FolderPlus } from 'lucide-react';
 import { PROJECT_PRIORITIES, PROJECT_STATUSES, PROJECT_TYPES } from '@/domain/enums';
@@ -25,6 +26,17 @@ const oneOf = <T extends string>(
   value && (allowed as readonly string[]).includes(value) ? (value as T) : undefined;
 
 export default async function ProjectsPage({ searchParams }: { searchParams: Promise<Search> }) {
+  /*
+   * Guarded here, not only in the layout.
+   *
+   * A client-side navigation asks the server for the segments that changed, and a request
+   * carrying a router state tree that claims the (app) layout is already mounted renders this
+   * page without ever calling that layout. Measured against the running app: with no cookie at
+   * all, this page returned its fully rendered contents while a page that guards itself
+   * returned a redirect. The layout is a convenience; the page is the boundary.
+   */
+  await requireOwnerPage('/projects');
+
   const params = await searchParams;
   const services = await getServices();
 
