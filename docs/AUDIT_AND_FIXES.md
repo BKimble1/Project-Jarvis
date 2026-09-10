@@ -132,7 +132,6 @@ Not fixed, and not hidden. In rough order of how much they matter.
 - **A mid-conversation change is answered as a status question.** "Actually make the background
   dark" while a mission is planning gets "X is active, but I have no evidence of work in progress"
   rather than being attached to the work.
-- **An idea's evaluation is titled "New project"** rather than named from what was asked.
 - **`ASSUMED_MISSION_SPEND_USD` is re-offered within one tick** against a total that cannot have
   moved, so a tick can authorise more assumed work than the daily limit allows. Bounded by the
   tick's room ceiling, and the measured total catches up.

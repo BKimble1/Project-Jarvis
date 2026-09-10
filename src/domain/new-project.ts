@@ -204,8 +204,19 @@ export function deriveProjectName(raw: string): string {
     if (name) return name;
   }
 
-  return 'New project';
+  return UNNAMED;
 }
+
+/**
+ * What a project is called when the owner did not name it and nothing in the words suggests one.
+ *
+ * A real answer, not a placeholder: "New project" is what the projects list should say, and
+ * `describesNewProject` is what decides whether a project is created at all, so an idea that
+ * reaches here is one worth listing. Exported so prose can *recognise* it and say something
+ * else — "I have not judged whether New project is worth building" is a sentence about a project
+ * with a name, and there isn't one.
+ */
+export const UNNAMED = 'New project';
 
 /**
  * A name the owner actually wrote, or null when they did not write one.

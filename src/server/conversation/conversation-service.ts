@@ -7,7 +7,7 @@ import {
 import { buildBrief } from '@/domain/build-brief';
 import { finalisedV1, readRefinement } from '@/domain/refinement';
 import type { OperatingEventKind, OperatingState } from '@/domain/operating-state';
-import { deriveProjectName, describesNewProject } from '@/domain/new-project';
+import { deriveProjectName, describesNewProject, UNNAMED } from '@/domain/new-project';
 import type { Project } from '@/domain/project';
 import type { QueryAnswer } from '@/domain/query';
 import { resolveProjectName } from '@/server/query/parser';
@@ -1078,6 +1078,17 @@ export class ConversationService {
 function spokenIdea(proposal: Proposal, thinking: ThinkingState, noBuildYet: boolean): string {
   const parts: string[] = [];
 
+  /*
+   * What to call it in a sentence.
+   *
+   * `deriveProjectName` answers `UNNAMED` when the owner named nothing and nothing in the words
+   * suggests a name — which is the right label for a row in the projects list and the wrong thing
+   * to put in a sentence: "I have not judged whether New project is worth building" reads as a
+   * project called New project. "that" is what a person would say, and it is what the owner just
+   * described, so nothing is lost.
+   */
+  const subject = proposal.title === UNNAMED ? 'that' : proposal.title;
+
   if (thinking.state === 'ready') {
     const evaluation = thinking.evaluation;
     parts.push(evaluation.verdict);
@@ -1091,12 +1102,10 @@ function spokenIdea(proposal: Proposal, thinking: ThinkingState, noBuildYet: boo
     }
     parts.push(NO_RESEARCH_NOTICE);
   } else if (thinking.state === 'thinking') {
-    parts.push(
-      `I am thinking about whether ${proposal.title} is worth building. ${thinking.detail}`,
-    );
+    parts.push(`I am thinking about whether ${subject} is worth building. ${thinking.detail}`);
     parts.push(`In the meantime: ${MATERIAL_V1_QUESTIONS[0]}`);
   } else {
-    parts.push(`I have not judged whether ${proposal.title} is worth building. ${thinking.detail}`);
+    parts.push(`I have not judged whether ${subject} is worth building. ${thinking.detail}`);
     parts.push(`What I can ask without one: ${MATERIAL_V1_QUESTIONS[0]}`);
   }
 

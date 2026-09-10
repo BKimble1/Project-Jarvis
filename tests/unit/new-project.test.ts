@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { describesNewProject, deriveProjectName } from '@/domain/new-project';
+import { describesNewProject, deriveProjectName, UNNAMED } from '@/domain/new-project';
 import { isRepositorySlug, repositorySlug } from '@/domain/repository-name';
 
 /**
@@ -80,6 +80,12 @@ describe('naming the thing', () => {
     expect(deriveProjectName('')).toBe('New project');
     /* Evaluative words refer to a thing; they do not name it. */
     expect(deriveProjectName('go ahead with the best idea')).toBe('New project');
+    /*
+     * And the fallback is a named export, because prose has to be able to recognise it. "I have
+     * not judged whether New project is worth building" reads as a project called New project;
+     * `ConversationService` says "that" instead when the name is this one.
+     */
+    expect(deriveProjectName('build something')).toBe(UNNAMED);
   });
 
   /**
