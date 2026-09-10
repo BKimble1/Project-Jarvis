@@ -37,6 +37,20 @@ No dependencies. Node 22+, `node:` builtins only, no build step.
   says "Unavailable" with a recovery action. Unknown never looks like 0%.
   Those same numbers pace real work concurrency and timing.
 
+## Doing real work
+
+The shipped executor is deterministic, so Jarvis runs and is fully testable
+with no credentials. To have it actually write code through the Claude Code
+CLI, in a per-project workspace under `data/workspaces/`:
+
+```bash
+JARVIS_EXECUTOR=claude npm start
+```
+
+Failures from the CLI are classified, so an expired login blocks the project
+with a precise ask rather than burning retries, while a dropped connection is
+retried.
+
 ## Credentials
 
 Subscription usage needs a Claude subscription OAuth token:

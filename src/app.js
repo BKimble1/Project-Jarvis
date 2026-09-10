@@ -8,6 +8,7 @@ import { ClaudeSubscriptionProvider } from './telemetry/providers/claude-cli.js'
 import { Scheduler } from './orchestrator/scheduler.js';
 import { WorkerPool } from './workers/pool.js';
 import { createEchoExecutor } from './workers/worker.js';
+import { createClaudeExecutor } from './workers/claude-executor.js';
 import { QuestionGate } from './orchestrator/question.js';
 import { Backlog } from './orchestrator/backlog.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
@@ -53,7 +54,7 @@ export function createApp({
   const scheduler = new Scheduler({ clock, usage, bus, maxConcurrency, logger: logger.child('scheduler') });
   const pool = new WorkerPool({
     clock, bus, scheduler, size: poolSize,
-    executor: executor ?? createEchoExecutor({ clock }),
+    executor: executor ?? defaultExecutor({ clock, dataDir, logger }),
     logger: logger.child('pool'),
   });
 
@@ -159,6 +160,19 @@ export function createApp({
   };
 
   return app;
+}
+
+/**
+ * The shipped default is deterministic so Jarvis runs with no credentials at
+ * all. Set JARVIS_EXECUTOR=claude to have it do real work through the Claude
+ * Code CLI in a per-project workspace.
+ */
+function defaultExecutor({ clock, dataDir, logger }) {
+  if ((process.env.JARVIS_EXECUTOR ?? '').toLowerCase() === 'claude') {
+    logger.info('using the Claude Code CLI executor');
+    return createClaudeExecutor({ clock, workspaceRoot: path.join(dataDir, 'workspaces'), logger: logger.child('claude') });
+  }
+  return createEchoExecutor({ clock });
 }
 
 function healthOf({ usage, pool, orchestrator, store }) {

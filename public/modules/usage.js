@@ -55,6 +55,11 @@ export function ringGeometry(usedPercent, radius = RING_RADIUS) {
   };
 }
 
+/** A reading is an actual finite number. Strings, null and NaN are not. */
+function isReading(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 function toneFor(usedPercent) {
   if (usedPercent >= 85) return 'critical';
   if (usedPercent >= 60) return 'warn';
@@ -72,14 +77,13 @@ function displayPercent(value) {
 
 function circleModel(window, { freshness, staleNote, timezone }) {
   if (!window || typeof window !== 'object') return null;
-  const used = Number(window.usedPercent);
-  // Never coerce an unusable number into a ring: a missing reading is not 0%.
-  if (!Number.isFinite(used)) return null;
+  // Never coerce an unusable value into a ring: `null` is not 0%, and
+  // `Number(null)` is. Only an actual finite number counts as a reading.
+  if (!isReading(window.usedPercent)) return null;
 
-  const usedClamped = Math.min(100, Math.max(0, used));
-  const remainingRaw = Number(window.remainingPercent);
-  const remaining = Number.isFinite(remainingRaw)
-    ? Math.min(100, Math.max(0, remainingRaw))
+  const usedClamped = Math.min(100, Math.max(0, window.usedPercent));
+  const remaining = isReading(window.remainingPercent)
+    ? Math.min(100, Math.max(0, window.remainingPercent))
     : 100 - usedClamped;
 
   const key = String(window.key ?? 'window');
