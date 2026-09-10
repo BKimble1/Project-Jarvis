@@ -33,7 +33,11 @@ export const BANDS = Object.freeze([
   Object.freeze({ name: 'ample', atLeastPercent: 50, share: 'full', paceDelayMs: 0 }),
   Object.freeze({ name: 'moderate', atLeastPercent: 20, share: 'half', paceDelayMs: 250 }),
   Object.freeze({ name: 'low', atLeastPercent: 5, share: 'min', paceDelayMs: 2_000 }),
-  Object.freeze({ name: 'critical', atLeastPercent: -Infinity, share: 'min', paceDelayMs: 10_000 }),
+  Object.freeze({ name: 'critical', atLeastPercent: 0.5, share: 'min', paceDelayMs: 10_000 }),
+  // Actually out. Running anyway would just burn retries against a limit that
+  // has not reset. `gate()` holds here and releases the moment a refreshed
+  // reading shows capacity again, which is how saved work resumes at reset.
+  Object.freeze({ name: 'exhausted', atLeastPercent: -Infinity, share: 'none', paceDelayMs: 0 }),
 ]);
 
 /** @returns {typeof BANDS[number]|null} null when the reading is not a number. */
@@ -150,12 +154,13 @@ export class Scheduler {
     }
 
     let concurrency;
-    if (band.share === 'full') concurrency = this.maxConcurrency;
+    if (band.share === 'none') concurrency = 0;
+    else if (band.share === 'full') concurrency = this.maxConcurrency;
     else if (band.share === 'half') concurrency = Math.ceil(this.maxConcurrency / 2);
     else concurrency = this.minConcurrency;
 
     const plan = {
-      concurrency: this._clamp(concurrency),
+      concurrency: band.share === 'none' ? 0 : this._clamp(concurrency),
       paceDelayMs: band.paceDelayMs,
       basis: status === 'stale' ? 'stale' : 'live',
       worstRemainingPercent: worst,

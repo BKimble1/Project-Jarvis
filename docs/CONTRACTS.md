@@ -219,7 +219,9 @@ export class Scheduler {
 - worstRemaining >= 50% → `maxConcurrency`, no pacing.
 - 20–50% → half (rounded up, >= minConcurrency), pace 250ms.
 - 5–20% → `minConcurrency`, pace 2000ms.
-- < 5% → `minConcurrency`, pace 10000ms.
+- 0.5–5% → `minConcurrency`, pace 10000ms.
+- <= 0.5% (spent) → concurrency 0; `gate()` holds and releases the moment a
+  refreshed reading shows capacity, which is how saved work resumes at reset.
 - unknown (`status:'unavailable'`) → conservative: `min(2, maxConcurrency)`, pace 500ms, `basis:'unknown'`.
 - Stale readings are used but reported as `basis:'stale'`.
 **This must actually change work concurrency and timing** — the pool asks the scheduler, and a test

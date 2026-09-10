@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeApp, StubProvider, liveMeasurement, failedMeasurement, AutoClock, createScriptedExecutor } from '../helpers/harness.js';
+import { makeApp, StubProvider, liveMeasurement, failedMeasurement, AutoClock, createScriptedExecutor, settle } from '../helpers/harness.js';
 
 /**
  * Acceptance requirement 5 — "Make the usage circles real".
@@ -205,4 +205,35 @@ test('req5.9 the provider never falls back to a paid API key', async () => {
   } finally {
     delete process.env.ANTHROPIC_API_KEY;
   }
+});
+
+
+test('req5.10 a spent plan holds the work, and it resumes by itself at reset', async (t) => {
+  const clock = new AutoClock();
+  const app = makeApp({
+    clock,
+    provider: new StubProvider([liveMeasurement(clock, [{ key: 'five_hour', label: '5-hour', usedPercent: 100 }])]),
+  });
+  t.after(() => app.cleanup());
+
+  await app.usage.refresh();
+  assert.equal(app.scheduler.concurrency(), 0, 'nothing runs against a spent limit');
+  assert.equal(app.scheduler.describe().worstRemainingPercent, 0);
+
+  const project = await app.orchestrator.submit({ conversationId: 'c1', title: 'Report builder', goal: 'a report builder' });
+  const run = app.orchestrator.run(project.id);
+  await settle(30);
+
+  const held = app.store.get('projects', project.id);
+  assert.equal(held.status, 'active', 'the project is alive, just held');
+  assert.notEqual(held.status, 'delivered');
+  assert.ok(app.store.find('tasks', (x) => x.projectId === project.id).length > 0, 'the plan was saved before the hold');
+  assert.equal(app.store.find('tasks', (x) => x.projectId === project.id && x.status === 'done').length, 0, 'no work ran');
+
+  // The window resets. Nobody tells Jarvis to continue.
+  app.usage.ingestWorkerReport(liveMeasurement(clock, [{ key: 'five_hour', label: '5-hour', usedPercent: 10 }]));
+  await run;
+
+  assert.equal(app.store.get('projects', project.id).status, 'delivered', 'it picked the saved work back up on its own');
+  assert.equal(app.scheduler.concurrency(), 4);
 });

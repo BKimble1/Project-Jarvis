@@ -149,10 +149,33 @@ test('band boundaries are inclusive at 50, 20 and 5', () => {
   assert.equal(bandFor(19.9).name, 'low');
   assert.equal(bandFor(5).name, 'low');
   assert.equal(bandFor(4.9).name, 'critical');
-  assert.equal(bandFor(0).name, 'critical');
+  assert.equal(bandFor(0.5).name, 'critical');
+  assert.equal(bandFor(0.4).name, 'exhausted', 'an emptied window is its own band');
+  assert.equal(bandFor(0).name, 'exhausted');
   assert.equal(bandFor(null), null);
   assert.equal(bandFor(Number.NaN), null);
-  assert.equal(BANDS.length, 4);
+  assert.equal(BANDS.length, 5);
+});
+
+test('an exhausted window holds work until capacity comes back', async () => {
+  const clock = new FakeClock(0);
+  const usage = stubUsage({ windows: [win(0, 'five_hour')] });
+  const scheduler = makeScheduler(usage, { clock, maxConcurrency: 4 });
+
+  assert.equal(scheduler.concurrency(), 0, 'nothing runs against a spent limit');
+  assert.equal(scheduler.paceDelayMs(), 0, 'it waits rather than paces');
+
+  // The gate holds while there is no capacity at all...
+  let released = false;
+  const gate = scheduler.gate().then(() => { released = true; });
+  await clock.advance(5_000);
+  assert.equal(released, false, 'the gate held while the limit was spent');
+
+  // ...and releases as soon as a refreshed reading shows the window reset.
+  usage.windows = [win(100, 'five_hour')];
+  await drive(clock, gate);
+  assert.equal(released, true, 'saved work resumes the moment capacity resets');
+  assert.equal(scheduler.concurrency(), 4);
 });
 
 test('the tightest window decides the band', () => {
