@@ -143,7 +143,17 @@ test.describe('a project without a repository', () => {
     await expect(
       ask.getByRole('heading', { name: 'This looks like a mission', level: 3 }),
     ).toBeVisible();
-    await expect(ask.getByText('Nothing has started.')).toBeVisible();
+    /*
+     * The refusal itself, on the page rather than inside the panel — and exactly once.
+     *
+     * `turn.said` for this answer *is* `answer.summary`: one string, produced once by the
+     * conversation service. The screen shows it under the core, where the last thing Jarvis said
+     * always goes, and tells `AnswerPanel` not to print it again a hand's width below. Asserting it
+     * inside the panel would be asserting the duplicate.
+     */
+    const refusal = page.getByText('Nothing has started.');
+    await expect(refusal).toBeVisible();
+    await expect(refusal, 'the same sentence must not be on screen twice').toHaveCount(1);
 
     const missions = await page.request.get('/api/missions');
     expect(((await missions.json()) as { total: number }).total).toBe(missionsBefore);
