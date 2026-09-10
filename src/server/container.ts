@@ -904,6 +904,7 @@ export function buildServices(
      * back, and a healthy one must not be allowed to take somebody else's.
      */
     reclaimAbandonedTasks: () => taskWorkerService.reclaimAbandoned(),
+    nudgeActiveMissions: () => orchestrator.sweepActive(),
     outcomes,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });

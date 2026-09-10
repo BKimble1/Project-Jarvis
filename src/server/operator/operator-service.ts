@@ -114,6 +114,25 @@ function reclaimSentence(reclaim: ReclaimSummary): string | null {
   return `Took back ${total} task${total === 1 ? '' : 's'} from workers that stopped reporting — ${parts.join(', ')}.`;
 }
 
+/** What a pass of `nudgeActiveMissions` did. */
+export interface MissionSweepSummary {
+  readonly swept: number;
+  readonly failed: number;
+}
+
+const NO_SWEEP: MissionSweepSummary = { swept: 0, failed: 0 };
+
+/**
+ * A sentence only when there was something to say.
+ *
+ * A sweep that ticks eight healthy missions and changes nothing is the normal case, and narrating
+ * it every pass would fill the operator's history with a line that means "nothing happened".
+ */
+function sweepSentence(sweep: MissionSweepSummary): string | null {
+  if (sweep.failed === 0) return null;
+  return `Could not move ${sweep.failed} mission${sweep.failed === 1 ? '' : 's'} on — their graphs need looking at.`;
+}
+
 export const OPERATOR_LEASE_SCOPE = 'operator';
 export const OPERATOR_TICK_KEY = 'tick';
 
@@ -194,6 +213,16 @@ export interface OperatorServiceDeps {
    * has no business reclaiming someone else's.
    */
   readonly reclaimAbandonedTasks: () => Promise<ReclaimSummary>;
+  /**
+   * Promote the task graph of every mission that is still supposed to be moving.
+   *
+   * For the same reason as the reclaim above: promotion happens on events — a claim, a report, a
+   * verdict — and a mission whose last unit of work ended without one is left a single promotion
+   * short of moving, looking active, with no error anywhere. Nothing else in the system runs on a
+   * timer and can supply it. When events are flowing this finds nothing to do, because the tick it
+   * calls re-derives its decisions from the graph rather than from what it did last time.
+   */
+  readonly nudgeActiveMissions: () => Promise<MissionSweepSummary>;
   /** Where the loop writes down what it expects, and later what actually happened. */
   readonly outcomes: OutcomeRepository;
   readonly clock?: () => Date;
@@ -552,12 +581,24 @@ export class OperatorService {
       reclaim = NO_RECLAIM;
     }
 
+    /*
+     * Swallowed for the reason the reclaim above is swallowed: this pass has other work to do, and
+     * a sweep that could take the loop down would be a worse fault than the one it exists to repair.
+     */
+    let sweep = NO_SWEEP;
+    try {
+      sweep = await this.deps.nudgeActiveMissions();
+    } catch {
+      sweep = NO_SWEEP;
+    }
+
     const finish = async (
       result: Omit<TickResult, 'tickId' | 'reclaim'> & { readonly projectsObserved?: number },
     ): Promise<TickResult> => {
       const summary = [
         result.summary,
         reclaimSentence(reclaim),
+        sweepSentence(sweep),
         measured > 0
           ? `Went back and judged ${measured} thing${measured === 1 ? '' : 's'} it had started itself.`
           : null,

@@ -23,7 +23,7 @@ import {
   type ReceiptTaskOutcome,
   type ReceiptVerification,
 } from '@/domain/completion-receipt';
-import type { Mission } from '@/domain/mission';
+import type { Mission, MissionState } from '@/domain/mission';
 import { assertTransition } from '@/domain/mission-state';
 import {
   assertTaskTransition,
@@ -108,6 +108,29 @@ export interface OrchestratorDeps {
   readonly limits?: CapacityLimits;
   readonly clock?: () => Date;
 }
+
+/**
+ * The states in which a mission is Jarvis's problem rather than the owner's.
+ *
+ * `ACTIVE_MISSION_STATES` is deliberately not reused, and the difference is `queued`. A mission
+ * whose graph has just been approved and whose first wave has not been claimed is queued, not
+ * active — and it is precisely the mission most in need of a promotion, because nothing has
+ * happened to it yet that could have triggered one.
+ *
+ * The states left out are left out on purpose. `awaiting_plan_approval`, `waiting_for_permission`
+ * and `waiting_for_input` are waiting on a person, and ticking them would not change that.
+ * `paused`, `stopping`, `stopped` and `cancelled` are decisions somebody made, and a background
+ * sweep that quietly moved a paused mission on would be overruling them.
+ */
+export const SWEEPABLE_MISSION_STATES = [
+  'queued',
+  'claimed',
+  'preparing_workspace',
+  'running',
+  'resuming',
+  'verifying',
+  'creating_pull_request',
+] as const satisfies readonly MissionState[];
 
 export const CAPACITY_POSTURE_SETTING = 'jarvis.capacity.posture';
 export const CAPACITY_LIMITS_SETTING = 'jarvis.capacity.limits';
@@ -510,6 +533,51 @@ export class MissionOrchestrator {
    * transitions that follow from that. Calling it twice in a row does nothing the second time,
    * which is what makes it safe to call from a worker poll and an owner action at once.
    */
+  /**
+   * Tick every mission that is still supposed to be moving.
+   *
+   * ## Why this exists
+   *
+   * `tick` is the only thing that promotes a task graph — it releases the next wave, materialises a
+   * repair round, and decides when the mission is done. Every caller of it is an event: a worker
+   * claiming a task, a worker reporting one finished, a reviewer's verdict, or an owner pressing
+   * something. There was no caller on a timer.
+   *
+   * That is fine exactly as long as every unit of work ends by reporting itself, and the failure
+   * modes where it does not are the ones worth worrying about: a worker whose terminal report was
+   * refused, a process killed between finishing and reporting, a task released by a ceiling sweep
+   * with nothing following it. In each case the graph is left one promotion short of moving, and
+   * nothing in the system is going to supply that promotion — the mission simply stops, in a state
+   * that looks active, with no error anywhere to say so. The owner's account of this was that Jarvis
+   * "went quiet".
+   *
+   * So the operator pass calls this. It is a safety net rather than the mechanism: when events flow
+   * normally every tick here finds nothing to do, because `tick` is idempotent and re-derives its
+   * decisions from the graph rather than from what it did last time.
+   *
+   * ## Why one mission cannot stop the sweep
+   *
+   * A mission whose graph is malformed would otherwise take every mission behind it down with it,
+   * on every pass, for ever. The count comes back so the caller can say what happened; the failure
+   * is left for the mission's own error handling to surface.
+   */
+  async sweepActive(): Promise<{ readonly swept: number; readonly failed: number }> {
+    const page = await this.deps.missions.list({ states: SWEEPABLE_MISSION_STATES });
+    let swept = 0;
+    let failed = 0;
+    for (const mission of page.items) {
+      /* No approved graph means there is nothing to promote; `tick` would return immediately. */
+      if (mission.approvedGraphVersion === null) continue;
+      try {
+        await this.tick(mission.id);
+        swept += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return { swept, failed };
+  }
+
   async tick(missionId: string): Promise<void> {
     const mission = await this.deps.missions.findById(missionId);
     if (!mission || mission.approvedGraphVersion === null) return;
