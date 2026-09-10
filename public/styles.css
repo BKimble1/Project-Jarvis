@@ -551,3 +551,11 @@ main {
   .panel, .card { padding: 13px; }
   .usage-grid { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
 }
+
+/* Dictation button: only ever visible when speech recognition really works. */
+.dictate { padding: 8px 12px; }
+.dictate.is-listening {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(126, 200, 227, 0.16);
+}

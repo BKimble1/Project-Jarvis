@@ -157,6 +157,50 @@ test('band boundaries are inclusive at 50, 20 and 5', () => {
   assert.equal(BANDS.length, 5);
 });
 
+test('every band boundary maps to its exact concurrency and pace, and unknown is not zero', () => {
+  // One table, walked through the public `describe()` rather than `bandFor`, so
+  // an off-by-one at a boundary or a wrong share/pace pairing cannot hide behind
+  // the internal band list. maxConcurrency 4, minConcurrency 1 throughout.
+  const ladder = [
+    [100, 4, 0], [50, 4, 0],                 // >= 50 inclusive
+    [49.999, 2, 250], [20, 2, 250],          // 20-50, inclusive at 20
+    [19.999, 1, 2_000], [5, 1, 2_000],       // 5-20, inclusive at 5
+    [4.999, 1, 10_000], [0.5, 1, 10_000],    // < 5 still works, slowly
+    [0.499, 0, 0], [0, 0, 0],                // spent: hold, do not burn retries
+  ];
+  for (const [remaining, concurrency, paceDelayMs] of ladder) {
+    assert.deepEqual(
+      makeScheduler(stubUsage({ windows: [win(remaining)] }), { maxConcurrency: 4 }).describe(),
+      { concurrency, paceDelayMs, basis: 'live', worstRemainingPercent: remaining },
+      `${remaining}% remaining`,
+    );
+  }
+
+  // A reading we cannot parse is UNKNOWN. Were it coerced to 0 it would land in
+  // the spent band (0 concurrency) or the critical one (1 / 10000ms); neither is
+  // allowed to stand in for "we do not know".
+  const unreadable = [
+    { key: 'a', remainingPercent: null },
+    { key: 'b', utilization: Number.NaN },
+    { key: 'c' },
+    'not a window at all',
+  ];
+  for (const window of unreadable) {
+    assert.deepEqual(
+      makeScheduler(stubUsage({ windows: [window] }), { maxConcurrency: 4 }).describe(),
+      { concurrency: 2, paceDelayMs: 500, basis: 'unknown', worstRemainingPercent: null },
+      `unreadable window ${JSON.stringify(window)}`,
+    );
+  }
+
+  // And one unreadable window must be skipped, not dragged to 0: the readable
+  // sibling still decides the band.
+  assert.deepEqual(
+    makeScheduler(stubUsage({ windows: [{ key: 'a', remainingPercent: null }, win(80)] }), { maxConcurrency: 4 }).describe(),
+    { concurrency: 4, paceDelayMs: 0, basis: 'live', worstRemainingPercent: 80 },
+  );
+});
+
 test('an exhausted window holds work until capacity comes back', async () => {
   const clock = new FakeClock(0);
   const usage = stubUsage({ windows: [win(0, 'five_hour')] });
@@ -234,8 +278,10 @@ test('capacity is re-read on every call, never cached at construction', () => {
   usage.status = 'unavailable';
   assert.equal(scheduler.describe().basis, 'unknown');
 
-  assert.ok(usage.reads.windows >= 6, 'windowsForScheduling() is consulted on every call');
-  assert.ok(usage.reads.report >= 6, 'report().status is consulted on every call');
+  // Seven public calls above, so exactly seven fresh reads of each source:
+  // anything cached (or read twice) moves these numbers.
+  assert.equal(usage.reads.windows, 7, 'windowsForScheduling() is consulted once per call');
+  assert.equal(usage.reads.report, 7, 'report().status is consulted once per call');
 });
 
 // ------------------------------------------------------------------ gate

@@ -3,6 +3,7 @@ import { createChat } from './modules/chat.js';
 import { createDrawers } from './modules/drawers.js';
 import { createSpeech } from './modules/speech.js';
 import { renderUsage } from './modules/usage.js';
+import { createDictation } from './modules/dictate.js';
 
 /**
  * Dashboard bootstrap.
@@ -39,6 +40,7 @@ const el = {
   muteLabel: $('mute-label'),
   enableVoice: $('enable-voice'),
   linkState: $('link-state'),
+  dictate: $('dictate'),
   healthDot: $('health-dot'),
   activityList: $('activity-list'),
   projectsList: $('projects-list'),
@@ -81,6 +83,15 @@ const chat = createChat({
     return out.reply;
   },
   onActivity: (note) => pushActivity(note),
+});
+
+// Answer by voice as well as by text. The button hides itself entirely when
+// the browser cannot do speech recognition, so it is never a dead control.
+const dictation = createDictation({
+  button: el.dictate,
+  input: el.composerInput,
+  onFinal: () => { speech.unlock(); },
+  onStateChange: (listening) => { if (listening) core?.setState('working'); },
 });
 
 const drawers = createDrawers({

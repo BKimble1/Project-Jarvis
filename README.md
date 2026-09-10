@@ -27,6 +27,10 @@ No dependencies. Node 22+, `node:` builtins only, no build step.
 - **Speaks plainly.** First person, one to three short sentences, the same text
   on screen and aloud. Minor progress is batched; delivery, blockers and
   questions are announced. Nothing is ever spoken twice or replayed on refresh.
+- **Voice both ways.** Replies and announcements are read aloud by default,
+  with mute, quiet hours and the browser's activation requirement handled
+  explicitly. A question can be answered by voice or by typing; the dictation
+  button hides itself entirely where speech recognition is unavailable.
 - **Modes that mean something.** `Autonomous` runs unattended. `Ask first`
   shows you the plan and waits — approve and it builds, decline and it pauses
   rather than building anyway. `Paused` records new requests without starting

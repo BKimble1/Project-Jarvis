@@ -65,10 +65,15 @@ test('Worker.run emits worker.started with the project id and returns the result
 
   const started = events.ofType('worker.started');
   assert.equal(started.length, 1);
-  assert.equal(started[0].payload.projectId, 'proj_1');
-  assert.equal(started[0].payload.taskId, 't1');
-  assert.equal(started[0].payload.workerId, 'worker-a');
-  assert.equal(started[0].payload.at, 1_000);
+  assert.deepEqual(started[0].payload, {
+    workerId: 'worker-a',
+    taskId: 't1',
+    projectId: 'proj_1',
+    title: 'task 1',
+    kind: 'implement',
+    attempt: 1,
+    at: 1_000,
+  }, 'the whole contracted payload, stamped from the injected clock');
   assert.equal(worker.stats().completed, 1);
 });
 
@@ -151,9 +156,39 @@ test('createEchoExecutor honours an injected failure plan', async () => {
 test('createEchoExecutor sleeps through the injected clock only', async () => {
   const clock = new FakeClock(0);
   const executor = createEchoExecutor({ clock, delayMs: 50 });
-  const state = await drive(clock, executor(task(1), { clock }), { stepMs: 10 });
+
+  let done = false;
+  const running = executor(task(1), { clock }).then((r) => { done = true; return r; });
+
+  await settle();
+  assert.equal(done, false, 'no real timer resolves this; only the injected clock can');
+  await clock.advance(49);
+  assert.equal(done, false, 'and not a millisecond early');
+
+  const state = await drive(clock, running, { stepMs: 1 });
   assert.equal(state.ok, true);
   assert.equal(clock.now(), 50);
+  assert.equal(state.value.output, 'implement complete: task 1');
+});
+
+test('createEchoExecutor refuses a delay it has no clock to sleep on', async () => {
+  const executor = createEchoExecutor({ delayMs: 50 });   // no clock, anywhere
+  await assert.rejects(() => executor(task(1), {}), /no clock/, 'a silently skipped pace is worse than a loud failure');
+
+  // With zero delay there is nothing to sleep on, so no clock is needed.
+  assert.equal((await createEchoExecutor({})(task(1), {})).taskId, 't1');
+});
+
+test('createEchoExecutor scripts failures per task, not across all of them', async () => {
+  const executor = createEchoExecutor({ failurePlan: { implement: [{ message: 'flaky', code: 'ECONNRESET' }, null] } });
+  const alpha = { title: 'alpha', kind: 'implement' };   // deliberately id-less
+  const beta = { title: 'beta', kind: 'implement' };
+
+  await assert.rejects(() => executor(alpha, {}), /flaky/);
+  await assert.rejects(() => executor(beta, {}), /flaky/, 'beta starts at its own attempt 1');
+  assert.equal((await executor(alpha, {})).title, 'alpha', 'alpha is on attempt 2 and recovers');
+  assert.equal(executor.attemptsFor('alpha'), 2);
+  assert.equal(executor.attemptsFor('beta'), 1);
 });
 
 // ------------------------------------------------------------ WorkerPool
@@ -242,6 +277,49 @@ test('pacing separates dispatches by scheduler.paceDelayMs instead of firing at 
 
   const state = await drive(clock, all);
   assert.equal(state.ok, true, state.error?.message);
+});
+
+test('capacity AND pace are re-read before every dispatch, and each task runs exactly once', async () => {
+  // The hardest thing this pool promises: the dispatch decision is made fresh
+  // each time. A pool that read the scheduler once at submit time, or cached the
+  // pace, or let a requeued job through twice, fails one of the assertions below.
+  const clock = new FakeClock(0);
+  const scheduler = stubScheduler({ concurrency: 2, paceDelayMs: 0, clock });
+
+  const calls = new Map();
+  const entries = [];
+  let active = 0;
+  const executor = async (t, ctx) => {
+    calls.set(t.id, (calls.get(t.id) ?? 0) + 1);
+    active += 1;
+    entries.push({ id: t.id, at: clock.now(), active });
+    // Capacity halves and pacing appears once two tasks are away.
+    if (entries.length === 2) { scheduler.value = 1; scheduler.pace = 1_000; }
+    await ctx.clock.sleep(100);
+    active -= 1;
+    return t.id;
+  };
+
+  const pool = new WorkerPool({ clock, bus: new EventBus(), scheduler, size: 4, executor, logger: silentLogger() });
+  const state = await drive(clock, Promise.all(Array.from({ length: 5 }, (_, i) => pool.submit(task(i), {}))));
+
+  assert.equal(state.ok, true, state.error?.message);
+  assert.deepEqual(state.value, ['t0', 't1', 't2', 't3', 't4'], 'every task resolves, in order, exactly once');
+
+  // Two ran free; the rest each waited a full fresh 1000ms pace behind a 100ms
+  // task. Off-by-one pacing, a cached pace of 0, or a parallel gate all differ.
+  assert.deepEqual(entries.map((e) => e.at), [0, 0, 1_100, 2_200, 3_300]);
+  assert.deepEqual(entries.map((e) => e.id), ['t0', 't1', 't2', 't3', 't4']);
+  for (const entry of entries.slice(2)) {
+    assert.equal(entry.active, 1, `${entry.id} ran alone once capacity had dropped to 1`);
+  }
+
+  assert.deepEqual([...calls.entries()].sort(), [['t0', 1], ['t1', 1], ['t2', 1], ['t3', 1], ['t4', 1]],
+    'no task was dispatched twice');
+  assert.equal(pool.peakConcurrency, 2, 'the pre-drop peak, never the pool size');
+  assert.equal(pool.completed, 5);
+  assert.equal(pool.inFlight, 0);
+  assert.equal(pool.queued, 0);
 });
 
 // ------------------------------------------------------ crash + recovery
@@ -379,6 +457,7 @@ test('stats() reports the contracted shape', async () => {
   const direct = await pool.submit(task(2), {});
   assert.equal(direct.taskId, 't2');
   assert.equal(pool.inFlight, 0);
+  assert.equal(pool.completed, 2, 'the completion counter is readable, not write-only');
 });
 
 test('the pool passes the caller context through and stamps the attempt', async () => {
@@ -414,10 +493,65 @@ test('shutdown fails queued work and refuses new submissions', async () => {
   const closing = pool.shutdown();
   assert.equal(await queuedResult, 'worker pool is shut down');
 
-  await drive(clock, first);
+  const firstState = await drive(clock, first);
+  assert.equal(firstState.ok, true, 'work already in flight is allowed to finish');
+  assert.deepEqual(firstState.value, { taskId: 't1' });
   await closing;
 
+  assert.deepEqual(pool.stats(), { size: 1, inFlight: 0, peakConcurrency: 1, restarts: 0, crashed: 0 });
+  assert.equal(pool.queued, 0);
   await assert.rejects(() => pool.submit(task(3), {}), /shut down/);
+});
+
+test('a scheduler whose gate() throws still gets the work done, and strands nobody', async () => {
+  // The pump is the only thing that settles a submitted job: if a broken gate
+  // could kill it, every caller (orchestrator included) would await forever.
+  const clock = new FakeClock(0);
+  const scheduler = {
+    concurrency: () => 2,
+    paceDelayMs: () => 0,
+    async gate() { throw new Error('capacity probe exploded'); },
+  };
+  const pool = new WorkerPool({
+    clock, bus: new EventBus(), scheduler, size: 2, executor: async (t) => t.id, logger: silentLogger(),
+  });
+
+  const state = await drive(clock, Promise.all([pool.submit(task(1), {}), pool.submit(task(2), {})]));
+  assert.equal(state.ok, true, state.error?.message);
+  assert.deepEqual(state.value, ['t1', 't2'], 'a broken gate costs the pacing, never the work');
+  assert.equal(pool.queued, 0);
+});
+
+test('a pump that cannot even sleep rejects queued work instead of hanging', async () => {
+  const brokenClock = { now: () => 0, timezone: () => 'UTC', sleep() { throw new Error('clock is broken'); } };
+  // Zero capacity forces the pump onto its poll-sleep, which then explodes.
+  const scheduler = { concurrency: () => 0, paceDelayMs: () => 0, async gate() {} };
+  const pool = new WorkerPool({
+    clock: brokenClock, bus: new EventBus(), scheduler, size: 1, executor: async (t) => t.id, logger: silentLogger(),
+  });
+
+  await assert.rejects(() => pool.submit(task(1), {}), /clock is broken/, 'every submitted job settles, one way or the other');
+  assert.equal(pool.queued, 0);
+});
+
+test('an unreadable scheduler concurrency is treated as one, never as unlimited', async () => {
+  const clock = new FakeClock(0);
+  const scheduler = { concurrency: () => Number.NaN, paceDelayMs: () => 0, async gate() {} };
+  let active = 0;
+  let observedPeak = 0;
+  const executor = async (t, ctx) => {
+    active += 1;
+    observedPeak = Math.max(observedPeak, active);
+    await ctx.clock.sleep(10);
+    active -= 1;
+    return t.id;
+  };
+  const pool = new WorkerPool({ clock, bus: new EventBus(), scheduler, size: 5, executor, logger: silentLogger() });
+
+  const state = await drive(clock, Promise.all(Array.from({ length: 4 }, (_, i) => pool.submit(task(i), {}))));
+  assert.equal(state.ok, true, state.error?.message);
+  assert.equal(observedPeak, 1, 'an unreadable capacity reading must not open the pipe to full width');
+  assert.equal(pool.peakConcurrency, 1);
 });
 
 test('the pool validates its collaborators', () => {

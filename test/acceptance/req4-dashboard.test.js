@@ -245,3 +245,41 @@ test('req4.10 a missing asset 404s instead of quietly serving the page', async (
   assert.equal(route.status, 200);
   assert.match(await route.text(), /<!DOCTYPE html>/);
 });
+
+
+test('req4.11 the composer offers voice input, and never as a dead control', async () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  const tag = html.match(/<button[^>]*id="dictate"[^>]*>/i)?.[0];
+  assert.ok(tag, 'the composer has a dictation button');
+  assert.match(tag, /\bhidden\b/, 'it starts hidden and only appears when recognition works');
+  assert.match(tag, /aria-label="[^"]+"/, 'it has an accessible name');
+
+  const { createDictation } = await import('../../public/modules/dictate.js');
+
+  // No SpeechRecognition in this browser: the button must take itself away.
+  const button = { hidden: false, setAttribute() {}, classList: { toggle() {} }, addEventListener() {} };
+  const off = createDictation({ button, input: { value: '' }, recognitionClass: undefined });
+  assert.equal(off.supported, false);
+  assert.equal(button.hidden, true, 'a control that cannot work is not shown');
+
+  // With recognition available it wires up and reports its state honestly.
+  const started = [];
+  class FakeRecognition {
+    start() { started.push('start'); this.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript: 'keep it local' }], { isFinal: true })] }); }
+    stop() { started.push('stop'); }
+  }
+  const input = { value: '', focus() {} };
+  let pressed = null;
+  const on = createDictation({
+    button: { hidden: true, setAttribute: (k, v) => { if (k === 'aria-pressed') pressed = v; }, classList: { toggle() {} }, addEventListener() {} },
+    input,
+    recognitionClass: FakeRecognition,
+    onFinal: (text) => { input.final = text; },
+  });
+  assert.equal(on.supported, true);
+  on.start();
+  assert.deepEqual(started, ['start']);
+  assert.equal(input.value, 'keep it local', 'what was said lands in the composer');
+  assert.equal(input.final, 'keep it local', 'and is handed to the caller');
+  assert.equal(pressed, 'true');
+});
