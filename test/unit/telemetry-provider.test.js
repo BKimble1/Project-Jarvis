@@ -125,6 +125,95 @@ test('resolveOAuthToken returns null when nothing is available, and ignores ANTH
   assert.equal(got, null);
 });
 
+/**
+ * ADDED BY AUDIT — hardest requirement #1: the credential ladder.
+ *
+ * Precedence is the whole safety property here. A later source silently
+ * shadowing an earlier one, or the walk stopping one rung early on a source
+ * that produced no token, is the difference between reading the operator's
+ * subscription and reading nothing (or, one rung further, reaching for the
+ * paid API key). This pins the exact rungs AND the exact order they are tried.
+ */
+test('resolveOAuthToken walks env -> file -> keychain in order, and no rung shadows an earlier one', () => {
+  const trace = [];
+  const fsWith = (contents) => ({
+    readFileSync(file, enc) {
+      assert.equal(enc, 'utf8');
+      trace.push(`read:${file}`);
+      if (contents === null) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; }
+      return contents;
+    },
+  });
+  const execTo = (value) => (file, args) => {
+    trace.push(`exec:${file} ${args.join(' ')}`);
+    return value;
+  };
+
+  // 1. A blank env var is NOT a token: it must neither win nor halt the walk.
+  trace.length = 0;
+  const blankEnv = resolveOAuthToken({
+    env: { CLAUDE_CODE_OAUTH_TOKEN: '   ' },
+    fs: fsWith(JSON.stringify({ claudeAiOauth: { accessToken: SECRET } })),
+    home: '/fake/home',
+    exec: execTo('keychain-token'),
+    platform: 'darwin',
+  });
+  assert.deepEqual(blankEnv, { token: SECRET, source: 'credentials-file' },
+    'a whitespace-only env var must fall through to the file, not resolve to itself');
+  assert.deepEqual(trace, [`read:${CRED_PATH}`], 'the keychain must not be reached once the file answers');
+
+  // 2. A file that parses but carries no token must fall through to the keychain,
+  //    and only AFTER the file has been consulted.
+  trace.length = 0;
+  const throughToKeychain = resolveOAuthToken({
+    env: {},
+    fs: fsWith(JSON.stringify({ claudeAiOauth: { expiresAt: 1, scopes: ['user:inference'] } })),
+    home: '/fake/home',
+    exec: execTo('keychain-token'),
+    platform: 'darwin',
+  });
+  assert.deepEqual(throughToKeychain, { token: 'keychain-token', source: 'keychain' });
+  assert.deepEqual(trace, [
+    `read:${CRED_PATH}`,
+    'exec:security find-generic-password -s Claude Code-credentials -w',
+  ], 'the file is read before the keychain, exactly once each');
+
+  // 3. Same inputs off darwin: the ladder ends at the file, no keychain rung at all.
+  trace.length = 0;
+  const onLinux = resolveOAuthToken({
+    env: {},
+    fs: fsWith(JSON.stringify({ claudeAiOauth: { expiresAt: 1 } })),
+    home: '/fake/home',
+    exec: execTo('keychain-token'),
+    platform: 'linux',
+  });
+  assert.equal(onLinux, null, 'no token off darwin once env and file are exhausted');
+  assert.deepEqual(trace, [`read:${CRED_PATH}`]);
+
+  // 4. A token in the env stops the walk at rung one — nothing else is touched.
+  trace.length = 0;
+  const fromEnv = resolveOAuthToken({
+    env: { CLAUDE_CODE_OAUTH_TOKEN: SECRET, ANTHROPIC_API_KEY: 'sk-ant-api03-paid-key' },
+    fs: fsWith(JSON.stringify({ claudeAiOauth: { accessToken: 'file-token' } })),
+    home: '/fake/home',
+    exec: execTo('keychain-token'),
+    platform: 'darwin',
+  });
+  assert.deepEqual(fromEnv, { token: SECRET, source: 'env' });
+  assert.deepEqual(trace, [], 'rung one answering means rungs two and three never run');
+
+  // 5. An unreadable file is not a stop either: the walk continues past the error.
+  trace.length = 0;
+  const missingFile = resolveOAuthToken({
+    env: {}, fs: fsWith(null), home: '/fake/home', exec: execTo(`${SECRET}\n`), platform: 'darwin',
+  });
+  assert.deepEqual(missingFile, { token: SECRET, source: 'keychain' });
+  assert.deepEqual(trace, [
+    `read:${CRED_PATH}`,
+    'exec:security find-generic-password -s Claude Code-credentials -w',
+  ]);
+});
+
 // ---------------------------------------------------------------- humanizeWindowKey
 
 test('humanizeWindowKey maps the known windows and title-cases the rest', () => {
@@ -216,6 +305,67 @@ test('normalizeUsagePayload DROPS unusable utilization instead of coercing it to
   assert.equal(windows.every((w) => Number.isFinite(w.usedPercent)), true);
   assert.equal(windows.some((w) => w.usedPercent === 0), false,
     'unknown utilization must never appear as a 0% window');
+});
+
+/**
+ * ADDED BY AUDIT — regression for a silent 100x scale error.
+ *
+ * The ">1 means it is already a percentage" heuristic exists because
+ * `utilization` is scale-ambiguous. A field that *names* a percentage is not
+ * ambiguous, so applying the heuristic to it turns "half a percent used" into
+ * "half the budget gone" and makes the scheduler throttle an idle account.
+ */
+test('normalizeUsagePayload rescales only the ambiguous utilization field, never a *_percent one', () => {
+  const clock = new FakeClock(1);
+  const byKey = (payload) => Object.fromEntries(
+    normalizeUsagePayload(payload, { clock }).map((w) => [w.key, w]),
+  );
+
+  const small = byKey({
+    a: { used_percent: 0.5 },
+    b: { utilization_percent: 0.8 },
+    c: { usedPercent: 0.25 },
+    d: { utilization: 0.5 },
+  });
+  assert.equal(small.a.usedPercent, 0.5, 'used_percent: 0.5 is half a percent, not fifty');
+  assert.equal(small.a.remainingPercent, 99.5);
+  assert.equal(small.a.utilization, 0.005);
+  assert.equal(small.b.usedPercent, 0.8);
+  assert.equal(small.c.usedPercent, 0.25);
+  assert.equal(small.d.usedPercent, 50, 'the ambiguous field still reads 0..1 as a fraction');
+
+  // Above 1 the two readings coincide, which is what makes the ambiguity safe there.
+  const large = byKey({ a: { used_percent: 73 }, d: { utilization: 73 } });
+  assert.equal(large.a.usedPercent, 73);
+  assert.equal(large.d.usedPercent, 73);
+});
+
+/**
+ * ADDED BY AUDIT — one limit must never become two circles.
+ * A repeated key has to collapse to a single window, and the surviving one has
+ * to be the last reading, not a stale earlier duplicate.
+ */
+test('normalizeUsagePayload collapses repeated window keys to the latest reading', () => {
+  const clock = new FakeClock(1);
+
+  const fromArray = normalizeUsagePayload({
+    windows: [
+      { key: 'five_hour', utilization: 0.1 },
+      { name: 'five_hour', utilization: 0.9 },
+      { key: 'seven_day', utilization: 0.2 },
+    ],
+  }, { clock });
+  assert.deepEqual(fromArray.map((w) => w.key), ['five_hour', 'seven_day'],
+    'a duplicate key must not produce a second window');
+  assert.equal(fromArray[0].usedPercent, 90, 'the later duplicate wins');
+  assert.equal(fromArray[0].remainingPercent, 10);
+
+  // An unusable duplicate must not erase a good earlier reading either.
+  const goodThenJunk = normalizeUsagePayload({
+    windows: [{ key: 'five_hour', utilization: 0.4 }, { key: 'five_hour', utilization: null }],
+  }, { clock });
+  assert.equal(goodThenJunk.length, 1);
+  assert.equal(goodThenJunk[0].usedPercent, 40);
 });
 
 test('normalizeUsagePayload returns [] for junk payloads', () => {
@@ -323,10 +473,19 @@ test('measure() maps 401 to unauthorized and 403 likewise', async () => {
 
 test('measure() maps 404 to unsupported and 500 to network', async () => {
   const notFound = await makeProvider({ fetchImpl: recordingFetch(fakeResponse({ status: 404 })) }).measure();
+  assert.equal(notFound.ok, false);
   assert.equal(notFound.reason, 'unsupported');
+  assert.equal(notFound.source, 'claude-subscription');
+  assert.match(notFound.message, /404/);
+  assert.ok(notFound.remedy.length > 0);
+  assert.equal('windows' in notFound, false, 'a failure must not carry fabricated windows');
 
   const boom = await makeProvider({ fetchImpl: recordingFetch(fakeResponse({ status: 500 })) }).measure();
+  assert.equal(boom.ok, false);
   assert.equal(boom.reason, 'network');
+  assert.match(boom.message, /500/);
+  assert.equal('windows' in boom, false);
+  assert.equal(boom.measuredAt, 1_700_000_000_000);
 });
 
 test('measure() maps a thrown fetch to reason network without throwing', async () => {
@@ -349,13 +508,19 @@ test('measure() maps unparseable and unrecognised payloads to malformed', async 
       async text() { return '<html>'; },
     }),
   }).measure();
+  assert.equal(badJson.ok, false);
   assert.equal(badJson.reason, 'malformed');
+  assert.match(badJson.message, /Unexpected token/);
+  assert.equal('windows' in badJson, false);
 
   const noWindows = await makeProvider({
     fetchImpl: recordingFetch(fakeResponse({ body: { five_hour: { utilization: null } } })),
   }).measure();
   assert.equal(noWindows.ok, false);
   assert.equal(noWindows.reason, 'malformed');
+  assert.match(noWindows.message, /no readable capacity windows/i);
+  assert.ok(noWindows.remedy.length > 0);
+  assert.equal('windows' in noWindows, false);
   assert.equal(JSON.stringify(noWindows).includes('"usedPercent":0'), false);
 });
 
