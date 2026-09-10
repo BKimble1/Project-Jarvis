@@ -190,3 +190,35 @@ test('req2.10 reminders are captured from chat without becoming unauthorized wor
   await app.orchestrator.drain();
   assert.equal(app.store.ids('projects').length, 0, 'Jarvis did not invent a project from a reminder');
 });
+
+test('req2.11 reminders are listed, started and dropped entirely from chat', async (t) => {
+  const app = makeApp();
+  t.after(() => app.cleanup());
+
+  await say(app, 'remind me to renew the domain next month');
+  await say(app, 'remind me to archive the old logs');
+
+  const listed = await say(app, 'what are my reminders?');
+  assert.match(listed.reply, /2 reminders/i);
+  assert.match(listed.reply, /renew the domain/i);
+  assert.match(listed.reply, /archive the old logs/i);
+  assert.equal(app.store.ids('projects').length, 0, 'listing starts nothing');
+
+  const started = await say(app, 'go ahead with the domain reminder');
+  assert.match(started.reply, /on it/i);
+  assert.match(started.reply, /renew the domain/i);
+  await app.orchestrator.drain();
+
+  const projects = app.store.all('projects');
+  assert.equal(projects.length, 1, 'exactly the authorized reminder became work');
+  assert.match(projects[0].title, /renew the domain/i);
+  assert.equal(projects[0].status, 'delivered');
+
+  const dropped = await say(app, 'drop the logs reminder');
+  assert.match(dropped.reply, /dropped/i);
+  await app.orchestrator.drain();
+  assert.equal(app.store.ids('projects').length, 1, 'a dropped reminder is never picked up');
+
+  const empty = await say(app, 'any reminders left?');
+  assert.match(empty.reply, /no reminders/i);
+});

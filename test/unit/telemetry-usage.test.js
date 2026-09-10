@@ -139,6 +139,48 @@ test('a reading older than staleAfterMs becomes stale with a truthful ageMs', as
   assert.equal(usage.windowsForScheduling().length, 2, 'stale readings are still usable for pacing');
 });
 
+/**
+ * ADDED BY AUDIT — the freshness boundary itself.
+ *
+ * "Older than staleAfterMs" is a strict comparison, and the whole honesty
+ * guarantee ("never present a stale reading as live") lives on the exact
+ * millisecond it flips. A `>=` here would call a just-in-time reading stale;
+ * a `>` on the wrong side of the age arithmetic would keep serving an expired
+ * one as live. Pin both sides of the edge, and the emitted payload with them.
+ */
+test('the live/stale edge is exact: staleAfterMs is still live, one millisecond more is not', async (t) => {
+  const provider = fakeProvider(success(T0, [window('five_hour', 40)]));
+  const { usage, clock, events } = harness(t, { provider, staleAfterMs: 60_000 });
+
+  await usage.refresh();
+
+  clock.set(T0 + 59_999);
+  assert.equal(usage.report().status, 'live', 'just inside the window is live');
+
+  clock.set(T0 + 60_000);
+  const atEdge = usage.report();
+  assert.equal(atEdge.status, 'live', 'exactly staleAfterMs old is not yet older than staleAfterMs');
+  assert.equal(atEdge.ageMs, 60_000);
+  assert.equal(atEdge.windows[0].freshness, 'live');
+  assert.equal(atEdge.explanation, null);
+
+  clock.set(T0 + 60_001);
+  const past = usage.report();
+  assert.equal(past.status, 'stale', 'one millisecond past the limit is stale');
+  assert.equal(past.ageMs, 60_001);
+  assert.equal(past.windows[0].freshness, 'stale');
+  assert.equal(past.windows[0].usedPercent, 40, 'the last known number is still the one shown');
+  assert.match(past.explanation, /60s/, 'the explanation states the real age, not a placeholder');
+  assert.ok(past.recovery);
+
+  // Re-measuring at the same instant clears it again — the edge is about age, not a latch.
+  provider.queue = [success(T0 + 60_001, [window('five_hour', 41, { measuredAt: T0 + 60_001 })])];
+  const refreshed = await usage.refresh();
+  assert.equal(refreshed.status, 'live');
+  assert.equal(refreshed.ageMs, 0);
+  assert.deepEqual(events.map((e) => e.payload.status), ['live', 'live']);
+});
+
 // ---------------------------------------------------------------- stale after failure
 
 test('a failure after a success keeps the last-known windows and marks them stale', async (t) => {
@@ -252,6 +294,69 @@ test('the last good snapshot survives a fresh UsageService over the same store',
   assert.equal(reborn.report().status, 'stale', 'a reloaded old snapshot ages honestly');
 });
 
+/**
+ * ADDED BY AUDIT — hardest requirement #2: "unknown must never render as 0%",
+ * including across a restart.
+ *
+ * The live ingest path validates its windows, but the constructor's reload from
+ * `capacity/last` is a second, quieter door into exactly the same state. A
+ * snapshot written by an older build, truncated by a crash, or edited by hand
+ * must not be able to walk back in as a reading: doing so reports `live` while
+ * handing the dashboard a `usedPercent` of null (a 0% ring) and the scheduler a
+ * window it will happily read as free capacity.
+ */
+test('a corrupt persisted snapshot is discarded, not resurrected as a reading', async (t) => {
+  const clock = new FakeClock(T0, 'UTC');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-usage-corrupt-'));
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+  const store = new Store({ dir, clock });
+  store.put('capacity', 'last', {
+    id: 'last',
+    measuredAt: T0,
+    source: 'claude-subscription',
+    savedAt: T0,
+    windows: [
+      { key: 'five_hour', label: '5-hour', usedPercent: null, remainingPercent: null, unit: 'percent' },
+      { key: 'seven_day', label: '7-day', usedPercent: Number.NaN, remainingPercent: 0, unit: 'percent' },
+    ],
+  });
+
+  const provider = fakeProvider(failure(T0, 'network'));
+  const usage = new UsageService({ store, bus: new EventBus(), clock, provider, logger: SILENT });
+
+  const report = usage.report();
+  assert.equal(provider.calls, 0, 'this is the reload path, not a fresh measurement');
+  assert.equal(report.status, 'unavailable', 'an unreadable snapshot is no reading at all');
+  assert.deepEqual(report.windows, [], 'and certainly not a 0% ring');
+  assert.equal(report.measuredAt, null);
+  assert.equal(report.ageMs, null);
+  assert.ok(report.explanation && report.explanation.length > 0);
+  assert.ok(report.recovery && report.recovery.length > 0);
+  assert.equal(JSON.stringify(report).includes('"usedPercent":0'), false);
+  assert.deepEqual(usage.windowsForScheduling(), [],
+    'the scheduler must be told "unknown", never handed a null-valued window');
+  assert.equal(worstRemaining(report), null);
+
+  // A partially corrupt snapshot keeps only the windows that are real.
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-usage-partial-'));
+  t.after(() => { try { fs.rmSync(dir2, { recursive: true, force: true }); } catch { /* ignore */ } });
+  const store2 = new Store({ dir: dir2, clock });
+  store2.put('capacity', 'last', {
+    id: 'last', measuredAt: T0, source: 'claude-subscription', savedAt: T0,
+    windows: [
+      { key: 'five_hour', label: '5-hour', usedPercent: 'lots', unit: 'percent' },
+      window('seven_day', 44),
+    ],
+  });
+  const partial = new UsageService({
+    store: store2, bus: new EventBus(), clock, provider: fakeProvider(failure(T0)), logger: SILENT,
+  }).report();
+  assert.equal(partial.status, 'live');
+  assert.deepEqual(partial.windows.map((w) => w.key), ['seven_day'], 'only the readable window came back');
+  assert.equal(partial.windows[0].usedPercent, 44);
+});
+
 // ---------------------------------------------------------------- worker report leg
 
 test('ingestWorkerReport updates the snapshot and emits capacity.updated like refresh', async (t) => {
@@ -283,6 +388,53 @@ test('a failed worker report degrades to stale when a prior reading exists, unav
   assert.equal(degraded.ageMs, 2_000);
   assert.equal(degraded.windows[0].usedPercent, 15);
   assert.equal(degraded.lastError.reason, 'unauthorized');
+});
+
+/**
+ * ADDED BY AUDIT — the worker leg is an untrusted door into the same state.
+ *
+ * `ingestWorkerReport` takes a Measurement from a background worker, not from
+ * the provider that carefully drops aberrant values. An internally inconsistent
+ * window is worse than a missing one: `usedPercent:-50, remainingPercent:150`
+ * reads as "more than full capacity" and would push the scheduler to maximum
+ * concurrency at exactly the moment it should be backing off.
+ */
+test('an aberrant worker window is dropped, never trusted as spare capacity', async (t) => {
+  const cold = harness(t, { provider: fakeProvider(failure(T0)) });
+
+  const impossible = cold.usage.ingestWorkerReport({
+    ok: true, source: 'worker', measuredAt: T0,
+    windows: [{ key: 'five_hour', label: '5-hour', usedPercent: -50, remainingPercent: 150, unit: 'percent' }],
+  });
+  assert.equal(impossible.status, 'unavailable', 'a negative usage is not a reading');
+  assert.deepEqual(impossible.windows, []);
+  assert.equal(worstRemaining(impossible), null, 'and never 150% of anything');
+  assert.deepEqual(cold.usage.windowsForScheduling(), []);
+  assert.deepEqual(cold.events.map((e) => e.type), ['capacity.unavailable']);
+
+  // Keyless and non-object entries are dropped for the same reason.
+  const keyless = cold.usage.ingestWorkerReport({
+    ok: true, source: 'worker', measuredAt: T0, windows: [{ usedPercent: 30 }, null, 'five_hour'],
+  });
+  assert.equal(keyless.status, 'unavailable');
+  assert.deepEqual(keyless.windows, []);
+
+  // A real reading still lands — and its derived fields are made consistent.
+  const warm = harness(t, { provider: fakeProvider(failure(T0)) });
+  const good = warm.usage.ingestWorkerReport({
+    ok: true, source: 'worker', measuredAt: T0,
+    windows: [
+      { key: 'five_hour', label: '5-hour', usedPercent: 82, remainingPercent: 99, utilization: 0.01, unit: 'percent' },
+      { key: 'five_hour', label: '5-hour', usedPercent: 84, unit: 'percent' },
+    ],
+  });
+  assert.equal(good.status, 'live');
+  assert.equal(good.windows.length, 1, 'a repeated key is one limit, not two circles');
+  assert.equal(good.windows[0].usedPercent, 84, 'the later reading wins');
+  assert.equal(good.windows[0].remainingPercent, 16,
+    'remaining is re-derived, so a contradictory 99 cannot claim spare capacity');
+  assert.equal(good.windows[0].utilization, 0.84);
+  assert.equal(worstRemaining(good), 16);
 });
 
 // ---------------------------------------------------------------- robustness
@@ -329,8 +481,13 @@ test('summarizeForSpeech stays quiet unless something is worth saying', async (t
   const down = await cold.usage.refresh();
   const first = summarizeForSpeech(down);
   assert.equal(typeof first, 'string');
-  assert.ok(first.length > 0);
+  assert.match(first, /can't read your Claude usage limits/i, 'it names what is actually wrong');
+  assert.match(first, /conservativ/i, 'and what it is doing about it');
+  assert.equal(/\d+\s*%/.test(first), false,
+    'unknown capacity must never be spoken as a percentage — not even 0%');
   assert.equal(summarizeForSpeech(down, { previous: down }), null, 'must not repeat itself');
+  assert.equal(summarizeForSpeech(down, { previous: healthy }), first,
+    'but a live -> unavailable transition still speaks');
 
   // Crossing into the low band speaks; staying there does not.
   provider.queue = [success(T0 + 1_000, [window('five_hour', 92, { measuredAt: T0 + 1_000 })])];

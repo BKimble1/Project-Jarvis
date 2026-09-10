@@ -28,7 +28,10 @@ export class ChatDispatcher {
     this.conversations.append(conversationId, { role: 'user', text: clean });
 
     const ctx = this.conversations.context(conversationId);
-    const intent = reclassify(classify(clean, ctx), clean, ctx);
+    const manage = detectReminderOp(clean);
+    const intent = manage
+      ? { kind: 'reminder_manage', confidence: 0.9, payload: manage }
+      : reclassify(classify(clean, ctx), clean, ctx);
     const ref = resolveReference(clean, ctx);
     const out = await this._act({ conversationId, text: clean, intent, ref, ctx });
 
@@ -51,6 +54,7 @@ export class ChatDispatcher {
       case 'resume': return this._control(ref, ctx, 'resume');
       case 'status': return this._status(ref, ctx);
       case 'reminder': return this._reminder(conversationId, intent, text);
+      case 'reminder_manage': return this._manageReminders(conversationId, intent.payload);
       case 'approve': return this._approve(conversationId, ctx);
       case 'question': return this._question(text, ctx);
       default: return this._smalltalk(text, ctx);
@@ -172,6 +176,43 @@ export class ChatDispatcher {
     return { projectId: null, ask: null, reply: `Noted: ${truncate(item.title, 70)}.` };
   }
 
+  /** List, start or drop a reminder — all of it from chat. */
+  _manageReminders(conversationId, { action, query }) {
+    const held = this.backlog.items().filter((i) => i.status === 'pending');
+
+    if (action === 'list') {
+      if (held.length === 0) return { projectId: null, ask: null, reply: `You have no reminders.` };
+      const titles = held.map((i) => i.title);
+      this.conversations.setLastOptions(conversationId, titles);
+      return {
+        projectId: null,
+        ask: { options: titles },
+        reply: `${held.length === 1 ? 'One reminder' : `${held.length} reminders`}: ${titles.join('; ')}.`,
+      };
+    }
+
+    const target = bestMatch(held, query) ?? (held.length === 1 ? held[0] : null);
+    if (!target) {
+      return {
+        projectId: null,
+        ask: null,
+        reply: held.length
+          ? `Which one — ${held.map((i) => i.title).join(', ')}?`
+          : `You have no reminders.`,
+      };
+    }
+
+    if (action === 'drop') {
+      this.backlog.complete(target.id);
+      return { projectId: null, ask: null, reply: `Dropped: ${truncate(target.title, 60)}.` };
+    }
+
+    this.backlog.authorize(target.id);
+    const run = this.orchestrator.drain();
+    if (run && typeof run.catch === 'function') run.catch(() => {});
+    return { projectId: null, ask: null, reply: `On it: ${truncate(target.title, 60)}.` };
+  }
+
   _question(text, ctx) {
     if (/usage|capacity|limit|quota/i.test(text) && this.usage) {
       const r = this.usage.report();
@@ -217,6 +258,41 @@ function looksLikeChange(text) {
 
 function hasReferent(ctx) {
   return Boolean(ctx?.activeProjectId) || (ctx?.recentProjects?.length ?? 0) > 0;
+}
+
+/** Recognise the three things Blake does with a reminder: see them, start one, drop one. */
+function detectReminderOp(text) {
+  const t = String(text ?? '').trim();
+  if (!/\breminders?\b|\bbacklog\b/i.test(t)) return null;
+  if (/^(?:remind me|set a reminder)\b/i.test(t)) return null;              // that is creating one
+  if (/^(?:build|make|create|write|set ?up|implement|add|design)\b/i.test(t)) return null; // a brief that merely says "reminders"
+
+  if (/\b(?:cancel|drop|forget|remove|delete|clear)\b/i.test(t)) return { action: 'drop', query: stripReminderWords(t) };
+  if (/\b(?:go ahead|start|run|action|approve|pick up|do the|do that|do it)\b/i.test(t)) return { action: 'start', query: stripReminderWords(t) };
+  if (/\b(?:list|show|what(?:'s| is| are)?|any|see|read|how many)\b/i.test(t)) return { action: 'list', query: '' };
+  return { action: 'list', query: '' };
+}
+
+function stripReminderWords(text) {
+  return String(text)
+    .replace(/\b(?:the|my|that|this|a|an|please|now|reminder|reminders|backlog|item|go ahead with|go ahead|cancel|drop|forget|remove|delete|clear|do|start|run|build|action|approve|pick up)\b/gi, ' ')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Pick the item sharing the most words with the query; null when nothing matches. */
+function bestMatch(items, query) {
+  const words = String(query ?? '').toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  if (words.length === 0) return null;
+  let best = null;
+  let bestScore = 0;
+  for (const item of items) {
+    const title = String(item.title ?? '').toLowerCase();
+    const score = words.filter((w) => title.includes(w)).length;
+    if (score > bestScore) { best = item; bestScore = score; }
+  }
+  return bestScore > 0 ? best : null;
 }
 
 function titleFrom(goal) {
