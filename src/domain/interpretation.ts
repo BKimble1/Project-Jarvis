@@ -173,6 +173,22 @@ export interface ConversationContext {
   readonly lastJarvisTurn: string | null;
   /** A project already in focus, used only to resolve a bare "it" or "that". */
   readonly focusedProjectId: string | null;
+  /**
+   * Whether the last thing Jarvis said was a question it is waiting on an answer to.
+   *
+   * Sent by the browser because only the browser knows what is on screen — and, more to the point,
+   * because the sentence itself cannot be recovered from anything else that travels. The turn's
+   * text is the answer plus its notes ("…how will you know this is done and right? Created the
+   * project Beacons."), so `lastJarvisTurn` does not end in a question mark even when Jarvis very
+   * plainly asked one.
+   *
+   * It supplies the *subject* of a reply and never the permission, on the same terms as everything
+   * else in this snapshot: a message routed by it is answered against a question that is open in
+   * the database, and answering a clarification approves nothing — the plan still waits for the
+   * owner. A tampered flag can direct an answer at a question the owner could have answered from
+   * the mission screen anyway.
+   */
+  readonly awaitingAnswer: boolean;
 }
 
 export const EMPTY_CONTEXT: ConversationContext = {
@@ -180,6 +196,7 @@ export const EMPTY_CONTEXT: ConversationContext = {
   proposal: null,
   lastJarvisTurn: null,
   focusedProjectId: null,
+  awaitingAnswer: false,
 };
 
 export interface Interpretation {

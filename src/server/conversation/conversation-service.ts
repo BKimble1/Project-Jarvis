@@ -162,6 +162,26 @@ export class ConversationService {
     const context = input.context ?? EMPTY_CONTEXT;
     const interpretation = interpretMessage(input.message, context);
 
+    /*
+     * A reply to the question I asked, before anything else reads it as something new.
+     *
+     * Jarvis asks one question before it plans — "how will you know this is done and right?" — and
+     * asks it in the conversation, where the reply is typed straight back. That reply used to be
+     * classified as an ordinary question and handed to the status router, which looked for a
+     * project by that name and answered "no matching project". So the one question Jarvis itself
+     * had just asked was the one sentence it could not hear, and the only way to answer it was to
+     * leave the conversation for the mission screen.
+     *
+     * Two conditions, and both are needed. The flag says Jarvis had just asked something, which is
+     * the only way to tell an answer from a fresh question — "what needs me?" typed while a
+     * mission waits is still a question about what needs the owner. The open clarification in the
+     * database says there is something to answer, so a stale or tampered flag cannot invent one.
+     */
+    if (interpretation.kind === 'question' && context.awaitingAnswer) {
+      const answered = await this.answerTheQuestionIAsked(input.message, interpretation);
+      if (answered) return answered;
+    }
+
     switch (interpretation.kind) {
       case 'work':
         return this.startWork(interpretation, input.message, input.ownerLogin ?? null, context);
@@ -176,6 +196,115 @@ export class ConversationService {
       default:
         return this.answer(interpretation, input.message, context);
     }
+  }
+
+  /* ------------------------------------------------------ answering my own question */
+
+  /**
+   * Put a reply against the question a mission is waiting on.
+   *
+   * Returns null rather than an apology whenever this is not that: nothing to answer, more than
+   * one thing it could be, or a reply that is plainly not an answer. The caller then carries on
+   * exactly as it did, so the worst this can do is nothing.
+   *
+   * ## Why one waiting mission and no more
+   *
+   * Because the conversation carries no mission id, and guessing which of two questions was meant
+   * would put the owner's words against the wrong mission — where they would be read as a
+   * requirement by whatever plans it. One is unambiguous. Two is a question, and the honest reply
+   * says which two and lets the owner name one.
+   *
+   * ## What it does not do
+   *
+   * Approve anything. The mission goes back to `draft` when the last question is answered, exactly
+   * as it does from the mission screen, and `requestPlan` then produces a plan that still waits
+   * for the owner unless the charter says otherwise. This is the same act as typing the answer
+   * into the mission screen, in the place the question was asked.
+   */
+  private async answerTheQuestionIAsked(
+    raw: string,
+    interpretation: Interpretation,
+  ): Promise<ConversationTurn | null> {
+    const waiting = await this.deps.missions.list({
+      states: ['needs_clarification'],
+      limit: 10,
+    });
+    const open = waiting.items.filter((summary) => summary.openClarifications > 0);
+    if (open.length === 0) return null;
+
+    if (open.length > 1) {
+      const names = open
+        .slice(0, 3)
+        .map((summary) => summary.mission.title)
+        .join(', ');
+      return this.plainly(
+        interpretation,
+        `I have questions open on more than one thing — ${names}. Say which one that answers.`,
+        null,
+      );
+    }
+
+    const only = open[0]!;
+    const detail = await this.deps.missions.detail(only.mission.id);
+    const question = detail.clarifications.find((record) => record.answeredAt === null);
+    if (!question) return null;
+
+    try {
+      const settled = await this.deps.missions.answerClarification(only.mission.id, question.id, {
+        answer: raw,
+        acceptRecommendation: false,
+      });
+      const remaining = settled.questions.filter((record) => record.answeredAt === null);
+      if (remaining.length > 0) {
+        return this.plainly(
+          interpretation,
+          `Noted. One more before I plan: ${remaining[0]!.question}`,
+          `/missions/${only.mission.id}`,
+        );
+      }
+
+      await this.deps.missions.requestPlan(only.mission.id);
+      const authority = await this.deps.authority();
+      return this.plainly(
+        interpretation,
+        authority.standingAuthority
+          ? `Noted. I am planning ${only.mission.title} now, and I will tell you when there is something to see.`
+          : `Noted. I am planning ${only.mission.title} now, and I will bring you the plan before anything is built.`,
+        `/missions/${only.mission.id}`,
+      );
+    } catch (error) {
+      /*
+       * The service refuses an answer that looks like a credential, and refuses an empty one. Both
+       * are worth saying in its own words rather than swallowing — and neither is a reason to fall
+       * through to the status router, which would answer a question nobody asked.
+       */
+      return this.plainly(
+        interpretation,
+        error instanceof Error ? error.message : 'I could not record that answer.',
+        `/missions/${only.mission.id}`,
+      );
+    }
+  }
+
+  /** A turn that is only words: no answer panel, no proposal, nothing started. */
+  private plainly(
+    interpretation: Interpretation,
+    said: string,
+    href: string | null,
+  ): ConversationTurn {
+    return {
+      kind: interpretation.kind,
+      understanding: interpretation.understanding,
+      said,
+      href,
+      answer: null,
+      started: null,
+      proposal: null,
+      evaluation: null,
+      thinking: null,
+      noBuildYet: interpretation.noBuildYet,
+      notes: [],
+    };
   }
 
   /* -------------------------------------------------------------- refining */

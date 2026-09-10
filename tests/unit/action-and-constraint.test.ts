@@ -41,6 +41,7 @@ const STANDING: ConversationContext = {
   proposal: { id: 'prop-1', summary: 'Start StudentBudget and build the smallest useful version.' },
   lastJarvisTurn: null,
   focusedProjectId: null,
+  awaitingAnswer: false,
 };
 
 const COMPOUND =

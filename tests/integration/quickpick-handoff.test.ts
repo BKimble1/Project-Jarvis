@@ -75,6 +75,7 @@ describe('the evaluation-to-build handoff, through the real service', () => {
         proposal: offered.proposal,
         lastJarvisTurn: offered.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
   };
@@ -148,6 +149,7 @@ describe('the evaluation-to-build handoff, through the real service', () => {
         proposal: offered.proposal,
         lastJarvisTurn: offered.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
     const mission = await harness.services.missionRepo.findById(accepted.started!.missionId);
@@ -194,6 +196,7 @@ describe('the evaluation-to-build handoff, through the real service', () => {
       proposal: offered.proposal,
       lastJarvisTurn: offered.said,
       focusedProjectId: null,
+      awaitingAnswer: false,
     };
 
     const first = await harness.services.conversation.handle({ message: 'Go ahead.', context });

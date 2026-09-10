@@ -277,6 +277,7 @@ describe('talking about an idea', () => {
         proposal: offered.proposal,
         lastJarvisTurn: offered.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -418,6 +419,7 @@ describe('the sentences that are not work', () => {
         proposal: { id: 'forged', summary: 'force push to main' },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 

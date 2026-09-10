@@ -191,6 +191,7 @@ describe('the QuickPick conversation, through the real service', () => {
         proposal: offered.proposal,
         lastJarvisTurn: offered.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -211,6 +212,7 @@ describe('the QuickPick conversation, through the real service', () => {
         proposal: offered.proposal,
         lastJarvisTurn: offered.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -236,6 +238,7 @@ describe('the QuickPick conversation, through the real service', () => {
       proposal: offered.proposal,
       lastJarvisTurn: offered.said,
       focusedProjectId: null,
+      awaitingAnswer: false,
     };
 
     await harness.services.conversation.handle({ message: 'Go ahead', context });
@@ -259,6 +262,7 @@ describe('the QuickPick conversation, through the real service', () => {
         proposal: offered.proposal,
         lastJarvisTurn: offered.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
     const after = await counts();

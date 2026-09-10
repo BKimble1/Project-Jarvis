@@ -79,6 +79,7 @@ describe('an assessed idea becoming a build', () => {
         proposal: turn.proposal,
         lastJarvisTurn: turn.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
   }
@@ -201,6 +202,7 @@ describe('an assessed idea becoming a build', () => {
         proposal: ready.proposal,
         lastJarvisTurn: ready.said,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 

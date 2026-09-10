@@ -222,6 +222,7 @@ describe('two ideas in flight at once', () => {
           proposal: offered.proposal,
           lastJarvisTurn: offered.said,
           focusedProjectId: null,
+          awaitingAnswer: false,
         },
       });
     }

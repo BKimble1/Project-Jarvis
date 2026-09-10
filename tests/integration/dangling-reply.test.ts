@@ -58,6 +58,7 @@ describe('a reply that refers to something no longer on screen', () => {
           proposal: null,
           lastJarvisTurn: null,
           focusedProjectId: null,
+          awaitingAnswer: false,
         },
       });
 
@@ -78,7 +79,13 @@ describe('a reply that refers to something no longer on screen', () => {
 
     const turn = await harness.services.conversation.handle({
       message: 'yes, go ahead',
-      context: { actions: [], proposal: null, lastJarvisTurn: null, focusedProjectId: null },
+      context: {
+        actions: [],
+        proposal: null,
+        lastJarvisTurn: null,
+        focusedProjectId: null,
+        awaitingAnswer: false,
+      },
     });
 
     expect(turn.started, 'a yes with a proposal waiting still starts the work').not.toBeNull();
@@ -98,6 +105,7 @@ describe('a reply that refers to something no longer on screen', () => {
         proposal: null,
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 

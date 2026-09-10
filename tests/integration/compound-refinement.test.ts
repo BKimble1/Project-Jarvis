@@ -75,6 +75,7 @@ describe('answering every question in one message', () => {
         proposal: { id: proposal.id, summary: proposal.summary },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -100,6 +101,7 @@ describe('answering every question in one message', () => {
         proposal: { id: proposal.id, summary: proposal.summary },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -119,6 +121,7 @@ describe('answering every question in one message', () => {
         proposal: { id: proposal.id, summary: proposal.summary },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -136,6 +139,7 @@ describe('answering every question in one message', () => {
         proposal: { id: proposal.id, summary: proposal.summary },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -157,6 +161,7 @@ describe('answering every question in one message', () => {
         proposal: { id: proposal.id, summary: proposal.summary },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 
@@ -167,6 +172,7 @@ describe('answering every question in one message', () => {
         proposal: { id: proposal.id, summary: proposal.summary },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
       ownerLogin: 'test-owner',
     });
@@ -220,6 +226,7 @@ describe('answering every question in one message', () => {
         proposal: { id: proposal.id, summary: proposal.summary },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 

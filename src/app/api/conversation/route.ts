@@ -37,6 +37,7 @@ const contextSchema = z.object({
     .nullish(),
   lastJarvisTurn: z.string().max(2000).nullish(),
   focusedProjectId: z.string().uuid().nullish(),
+  awaitingAnswer: z.boolean().default(false),
 });
 
 const bodySchema = z.object({
@@ -56,6 +57,7 @@ export const POST = ownerRoute(async ({ services, session, request }) => {
             proposal: body.context.proposal ?? null,
             lastJarvisTurn: body.context.lastJarvisTurn ?? null,
             focusedProjectId: body.context.focusedProjectId ?? null,
+            awaitingAnswer: body.context.awaitingAnswer,
           },
         }
       : {}),

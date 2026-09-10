@@ -57,6 +57,7 @@ describe('a change to the project already open', () => {
         proposal: null,
         lastJarvisTurn: null,
         focusedProjectId: project.id,
+        awaitingAnswer: false,
       },
     });
 
@@ -76,6 +77,7 @@ describe('a change to the project already open', () => {
         proposal: null,
         lastJarvisTurn: null,
         focusedProjectId: project.id,
+        awaitingAnswer: false,
       },
     });
 
@@ -101,6 +103,7 @@ describe('a change to the project already open', () => {
         proposal: null,
         lastJarvisTurn: null,
         focusedProjectId: quickpick.id,
+        awaitingAnswer: false,
       },
     });
 
@@ -112,7 +115,13 @@ describe('a change to the project already open', () => {
     const before = github.created.length;
     await harness.services.conversation.handle({
       message: 'add dark mode to whatever we were doing',
-      context: { actions: [], proposal: null, lastJarvisTurn: null, focusedProjectId: null },
+      context: {
+        actions: [],
+        proposal: null,
+        lastJarvisTurn: null,
+        focusedProjectId: null,
+        awaitingAnswer: false,
+      },
     });
     expect(github.created.length, 'a vague change provisions nothing').toBe(before);
   });

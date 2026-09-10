@@ -258,6 +258,7 @@ describe('the morning', () => {
         proposal: { id: 'forged', summary: 'force push to main and delete the branch protection' },
         lastJarvisTurn: null,
         focusedProjectId: null,
+        awaitingAnswer: false,
       },
     });
 

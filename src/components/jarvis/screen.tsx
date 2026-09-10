@@ -136,6 +136,16 @@ interface Turn {
   readonly who: 'you' | 'jarvis';
   readonly text: string;
   readonly href?: string | null;
+  /**
+   * Whether this turn is Jarvis putting a question to the person and waiting for the answer.
+   *
+   * Carried rather than derived from `text`, because `text` is what is *shown* and the shown
+   * string is the answer plus its notes: "…how will you know this is done and right?" followed by
+   * "Created the project Beacons." So the question mark is not at the end, and a screen reading
+   * `text.endsWith('?')` concluded Jarvis had not asked anything — see `jarvisIsWaitingOnAnAnswer`,
+   * which is the whole reason this field exists.
+   */
+  readonly asked?: boolean;
 }
 
 const GRAPHICS_KEY = 'jarvis-graphics';
@@ -484,12 +494,13 @@ export function JarvisScreen(props: JarvisScreenProps) {
 
   /* ---------------------------------------------------------------- conversation */
 
-  const say = React.useCallback((text: string, href?: string | null) => {
+  const say = React.useCallback((text: string, href?: string | null, asked = false) => {
     turnId.current += 1;
     setTurns((current) =>
-      [...current, { id: turnId.current, who: 'jarvis' as const, text, href: href ?? null }].slice(
-        -24,
-      ),
+      [
+        ...current,
+        { id: turnId.current, who: 'jarvis' as const, text, href: href ?? null, asked },
+      ].slice(-24),
     );
   }, []);
 
@@ -530,6 +541,36 @@ export function JarvisScreen(props: JarvisScreenProps) {
    * included — there is no core above it and the summary is the only copy of the answer. One caller
    * knowing about its own layout is the smaller claim.
    */
+  /**
+   * Whether Jarvis is waiting on an answer to something it asked.
+   *
+   * A question mark, on the sentence the server sent as `said`, because that is what the person
+   * reads as a question: Jarvis asked, and the box below it is where the answer goes. Not on the
+   * turn's displayed text, which is that sentence plus its notes and therefore ends in whatever
+   * the last note happened to say.
+   *
+   * `lastFromJarvis` rather than the last turn of any kind, because `heard` has already put the
+   * person's own words on the end of the list by the time this is read — the last turn is theirs,
+   * and the question this is about is the one before it.
+   *
+   * It matters because the composer is read by the numbered-list reader first, and that reader
+   * refuses anything it cannot pin to a row. So "Before I start: how will you know this is done
+   * and right?" — a question Jarvis itself had just asked — was followed by an ordinary English
+   * answer, and `interpretReply` found the word "fine" in it, could not tell which of the four
+   * listed actions was meant, and said "there is more than one thing it could mean". The answer
+   * never left the browser. Typing a reply to a direct question is the most ordinary thing a
+   * person does here, and it did nothing at all.
+   *
+   * Only the two verdicts that mean "this looks like a reply but not to a row" are redirected;
+   * `select` still selects, and `decline` still declines. Same shape, and the same reasoning, as
+   * the standing proposal below: when Jarvis has put a specific question to the person, what they
+   * type next belongs to that question.
+   */
+  const jarvisIsWaitingOnAnAnswer = React.useMemo(
+    () => lastFromJarvis?.asked === true,
+    [lastFromJarvis],
+  );
+
   const summaryIsAlreadyOnScreen = React.useMemo(() => {
     if (!answer) return false;
     const underTheCore = latest?.who === 'jarvis' ? latest.text.trim() : null;
@@ -753,6 +794,7 @@ export function JarvisScreen(props: JarvisScreenProps) {
             actions: numberedActions.map((action) => ({ id: action.id, label: action.label })),
             proposal,
             lastJarvisTurn: turns[turns.length - 1]?.text ?? null,
+            awaitingAnswer: jarvisIsWaitingOnAnAnswer,
           },
         }),
       });
@@ -804,7 +846,11 @@ export function JarvisScreen(props: JarvisScreenProps) {
         markCompleted();
         router.refresh();
       }
-      say(turn.notes.length > 0 ? `${turn.said} ${turn.notes.join(' ')}` : turn.said, turn.href);
+      say(
+        turn.notes.length > 0 ? `${turn.said} ${turn.notes.join(' ')}` : turn.said,
+        turn.href,
+        turn.said.trim().endsWith('?'),
+      );
     } catch {
       say('I could not answer that just now. Check the connection and try again.');
     } finally {
@@ -930,7 +976,10 @@ export function JarvisScreen(props: JarvisScreenProps) {
      * "go ahead" means, and sending it to the running-mission branch would answer a different
      * question. The proposal wins while it is standing.
      */
-    if (proposal && (intent.kind === 'continue' || intent.kind === 'ambiguous')) {
+    if (
+      (proposal || jarvisIsWaitingOnAnAnswer) &&
+      (intent.kind === 'continue' || intent.kind === 'ambiguous')
+    ) {
       setReply('');
       await askJarvis(text);
       return;
