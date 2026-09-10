@@ -28,6 +28,7 @@ import {
 import { missionCapabilityRequests } from '@/domain/mission-capabilities';
 import { scopeContains } from '@/domain/charter';
 import {
+  ACTIVE_MISSION_STATES,
   isReadOnlyMissionType,
   TERMINAL_MISSION_STATES,
   type MissionState,
@@ -140,6 +141,46 @@ export const OPERATOR_TICK_KEY = 'tick';
 export const TICK_LEASE_SECONDS = 120;
 
 /**
+ * What the operator assumes one of its missions will spend, when nothing can tell it.
+ *
+ * A *bound*, not a prediction, and the difference is the whole point. `checkLimits` refuses a plan
+ * outright when a charter names a spending limit and the request offers no estimate — "I don't
+ * know" must not be the cheapest possible answer — so the operator passing `null` meant that the
+ * moment Blake set `dailySpendUsd: 20`, the obvious thing to do with a field described as "money
+ * Jarvis may spend per day", every plan was refused with "this plan cannot say what it would cost"
+ * and nothing was ever approved again.
+ *
+ * A real per-mission estimate is the better answer and is not available here: `estimateMissionCost`
+ * needs comparable finished missions and a price table, which means the spend ledger, which is not
+ * one of this service's dependencies. Assuming a bound is the honest shape in the meantime — the
+ * arithmetic downstream is `already spent + this assumption > limit`, so an assumption that is too
+ * generous refuses early rather than overspending, and the *measured* rolling total is what
+ * actually stops work as the day fills up.
+ *
+ * Two dollars, because that is a comfortable ceiling on a routine mission at first-party API rates:
+ * a few hundred thousand tokens across an inspection, an implementation and a review comes to well
+ * under it, while a charter limit tight enough to be crossed by it — a dollar or two a day — is one
+ * whose owner wants to see every plan anyway, and will. It is deliberately *not* zero on the
+ * grounds that Blake's worker runs on a subscription whose marginal cost is nothing: the auth mode
+ * can change under a deployment without the charter changing, and a bound that quietly became "no
+ * limit applies" would be the failure this constant exists to prevent. Nothing records it as a
+ * cost — it travels on the authorisation request, never into the usage ledger.
+ *
+ * ## What it does not bound, and this is a real hole
+ *
+ * Every authorisation in a tick is judged against the *measured* total, which cannot have moved:
+ * the missions this tick approves have not run yet. So a tick that approves three missions offers
+ * this same assumption three times against the same "already spent", and a $3 daily limit can
+ * authorise $6 of assumed work in one pass. `checkLimits` avoids exactly this shape between plans
+ * — its own comment calls comparing the estimate alone "how a $20 daily limit authorises twenty
+ * $19 missions" — and reintroducing an estimate here reopens it within a tick. The tick's own
+ * room ceiling caps the overshoot at a few missions rather than twenty, and the measured total
+ * does catch up once the work runs; closing it properly means authorisation counting spending it
+ * has already committed to but not yet made, which is a change to the authorisation service.
+ */
+export const ASSUMED_MISSION_SPEND_USD = 2;
+
+/**
  * The mission states the supervisor judges.
  *
  * Everything else on the active list is waiting for a person or for a slot, and waiting is not
@@ -153,6 +194,49 @@ const WORKING_MISSION_STATES = new Set<MissionState>([
   'verifying',
   'creating_pull_request',
 ]);
+
+/**
+ * The states in which a self-started mission is still holding one of its three slots.
+ *
+ * A slot is held while a worker has the mission *or* will pick it up with nobody having to decide
+ * anything first: `queued` counts because a claim is the only thing standing between it and a
+ * worker, `stopping` counts because a worker is still winding it down, and everything in
+ * `ACTIVE_MISSION_STATES` counts because a worker is or should be holding it right now.
+ *
+ * The set exists — rather than `listOpen()`, which was here before — because of what "open" turned
+ * out to include. A write mission's *successful* ending is `pull_request_ready`: a draft pull
+ * request waiting for Blake to read it, holding no worker and needing no slot. Three of those
+ * pinned `MAX_SELF_STARTED_CONCURRENT - selfStarted` at zero for ever, and the loop reported
+ * "Every mission slot is in use." with nothing running at all. `failed` and `stopped` did the
+ * same, and needed only one bad night.
+ *
+ * That was half of it. The other half was that this allowance bounded the whole tick, so a pinned
+ * ceiling also stopped the missions Blake asked for himself — see `tick`, where the owner's lane
+ * now runs on the machine's room instead. Both halves had to go: this list stops the ceiling being
+ * pinned by finished work, and the split stops a legitimately full ceiling from ever being Blake's
+ * problem.
+ *
+ * The rule that keeps this from coming back: a state that can sit there indefinitely without a
+ * worker is not a held slot, however unfinished it looks. That is why `paused` is absent too —
+ * only the owner can move a paused mission to `resuming`, and counting it would recreate exactly
+ * this defect the first time three self-started missions paused overnight. `awaiting_plan_approval`
+ * is absent for the same reason and is the closer call: the loop itself usually approves such a
+ * mission on the very next tick, but when the charter falls short it becomes a proposal that waits
+ * for the owner as long as they leave it, and three of those must not be able to stop everything.
+ *
+ * Nothing before approval appears here — `inspecting` and `planning` above all, where a worker
+ * really is holding the mission and spending on it. That is not a judgement about those states: a
+ * mission is not `autonomous` until `approvePlan` writes the flag (see `mission-service.ts`), so a
+ * mission Jarvis raised is invisible to this count until the charter approves its plan, whatever
+ * this list says. What actually bounds the inspections in between is the tick's room and the fact
+ * that an opportunity is `taken` once. Anyone moving that flag earlier must add those two states
+ * here in the same change, or the ceiling silently stops being one.
+ */
+export const SELF_STARTED_SLOT_STATES: readonly MissionState[] = [
+  'queued',
+  ...ACTIVE_MISSION_STATES,
+  'stopping',
+];
 
 export interface OperatorServiceDeps {
   readonly charter: CharterService;
@@ -804,31 +888,38 @@ export class OperatorService {
 
     const { limit, active } = await this.deps.room();
     /*
-     * Two ceilings, and the tighter one wins. `limit - active` is the deployment's own concurrency
-     * budget; `maxNewWork` is what the account's remaining Claude allows. The governor narrows —
-     * it never widens — so a null from it leaves the deployment's limit exactly as it was.
-     */
-    /*
-     * A third ceiling, and the one that protects the *owner* rather than the machine.
+     * What the machine can carry, whoever asked for the work.
      *
-     * The deployment's concurrency limit and the account's capacity both bound how much can run;
-     * neither bounds how much of it Jarvis chose for itself. Without this, an owner could open
-     * Jarvis to find every available slot taken by work it picked, with the thing they actually
-     * asked for queued behind it — which is the fastest way to lose trust in an operator that was
-     * technically behaving.
+     * Two ceilings and the tighter one wins: `limit - active` is the deployment's own concurrency
+     * budget, `maxNewWork` is what the account's remaining Claude allows. The governor narrows —
+     * it never widens — so a null from it leaves the deployment's limit exactly as it was.
+     * Everything this tick queues comes out of this one budget, because it all lands on the same
+     * workers.
+     */
+    const capacityRoom = Math.max(
+      0,
+      Math.min(limit - active, capacity.maxNewWork ?? Number.POSITIVE_INFINITY),
+    );
+
+    /*
+     * And a separate allowance for work Jarvis chose *itself*, which protects the owner rather
+     * than the machine.
+     *
+     * Without it an owner could open Jarvis and find every available slot taken by work it picked,
+     * with the thing they actually asked for queued behind it — the fastest way to lose trust in
+     * an operator that was technically behaving.
+     *
+     * It bounds Jarvis's own work and nothing else, and that restriction is the whole point rather
+     * than an economy. Applied to the tick as a whole it inverts into the defect it exists to
+     * prevent: three self-started missions genuinely waiting on a worker would stop Blake's own
+     * mission being advanced at all, so a ceiling written to keep his queue clear would be the
+     * thing holding his queue up. The owner's lane is bounded by `capacityRoom` below.
      */
     const selfStarted = (await this.deps.missionRepo.listOpen()).filter(
-      (mission) => mission.autonomous,
+      (mission) => mission.autonomous && SELF_STARTED_SLOT_STATES.includes(mission.state),
     ).length;
-
-    const room = Math.max(
-      0,
-      Math.min(
-        limit - active,
-        capacity.maxNewWork ?? Number.POSITIVE_INFINITY,
-        MAX_SELF_STARTED_CONCURRENT - selfStarted,
-      ),
-    );
+    const selfAllowance = Math.max(0, MAX_SELF_STARTED_CONCURRENT - selfStarted);
+    const room = Math.min(capacityRoom, selfAllowance);
     /*
      * `taken` is excluded here and only here. It stays in the backlog because an owner should see
      * what is being worked on, and it must never be selected again because a mission already
@@ -855,19 +946,24 @@ export class OperatorService {
       now,
     });
 
+    const advancedQueued = advanced.filter((entry) => entry.outcome === 'queued').length;
+
     /*
      * The owner's own requests, advanced on the same authority.
      *
      * Without this, talking to Jarvis produced a mission that then sat in `awaiting_plan_approval`
      * until somebody opened Mission Control and pressed a button — which is exactly the
      * administration screen the owner said he should not have to visit. What remains bounded is
-     * everything that was bounded before: the room left in this tick, and the charter, which is
-     * still the only thing that decides whether a plan may run.
+     * everything that was bounded before: the machine's room and the charter, which is still the
+     * only thing that decides whether a plan may run.
+     *
+     * `capacityRoom` rather than `room`: what Jarvis has chosen for itself is not a reason to
+     * refuse to advance what the owner asked for. It is the reason the ceiling exists.
      */
     const requested = await this.advanceRequestedWork({
       mode: authority.mode,
       standingAuthority: authority.standingAuthority,
-      room: Math.max(0, room - advanced.filter((entry) => entry.outcome === 'queued').length),
+      room: Math.max(0, capacityRoom - advancedQueued),
     });
 
     const inFlight = [...advanced, ...requested];
@@ -878,12 +974,19 @@ export class OperatorService {
         mode: authority.mode,
         standingAuthority: authority.standingAuthority,
         /*
-         * One budget, spent on in-flight work first. Advancing and starting are both "a mission
-         * Jarvis is putting into the queue", and giving them separate allowances would mean the
-         * ceiling the owner set was quietly twice what they wrote. The owner's own requests come
-         * out of the same allowance for the same reason.
+         * One budget, spent on in-flight work first, and both of the tick's ceilings still apply.
+         * Advancing and starting are both "a mission Jarvis is putting into the queue", so giving
+         * them separate allowances would mean the ceiling the owner set was quietly twice what
+         * they wrote — hence `selfAllowance` minus what was already advanced. The owner's requests
+         * do not come out of Jarvis's allowance, but they do come out of the machine's.
          */
-        room: Math.max(0, room - inFlight.filter((entry) => entry.outcome === 'queued').length),
+        room: Math.max(
+          0,
+          Math.min(
+            selfAllowance - advancedQueued,
+            capacityRoom - inFlight.filter((entry) => entry.outcome === 'queued').length,
+          ),
+        ),
         now,
       })),
     ];
@@ -1292,7 +1395,8 @@ export class OperatorService {
           reason: label,
         }),
       ],
-      estimatedSpendUsd: null,
+      /* A bound rather than a blank, and not a free pass. See `ASSUMED_MISSION_SPEND_USD`. */
+      estimatedSpendUsd: ASSUMED_MISSION_SPEND_USD,
       estimatedMinutes: null,
       parallelAgents: 1,
       exceptional: [],
@@ -1396,7 +1500,13 @@ export class OperatorService {
     }
     if (!input.standingAuthority && input.blockedReason) parts.push(input.blockedReason);
     if (!input.capacity.mayStartNewWork) parts.push(input.capacity.reason);
-    else if (input.room === 0) parts.push('Every mission slot is in use.');
+    /*
+     * Only when nothing did start. `room` is now the allowance for Jarvis's own work alone, so a
+     * tick that queued the owner's mission while its own ceiling was full would otherwise report
+     * "1 started. Every mission slot is in use." — two true halves that read as a contradiction to
+     * the person trying to work out whether anything is wrong.
+     */
+    else if (input.room === 0 && input.queued === 0) parts.push('Every mission slot is in use.');
 
     return parts.join(' ');
   }

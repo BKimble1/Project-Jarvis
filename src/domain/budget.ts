@@ -60,6 +60,21 @@ export const COST_BASIS = [
   'reported',
   /** Computed from token counts and a configured price table. An estimate, always labelled. */
   'estimated',
+  /**
+   * A subscription paid for it, so the marginal cost is nothing.
+   *
+   * A *measured* zero, and the reason it is not `unknown`. Claude Code reports a
+   * `total_cost_usd` on a subscription session too, and there it is a counterfactual API price
+   * rather than a bill, so the runtime drops it (see `extractUsage`) and the run reports tokens
+   * and no money. Recording that as `unknown` said "Jarvis cannot tell what this cost" about work
+   * whose cost it knows exactly — and every consumer that fails closed on unmeasured spending,
+   * `spendIsMeasurable` first among them, then failed closed on a day that spent nothing.
+   *
+   * It is still never `reported: 0`. Zero in the money columns would put subscription work into
+   * the same total as API work at a price of nothing, and a week of it would read as a week of
+   * free API calls rather than as a week the subscription paid for.
+   */
+  'subscription',
   /** Neither available. Shown as unknown, never as zero. */
   'unknown',
 ] as const;
@@ -68,6 +83,7 @@ export type CostBasis = (typeof COST_BASIS)[number];
 export const COST_BASIS_LABELS: Record<CostBasis, string> = {
   reported: 'reported by the provider',
   estimated: 'estimated from tokens',
+  subscription: 'covered by your subscription',
   unknown: 'unknown',
 };
 
@@ -132,7 +148,9 @@ export interface UsageRecord {
  * Returns `null` for unknown rather than `0`. Zero is a claim that something was free; null is a
  * claim that Jarvis does not know, and those are different sentences.
  */
-export function effectiveCost(record: Pick<UsageRecord, 'reportedCostUsd' | 'estimatedCostUsd'>): {
+export function effectiveCost(
+  record: Pick<UsageRecord, 'reportedCostUsd' | 'estimatedCostUsd' | 'costBasis'>,
+): {
   readonly usd: number | null;
   readonly basis: CostBasis;
 } {
@@ -142,6 +160,8 @@ export function effectiveCost(record: Pick<UsageRecord, 'reportedCostUsd' | 'est
   if (record.estimatedCostUsd !== null) {
     return { usd: record.estimatedCostUsd, basis: 'estimated' };
   }
+  /* The one zero this file allows, because it was measured: a subscription run costs nothing. */
+  if (record.costBasis === 'subscription') return { usd: 0, basis: 'subscription' };
   return { usd: null, basis: 'unknown' };
 }
 
@@ -153,7 +173,12 @@ export interface UsageTotals {
   readonly reportedUsd: number;
   /** Sum of estimates, kept apart so a total is never half one and half the other silently. */
   readonly estimatedUsd: number;
-  /** How many records had no cost at all. The honesty column. */
+  /**
+   * How many records had no cost at all. The honesty column.
+   *
+   * Only `unknown` rows. A `subscription` row has a cost and it is zero, so counting it here would
+   * describe a day that spent nothing as a day nobody measured.
+   */
   readonly unknownCount: number;
   readonly recordCount: number;
   readonly failedCount: number;
@@ -204,15 +229,68 @@ export function enforceableSpend(totals: UsageTotals): number {
 }
 
 /**
+ * The share of unpriced records a total may carry and still be worth enforcing against.
+ *
+ * A quarter, because the figure this guards is a *ceiling* and not a report: one unpriced call in
+ * four leaves a total that is directionally right, and a limit enforced against it stops work at
+ * roughly the point the owner asked for. Past that the total stops being an approximation of
+ * anything — half a ledger missing means the real spend could be double what is shown, and a
+ * ceiling that might be out by 2× is not a ceiling. It is a share rather than a count on purpose:
+ * one unpriced call in a busy day says nothing, and one unpriced call in a day that made four is
+ * the whole picture.
+ */
+export const MAX_UNPRICED_RECORD_SHARE = 0.25;
+
+/**
  * Whether a spend figure can be trusted enough to enforce a hard limit against.
  *
  * If a meaningful share of records have no cost at all, the total understates reality by an
  * unknown amount — and a hard limit computed from an understated total is a limit that does not
  * hold. Callers doing sensitive work use this to fail closed.
+ *
+ * ## Why a ledger with no money in it is measurable
+ *
+ * The ratio alone turned a spending limit into an off switch. Blake's worker runs on a Claude
+ * subscription: its marginal cost genuinely is nothing, so every run it reports carries tokens and
+ * no money. One such run made the window 100% unpriced, `checkLimits` refuses every plan while a
+ * charter names a spending limit and the spend is not measurable, and so the first night Jarvis
+ * worked was the last — the owner had set `dailySpendUsd: 20`, spent nothing, and got an operator
+ * that never ran again. Refusing everything is not enforcement of a limit; it is an outage in the
+ * shape of one.
+ *
+ * So a window in which nothing was priced at all is measurable, at the total it reports: zero.
+ * A window that *does* contain priced work keeps the ratio, which is where the protection lives —
+ * an API-key run whose cost went unrecorded still drags the total below being worth enforcing, and
+ * still fails closed, because there is real money beside it that it is understating.
+ *
+ * ## What that gives up, said plainly
+ *
+ * A deployment whose spending is real but never priced — an API key whose provider reports tokens
+ * rather than money, with no price table configured — now reads as spending nothing rather than as
+ * unmeasurable. Its rolling totals were already zero, so no limit ever bound against them; the old
+ * answer did not enforce that owner's limit either, it only refused all their work. The fix for
+ * that deployment is a price table or a provider that reports cost.
+ *
+ * ## And what it does not yet cover
+ *
+ * The clause holds only while a window contains *no* priced work at all. One reported cent beside
+ * a subscription worker's tokenful, costless rows puts the ratio back in charge, it reads them as
+ * a ledger with most of its money missing, and every plan is refused again — the same outage, one
+ * priced call later.
+ *
+ * The answer to that is `costBasis: 'subscription'`, which says *free* rather than *unknown* and
+ * so stays out of the numerator whatever else is in the window. **Nothing writes it yet.** The
+ * worker knows which it is (`claude-agent-sdk.ts` drops the counterfactual cost on a subscription
+ * session) and then throws that knowledge away at the wire: `runUsageSchema` in `mission-run.ts`
+ * carries no billing field, so `usageRowForRun` in `usage-ledger.ts` sees an absent cost and can
+ * only write `unknown`. Carrying the billing mode on the run report and writing this basis there
+ * is the change that finishes this; until it lands, the clause above is the whole protection and
+ * it is thinner than it looks.
  */
 export function spendIsMeasurable(totals: UsageTotals): boolean {
   if (totals.recordCount === 0) return true;
-  return totals.unknownCount / totals.recordCount <= 0.25;
+  if (enforceableSpend(totals) === 0) return true;
+  return totals.unknownCount / totals.recordCount <= MAX_UNPRICED_RECORD_SHARE;
 }
 
 /* ------------------------------------------------------------------- pricing */
@@ -644,6 +722,8 @@ export function formatUsd(value: number | null): string {
 
 /** A cost with its basis attached, which is how every cost should be shown. */
 export function describeCost(usd: number | null, basis: CostBasis): string {
+  /* Before the null check: a subscription run reports no figure because there is nothing to pay. */
+  if (basis === 'subscription') return 'no extra cost — your subscription covered it';
   if (basis === 'unknown' || usd === null) {
     return 'cost unknown — the provider did not report one and there is no price for that model';
   }
