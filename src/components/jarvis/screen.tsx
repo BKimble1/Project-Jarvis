@@ -490,6 +490,28 @@ export function JarvisScreen(props: JarvisScreenProps) {
     speech.speak(text);
   }, [readBack, lastFromJarvis, speech]);
 
+  /**
+   * The answer, with the sentence that is already under the core taken out of it.
+   *
+   * A question's spoken line and its `answer.summary` are one string — the server sends `said` and
+   * the answer together, and for a status question they are the same words — so the sentence landed
+   * on screen twice at once: under the core, where the last thing Jarvis said always goes, and
+   * again as the opening paragraph of the answer panel immediately below it. Two copies of one
+   * sentence, a hand's width apart, reads as two different pieces of information.
+   *
+   * Only that paragraph goes. Everything else the panel carries — the title, the provenance of the
+   * sentence, the sections, the disambiguation list — is not a duplicate of anything and stays.
+   *
+   * Emptied here rather than skipped inside `AnswerPanel` because the panel cannot know what else
+   * is on the screen around it: the command bar renders the same component with no core above it,
+   * and there the summary is the only place the answer appears at all.
+   */
+  const printedAnswer = React.useMemo(() => {
+    if (!answer) return null;
+    const underTheCore = latest?.who === 'jarvis' ? latest.text.trim() : null;
+    return answer.summary.trim() === underTheCore ? { ...answer, summary: '' } : answer;
+  }, [answer, latest]);
+
   const markCompleted = React.useCallback(() => {
     setJustCompleted(true);
     window.setTimeout(() => setJustCompleted(false), 4000);
@@ -1001,6 +1023,20 @@ export function JarvisScreen(props: JarvisScreenProps) {
             ...current,
             { id: Date.now() + Math.random(), who: 'jarvis', text: event.message },
           ]);
+          /*
+           * Claimed against the read-back effect's own guard, because this is the path that speaks.
+           *
+           * That effect reads out the newest Jarvis turn, and these are Jarvis turns — so the last
+           * sentence of every batch was being spoken twice, once here and once by the effect a
+           * render later. The cancel-on-every-speak that lost the rest of the batch is also what
+           * hid it: the repeat cancelled the original, so one of the two was heard and the fault
+           * sounded like nothing at all. With a queue behind `speak`, both are heard.
+           *
+           * Recording the words here rather than dropping this call is what keeps the whole batch
+           * audible: the effect only ever sees the newest turn, so routing narration through it
+           * would speak the last sentence and silently discard the five in front of it.
+           */
+          spokenAlready.current = event.message;
           speech.speak(event.message);
         }
       } catch {
@@ -1492,9 +1528,9 @@ export function JarvisScreen(props: JarvisScreenProps) {
                   />
                 ) : null}
                 {evaluation && !pendingThought ? <EvaluationBody evaluation={evaluation} /> : null}
-                {answer ? (
+                {printedAnswer ? (
                   <AnswerPanel
-                    answer={answer}
+                    answer={printedAnswer}
                     asked={asked}
                     onPick={(text) => void askJarvis(text)}
                   />

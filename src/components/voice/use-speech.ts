@@ -354,9 +354,7 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
          * settings is generated from the same decision that picks the voice rather than written
          * beside it.
          */
-        const named = item.voice
-          ? installed.find((voice) => voice.name === item.voice)
-          : undefined;
+        const named = item.voice ? installed.find((voice) => voice.name === item.voice) : undefined;
         const chosen =
           named ?? installed.find((voice) => voice.name === chooseVoice(installed).voice?.name);
         if (chosen) utterance.voice = chosen;

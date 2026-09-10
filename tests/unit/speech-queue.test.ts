@@ -52,6 +52,8 @@ function speaker() {
     /** Every change of the speaking flag, which is what lights the core's ring. */
     announced,
     stops: () => stops,
+    /** The callback of whatever is playing, kept so a test can fire it late. */
+    playing: () => current,
     /** The browser's `onend` for whatever is playing. */
     end() {
       const finished = current;
@@ -125,18 +127,37 @@ describe('the speech queue', () => {
     voice.queue.drop();
     expect(voice.stops()).toBe(1);
     expect(voice.spoken).toEqual(['one']);
-
-    /*
-     * `speechSynthesis.cancel()` makes Chrome fire the cancelled utterance's `onend`, which is
-     * precisely the call that would restart a queue that only tracked "am I playing". "Stop
-     * speaking" has to mean the rest as well, or the control is a lie.
-     */
-    voice.end();
-    expect(voice.spoken).toEqual(['one']);
+    /* The ring goes out at once, rather than when a sentence nobody will hear would have ended. */
+    expect(voice.announced).toEqual([true, false]);
 
     /* Silenced, not broken: the next thing Jarvis has to say is still said. */
     voice.queue.enqueue({ text: 'later' });
     expect(voice.spoken).toEqual(['one', 'later']);
+  });
+
+  it('ignores the callbacks of what it cancelled, however late they arrive', () => {
+    const voice = speaker();
+
+    voice.queue.enqueue({ text: 'one' });
+    /*
+     * `speechSynthesis.cancel()` makes Chrome fire the cancelled utterance's `onend`, and it can
+     * land after the screen has queued something new — press "Stop speaking", and a narration poll
+     * arrives a moment later. A queue that tracked only "am I playing" would take that stale
+     * callback as permission to advance, and would start the sentence after the one now playing on
+     * top of it: two voices, and one announcement lost under the other.
+     */
+    const cancelled = voice.playing();
+    voice.queue.drop();
+
+    voice.queue.enqueue({ text: 'later' });
+    voice.queue.enqueue({ text: 'last' });
+    expect(voice.spoken).toEqual(['one', 'later']);
+
+    cancelled?.();
+    expect(voice.spoken).toEqual(['one', 'later']);
+
+    voice.end();
+    expect(voice.spoken).toEqual(['one', 'later', 'last']);
   });
 
   it('says nothing twice, however often the browser calls back', () => {
