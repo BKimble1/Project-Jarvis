@@ -25,12 +25,38 @@ interface DatabaseHandle {
 
 const globalRef = globalThis as unknown as { __jarvisDb?: DatabaseHandle | undefined };
 
+/**
+ * Make sure the directory PGlite is about to create can be created.
+ *
+ * PGlite's Node filesystem calls `mkdirSync(dataDir)` without `recursive`, so it can only make the
+ * last segment of the path. Both of this repository's file-backed defaults are two segments deep —
+ * `.jarvis-data/dev` for `npm run dev`, `.jarvis-data/e2e` for the end-to-end suite — and
+ * `.jarvis-data` is gitignored, so it does not exist in a fresh clone. The first run of either
+ * command therefore died before it opened anything:
+ *
+ *     Error: ENOENT: no such file or directory, mkdir '.../.jarvis-data/dev'
+ *
+ * It survived because a machine that has ever run one of them has the parent directory already, so
+ * it reproduces only on a clone nobody has worked in yet — which is precisely the first thing a new
+ * contributor does.
+ *
+ * The parent is created rather than the whole path, because creating the leaf as well would take
+ * PGlite down a different branch — an existing directory it did not make — and this fix has no
+ * business changing which one it uses.
+ */
+async function ensureDataDirectory(dataDir: string): Promise<void> {
+  const { mkdir } = await import('node:fs/promises');
+  const path = await import('node:path');
+  await mkdir(path.dirname(path.resolve(dataDir)), { recursive: true });
+}
+
 async function createHandle(config: AppConfig): Promise<DatabaseHandle> {
   const { driver, url, pgliteDataDir } = config.database;
 
   if (driver === 'pglite') {
     const { PGlite } = await import('@electric-sql/pglite');
     const { drizzle } = await import('drizzle-orm/pglite');
+    if (pgliteDataDir) await ensureDataDirectory(pgliteDataDir);
     const client = pgliteDataDir ? new PGlite(pgliteDataDir) : new PGlite();
     const db = drizzle(client, { schema }) as unknown as Database;
 
