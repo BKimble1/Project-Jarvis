@@ -242,4 +242,71 @@ describe('the environment a worker hands to a child process', () => {
      */
     expect(WORKER_ONLY_SECRETS).toContain('CLAUDE_CODE_OAUTH_TOKEN');
   });
+
+  /**
+   * The five that were reaching the agent.
+   *
+   * Measured against the shipped filter before this: `JARVIS_CREDENTIAL_KEY`,
+   * `JARVIS_CREDENTIAL_KEY_PREVIOUS`, `GITHUB_OAUTH_CLIENT_SECRET`, `MICROSOFT_CLIENT_SECRET` and
+   * `JARVIS_PUSH_PRIVATE_KEY` all SURVIVED. The agent has Bash and no rule stopping it running
+   * `env`, and `scripts/worker.ts` loads the same environment file as the control plane when the
+   * two sit on one machine — which the filter's own comment anticipates.
+   *
+   * `JARVIS_CREDENTIAL_KEY` is the worst of them: it is the key `credential-vault.ts` exists to
+   * protect, so handing it over hands over the Microsoft refresh token it was encrypting.
+   *
+   * None matches a token shape — a hex client secret and a base64 key look like ordinary
+   * configuration — which is why shape alone was never going to catch them.
+   */
+  it('removes the credentials that were added after the name list was written', () => {
+    const safe = withoutWorkerSecrets({
+      JARVIS_CREDENTIAL_KEY: 'LicKuJ9HUtzlQ8Xv2mNpR7sT4wYzA1bC3dE5fG6hI8k=',
+      JARVIS_CREDENTIAL_KEY_PREVIOUS: 'QmXUTL8Lh3dsK2nP5rT8vY1zB4eH7jM0oQ3sV6wZ9cA=',
+      GITHUB_OAUTH_CLIENT_SECRET: 'd75784cd52e4a1b8c9f0e3d6a7b2c5f8e1d4a7b0',
+      MICROSOFT_CLIENT_SECRET: 'Abc8Q~-KNDCdEfGhIjKlMnOpQrStUvWxYz012345',
+      JARVIS_PUSH_PRIVATE_KEY: 'ScFpbhrcTfHRqLmNoPqRsTuVwXyZ0123456789abcdef',
+    } as NodeJS.ProcessEnv);
+
+    for (const name of [
+      'JARVIS_CREDENTIAL_KEY',
+      'JARVIS_CREDENTIAL_KEY_PREVIOUS',
+      'GITHUB_OAUTH_CLIENT_SECRET',
+      'MICROSOFT_CLIENT_SECRET',
+      'JARVIS_PUSH_PRIVATE_KEY',
+    ]) {
+      expect(safe[name], `${name} must not reach the agent`).toBeUndefined();
+    }
+  });
+
+  /**
+   * A Jarvis secret nobody has thought of yet.
+   *
+   * The name list is a record of what somebody remembered. This is the rule that makes forgetting
+   * safe — but only for Jarvis's own variables, because the verification runner executes the
+   * repository's test commands and a project's own `MY_SERVICE_API_KEY` has to survive or its
+   * tests fail for a reason nobody can see.
+   */
+  it('removes a Jarvis variable that names itself a secret, and nothing else', () => {
+    const safe = withoutWorkerSecrets({
+      JARVIS_SOMETHING_NOBODY_ADDED_YET_TOKEN: 'plain-looking-value-000000',
+      JARVIS_FUTURE_SIGNING_KEY: 'another-plain-value-00000000',
+      JARVIS_WORKSPACE_ROOT: '/home/owner/jarvis-workspaces',
+      JARVIS_CONTROL_PLANE_URL: 'http://localhost:3000',
+      MY_SERVICE_API_KEY: 'the-project-under-test-needs-this',
+      GITHUB_OAUTH_CLIENT_ID: 'Iv1.abc123def456',
+      PATH: '/usr/bin',
+    } as NodeJS.ProcessEnv);
+
+    expect(safe.JARVIS_SOMETHING_NOBODY_ADDED_YET_TOKEN).toBeUndefined();
+    expect(safe.JARVIS_FUTURE_SIGNING_KEY).toBeUndefined();
+
+    /* Configuration, not credentials. The agent's environment legitimately carries these. */
+    expect(safe.JARVIS_WORKSPACE_ROOT).toBe('/home/owner/jarvis-workspaces');
+    expect(safe.JARVIS_CONTROL_PLANE_URL).toBe('http://localhost:3000');
+    expect(safe.GITHUB_OAUTH_CLIENT_ID).toBe('Iv1.abc123def456');
+    expect(safe.PATH).toBe('/usr/bin');
+
+    /* Not ours to strip: the repository under test may need it to run its own suite. */
+    expect(safe.MY_SERVICE_API_KEY).toBe('the-project-under-test-needs-this');
+  });
 });

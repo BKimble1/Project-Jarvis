@@ -68,9 +68,47 @@ export const WORKER_ONLY_SECRETS = [
   'CRON_SECRET',
   'DATABASE_URL',
   'JARVIS_TEST_AUTH_SECRET',
+  /*
+   * The key the credential vault exists to protect.
+   *
+   * `src/server/security/credential-vault.ts` encrypts the Microsoft refresh token at rest with
+   * this; handing it to a coding agent hands over everything it was protecting. The previous key is
+   * listed for the same reason — it decrypts anything not yet rotated.
+   */
+  'JARVIS_CREDENTIAL_KEY',
+  'JARVIS_CREDENTIAL_KEY_PREVIOUS',
+  /*
+   * The OAuth client secrets. Neither is a token, so neither is caught by shape: a hex string and a
+   * tilde-bearing Azure secret look like ordinary configuration. With the client secret and a
+   * redirect an attacker completes the flow as Jarvis.
+   */
+  'GITHUB_OAUTH_CLIENT_SECRET',
+  'MICROSOFT_CLIENT_SECRET',
+  /* Signs push notifications. A private key by name and by nature. */
+  'JARVIS_PUSH_PRIVATE_KEY',
 ] as const;
 
 const SECRET_BY_NAME = new Set<string>(WORKER_ONLY_SECRETS);
+
+/**
+ * Jarvis's own variables that name themselves as credentials.
+ *
+ * Deliberately narrow: only the `JARVIS_` prefix, and only the five words that mean "this is a
+ * secret". `JARVIS_WORKSPACE_ROOT` and `JARVIS_CONTROL_PLANE_URL` are configuration the agent's
+ * environment legitimately carries, and neither matches.
+ *
+ * It over-matches in three harmless places — `JARVIS_MAX_MISSION_OUTPUT_TOKENS`,
+ * `JARVIS_MAX_TASK_OUTPUT_TOKENS` and `JARVIS_CREDENTIAL_KEY_VERSION` are numbers, not secrets.
+ * All three are read by `src/server/config/env.ts` in the control plane, and every one of them has
+ * a default; no child spawned from here loads that config, so removing them changes nothing. That
+ * is the trade this rule is making on purpose: a false positive costs a default, a false negative
+ * costs a credential.
+ */
+const JARVIS_SECRET_NAME = /^JARVIS_.*(?:SECRET|TOKEN|KEY|PASSWORD|CREDENTIAL)/;
+
+function looksLikeJarvisSecretName(key: string): boolean {
+  return JARVIS_SECRET_NAME.test(key);
+}
 
 /**
  * A copy of the environment with every credential removed.
@@ -89,6 +127,20 @@ export function withoutWorkerSecrets(source: NodeJS.ProcessEnv = process.env): N
 
   for (const [key, value] of Object.entries(source)) {
     if (SECRET_BY_NAME.has(key)) {
+      safe[key] = undefined;
+      continue;
+    }
+    /*
+     * Name, for Jarvis's own variables — so the next secret is stripped by default rather than by
+     * somebody remembering to add it to the list above.
+     *
+     * The list is what caught this: five credentials reached the agent, including the vault key,
+     * because they were added after the list was written and none of them matches a token shape.
+     * A rule scoped to the `JARVIS_` prefix cannot collide with the repository's own variables —
+     * the verification runner executes the project's test commands, and a project's `MY_API_KEY`
+     * has to survive or its tests fail for a reason nobody can see.
+     */
+    if (looksLikeJarvisSecretName(key)) {
       safe[key] = undefined;
       continue;
     }
