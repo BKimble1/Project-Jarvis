@@ -249,10 +249,14 @@ test('a structured status outranks message prose, so non-retryable errors are ne
   // A 403 body that happens to mention a timeout is still a permission failure.
   // Classifying it `transient` would retry it and rob the orchestrator of the
   // chance to block the project with a truthful reason (contract B.5).
+  // The same trap in the retryable direction: a 429 whose body mentions a
+  // socket must stay `capacity`, not become `transient` — the pool spends its
+  // crash-restart budget on `transient` alone.
+  assert.equal(classifyError(err({ status: 429, message: 'socket hang up after the rate limit slot expired' })), 'capacity');
+
   const cases = [
     ['permission', err({ status: 403, message: 'Forbidden: the upstream auth check timed out' })],
     ['permission', err({ status: 401, message: 'timeout while validating the session token' })],
-    ['capacity', err({ status: 429, message: 'socket hang up after the rate limit slot expired' })],
     // In-repo producers tag the class on `code` on purpose; that tag must beat
     // whatever wording the underlying CLI happened to print.
     ['credential', err({ code: 'ECREDENTIAL', message: 'Unauthorized. Run `claude setup-token`.' })],
@@ -278,7 +282,12 @@ test('a structured status outranks message prose, so non-retryable errors are ne
 
 test('withRetry applies the contract default backoff to the clock, not just to a counter', async () => {
   const fake = new FakeClock(0);
-  const clock = recordingClock(fake);
+  const sleeps = [];   // what was asked for, and the clock reading it was asked at
+  const clock = {
+    now: () => fake.now(),
+    timezone: () => fake.timezone(),
+    sleep(ms) { sleeps.push({ ms, from: fake.now() }); return fake.sleep(ms); },
+  };
   const attemptAt = [];
   const boom = err({ status: 429, message: 'Request timed out waiting for a rate limit slot' });
 
@@ -287,9 +296,11 @@ test('withRetry applies the contract default backoff to the clock, not just to a
 
   await assert.rejects(settle(fake, promise), (e) => e === boom);
   assert.equal(attemptAt.length, 3, 'the default attempts budget is exactly 3');
-  assert.deepEqual(clock.delays, [200, 400], 'defaults are baseDelayMs 200, factor 2');
-  assert.deepEqual(attemptAt, [0, 200, 600],
-    'each retry must resume only after its delay has actually elapsed on the clock');
+  assert.deepEqual(sleeps.map((s) => s.ms), [200, 400], 'defaults are baseDelayMs 200, factor 2');
+  for (const [i, slept] of sleeps.entries()) {
+    assert.equal(attemptAt[i + 1], slept.from + slept.ms,
+      `attempt ${i + 2} must resume only after the full ${slept.ms}ms elapsed on the clock`);
+  }
 });
 
 test('classifyError takes exactly one argument, so it is safe as a callback', () => {

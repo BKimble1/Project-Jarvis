@@ -226,3 +226,22 @@ test('req4.9 the page boots its modules without a syntax error', async () => {
     assert.ok(Object.keys(mod).length > 0, `public/modules/${file} exports nothing`);
   }
 });
+
+test('req4.10 a missing asset 404s instead of quietly serving the page', async (t) => {
+  const app = makeApp();
+  const server = createServer({ app });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => { server.close(); await app.cleanup(); });
+
+  for (const missing of ['/modules/typo.js', '/theme.css', '/api/nope']) {
+    const res = await fetch(`${base}${missing}`);
+    assert.equal(res.status, 404, `${missing} must 404, not fall back to the page`);
+    assert.ok(!(await res.text()).includes('<!DOCTYPE html>'));
+  }
+  // A route-like path still renders the app.
+  const route = await fetch(`${base}/projects/abc`);
+  assert.equal(route.status, 200);
+  assert.match(await route.text(), /<!DOCTYPE html>/);
+});

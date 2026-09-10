@@ -73,8 +73,13 @@ function serveStatic({ res, url, publicDir, logger }) {
   }
   fs.readFile(target, (err, data) => {
     if (err) {
-      if (url.pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found' });
-      // SPA fallback
+      // Only route-like paths fall back to the page. A missing .js or .css must
+      // 404 loudly — serving HTML in its place breaks module loading silently.
+      const looksLikeAsset = path.extname(rel) !== '';
+      if (url.pathname.startsWith('/api/') || looksLikeAsset) {
+        logger.warn(`404 ${url.pathname}`);
+        return sendJson(res, 404, { error: 'Not found', path: url.pathname });
+      }
       return fs.readFile(path.join(publicDir, 'index.html'), (err2, html) => {
         if (err2) return sendJson(res, 404, { error: 'Not found' });
         res.writeHead(200, { 'content-type': MIME['.html'] });
