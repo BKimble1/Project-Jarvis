@@ -139,16 +139,52 @@ const WINDOW_BY_NAME: Readonly<Record<string, RateWindow>> = {
 };
 
 /**
+ * The value above which a reported share can only be a percentage.
+ *
+ * One field, two possible scales, and nothing in the payload that says which is in force.
+ * `utilization` is meant to be a percentage, and a fraction of the same window is the other obvious
+ * way to express the same quantity — a shape-compatible difference, which is precisely the kind the
+ * structural typing above is built to survive and this validation is not. The usage call is
+ * explicitly experimental, so "it is a percentage today" is not a guarantee about tomorrow.
+ *
+ * So a figure in (0, 1] is refused, because both readings survive it and they disagree in the
+ * direction that costs the most. Read as a percentage, `0.42` renders as "100% left" and clears the
+ * governor to spend an account that is nearly half gone; `1` — the value a fraction-scale reader
+ * sends for a window that is *completely used up* — renders as "99% left". Above 1 the fraction
+ * reading is impossible, so the figure is believed; at exactly 0 the two readings agree, so it is
+ * believed too. Those are the only two cases where believing it is not a guess.
+ *
+ * What the refusal costs is small and bounded: an unreadable window makes `decideCapacity` narrow
+ * the loop to one thing at a time and say so, rather than stop, so a genuine 0.4% just after a
+ * reset buys a couple of cautious passes until utilisation climbs past 1. Believing a fraction
+ * buys a confident wrong number that an owner is being asked to act on.
+ */
+export const AMBIGUOUS_FRACTION_CEILING = 1;
+
+/**
+ * True for a figure that could be a fraction of a whole rather than a percentage of one.
+ *
+ * Shared by the window and the context paths rather than written into `percentage` alone: both take
+ * a share from the same experimental interface, and a rule that lived in only one of them would
+ * leave the other believing the reading it refused.
+ */
+function ambiguousFraction(value: number): boolean {
+  return value > 0 && value <= AMBIGUOUS_FRACTION_CEILING;
+}
+
+/**
  * A percentage, or null.
  *
  * Anything that is not a finite number in 0–100 is refused rather than clamped. A clamp turns a
  * nonsensical 140 into a confident 100 — "you are out of capacity" — and a negative into a
  * confident 0 — "spend freely". Both are decisions, and neither is one this function is entitled
- * to make on the provider's behalf.
+ * to make on the provider's behalf. A figure that cannot be told apart from a fraction is refused
+ * for the same reason and on the same principle: see `AMBIGUOUS_FRACTION_CEILING`.
  */
 function percentage(value: number | null | undefined): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   if (value < 0 || value > 100) return null;
+  if (ambiguousFraction(value)) return null;
   return value;
 }
 
@@ -264,10 +300,18 @@ export function buildCapacityReport(
     ? {
         usedTokens: tokenCount(sources.context.total_tokens),
         maxTokens: tokenCount(sources.context.raw_max_tokens),
+        /*
+         * The same ambiguity, with its own consequence. A context share of `0.85` is either a
+         * session 85% full — the point at which work has to be checkpointed before a compaction
+         * takes it — or one 0.85% full, and believing the second reads as "healthy" right up until
+         * the turns start being dropped. Null is the safe answer here by construction: an
+         * unreadable context makes `assessContext` checkpoint anyway.
+         */
         percentUsed:
           typeof sources.context.percentage === 'number' &&
           Number.isFinite(sources.context.percentage) &&
-          sources.context.percentage >= 0
+          sources.context.percentage >= 0 &&
+          !ambiguousFraction(sources.context.percentage)
             ? Math.min(sources.context.percentage, 1000)
             : null,
         overLimit: Boolean(sources.context.over_limit),

@@ -1,6 +1,24 @@
-import type { CapacityView } from '@/domain/claude-capacity';
+import type { CapacityView, CapacityWindowView } from '@/domain/claude-capacity';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { RelativeTime } from '@/components/relative-time';
+
+/**
+ * The view this card needs: the domain's window rows, plus when each figure was read.
+ *
+ * Declared here rather than imported from `@/server/operator/capacity-view`, which is where the
+ * builder declares the same refinement, because a component may not import a server module — the
+ * boundary that keeps presentational components from reaching into services. The two declarations
+ * are not free to drift: they meet on the operations page, where the builder's output is handed to
+ * this component, and `observedAt` is required, so a builder that stopped carrying it would fail
+ * the build rather than quietly go back to rendering "Last known" with no age.
+ */
+interface CapacityWindowViewWithObservation extends CapacityWindowView {
+  readonly observedAt: string | null;
+}
+
+interface CapacityViewWithObservations extends CapacityView {
+  readonly windows: readonly CapacityWindowViewWithObservation[];
+}
 
 /**
  * How much Claude is left, and how sure Jarvis is about it.
@@ -14,7 +32,7 @@ import { RelativeTime } from '@/components/relative-time';
  * one. Multiplying a percentage by a guess at a plan size would produce the most convincing number
  * on the page and the only entirely invented one.
  */
-export function ClaudeCapacity({ view }: { view: CapacityView }) {
+export function ClaudeCapacity({ view }: { view: CapacityViewWithObservations }) {
   return (
     <Card>
       <CardHeader>
@@ -50,6 +68,17 @@ export function ClaudeCapacity({ view }: { view: CapacityView }) {
                 )}
                 <p className="text-xs text-[var(--color-text-muted)]">
                   {window.qualityLabel}
+                  {/*
+                   * The age, beside the label rather than instead of it. "Last known" is a claim
+                   * about the figure and says nothing about how far out of date it might be, and
+                   * an owner deciding whether to start something is asking the second question.
+                   */}
+                  {window.observedAt ? (
+                    <>
+                      {', '}
+                      <RelativeTime iso={window.observedAt} />
+                    </>
+                  ) : null}
                   {window.resetsAt ? (
                     <>
                       {' · resets '}

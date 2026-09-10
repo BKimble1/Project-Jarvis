@@ -95,6 +95,7 @@ describe('reading Claude capacity from the SDK', () => {
           rate_limits: {
             five_hour: { utilization: 140, resets_at: null },
             seven_day: { utilization: -5, resets_at: null },
+            seven_day_opus: { utilization: Number.NaN, resets_at: null },
           },
         },
       },
@@ -107,6 +108,82 @@ describe('reading Claude capacity from the SDK', () => {
      */
     expect(report?.windows.fiveHour).toBeNull();
     expect(report?.windows.sevenDay).toBeNull();
+    /* And NaN, which every comparison it is put through answers false to. */
+    expect(report?.windows.sevenDayOpus).toBeNull();
+  });
+
+  it('refuses a utilisation that cannot be told apart from a fraction', () => {
+    /*
+     * The failure this guards: an SDK that reports `0.42` for a window that is 42% gone. Believed
+     * as a percentage it renders as "100% left" on the operations page and clears the governor to
+     * start work on an account that is nearly half spent — the one direction in which a wrong
+     * capacity figure actively costs the owner something.
+     */
+    const report = buildCapacityReport(
+      {
+        usage: {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: { utilization: 0.42, resets_at: '2026-03-01T15:00:00.000Z' },
+            /* What a fraction-scale reader sends for a window that is completely used up. */
+            seven_day: { utilization: 1, resets_at: null },
+          },
+        },
+        /* The event path reads the same field from the same SDK, so it refuses the same band. */
+        rateLimit: { rateLimitType: 'seven_day_opus', utilization: 0.9, resetsAt: 1_772_370_000 },
+      },
+      OPTIONS,
+    );
+
+    expect(report?.windows.fiveHour).toBeNull();
+    expect(report?.windows.sevenDay).toBeNull();
+    expect(report?.windows.sevenDayOpus).toBeNull();
+  });
+
+  it('still believes 0, and any figure a fraction could not be', () => {
+    /*
+     * The other half of the same decision. Zero means the same thing on either scale, and nothing
+     * above 1 can be a fraction, so refusing either would throw away a real reading — and a
+     * window that reads "unknown" all week narrows the loop for no reason at all.
+     */
+    const report = buildCapacityReport(
+      {
+        usage: {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: { utilization: 0, resets_at: null },
+            seven_day: { utilization: 100, resets_at: null },
+            seven_day_opus: { utilization: 1.5, resets_at: null },
+          },
+        },
+      },
+      OPTIONS,
+    );
+
+    expect(report?.windows.fiveHour?.utilisationPercent).toBe(0);
+    expect(report?.windows.sevenDay?.utilisationPercent).toBe(100);
+    expect(report?.windows.sevenDayOpus?.utilisationPercent).toBe(1.5);
+  });
+
+  it('refuses a context share that cannot be told apart from a fraction', () => {
+    /*
+     * Same ambiguity, different cost. `0.85` is either a session 85% full — the point at which
+     * work has to be checkpointed before a compaction takes it — or one 0.85% full, and believing
+     * the second reads as "healthy" right up until the earlier turns start being dropped. Null is
+     * the safe answer here rather than merely the honest one: an unreadable context checkpoints.
+     */
+    const report = buildCapacityReport(
+      {
+        usage: { rate_limits_available: true, rate_limits: {} },
+        context: { total_tokens: 170_000, raw_max_tokens: 200_000, percentage: 0.85 },
+      },
+      OPTIONS,
+    );
+
+    expect(report?.context?.percentUsed).toBeNull();
+    /* The token counts carry no such ambiguity, so they still travel. */
+    expect(report?.context?.usedTokens).toBe(170_000);
+    expect(report?.context?.maxTokens).toBe(200_000);
   });
 
   it('empties the windows when the provider says plan limits do not apply', () => {

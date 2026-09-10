@@ -1284,8 +1284,9 @@ export class TaskRunner {
         boundText(
           redactSecrets(
             `${this.assignment.taskKey} failed (${code}) but the control plane would not accept ` +
-              `the report: ${describeReportRefusal(error)}. The task is still open there and will ` +
-              `close only when Jarvis reclaims it.`,
+              `the report: ${describeReportRefusal(error)}. Unless another worker has taken the ` +
+              `task over, it is still open there — and the reclaim path will not close it while ` +
+              `this worker is alive and heartbeating.`,
           ),
           1000,
         ),

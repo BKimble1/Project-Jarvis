@@ -85,6 +85,129 @@ export interface SpeechControls extends SpeechState {
   setPhase(phase: SpeechPhase): void;
 }
 
+/* ------------------------------------------------------------------ saying things in order */
+
+/** One thing to say, in the caller's words and with the delivery it asked for. */
+export interface SpeechItem {
+  readonly text: string;
+  readonly voice?: string;
+  readonly rate?: number;
+}
+
+export interface SpeechQueueDeps {
+  /**
+   * Say one item, and call `finished` when it has finished or failed.
+   *
+   * Both outcomes advance the queue, because a sentence the voice cannot manage must not take the
+   * rest of the batch down with it. `finished` may arrive more than once for the same item —
+   * browsers disagree about whether a failure fires `error` alone or `error` and then `end` — and
+   * every call after the first is ignored.
+   */
+  readonly play: (item: SpeechItem, finished: () => void) => void;
+  /** Stop whatever is being said this instant. Only ever called by `drop`. */
+  readonly stop: () => void;
+  /** Reported when playback starts and when the queue runs dry, and at no other time. */
+  readonly speakingChanged: (speaking: boolean) => void;
+}
+
+export interface SpeechQueue {
+  /** Say this after everything already waiting, and start playing if nothing is. */
+  readonly enqueue: (item: SpeechItem) => void;
+  /** Stop now and abandon the rest — what the "Stop speaking" control promises. */
+  readonly drop: () => void;
+}
+
+/**
+ * How many sentences may wait behind the one being spoken.
+ *
+ * The dashboard claims up to three operating events and up to three reminders in a single poll and
+ * polls every six seconds, so a machine that has been busy hands this queue six sentences at a
+ * time — faster than they can be said, because a sentence takes a few seconds. Unbounded, a long
+ * unattended run builds a monologue that outlives its own subject: the owner walks up, presses
+ * nothing, and is read several minutes of history whose oldest line describes a mission that has
+ * since finished.
+ *
+ * Twelve is two of those polls' worth, roughly a minute of talking: long enough that a genuine
+ * burst of activity is narrated whole, short enough that what is being said is still approximately
+ * what is happening. Beyond it the *oldest* waiting sentence is dropped rather than the newest,
+ * because this is a narrator of what just happened and the newest line is the one the owner is
+ * standing there waiting for.
+ */
+export const MAX_QUEUED_UTTERANCES = 12;
+
+/**
+ * Speech in the order it was asked for, one sentence at a time.
+ *
+ * ## Why a queue and not `speechSynthesis.speak`
+ *
+ * Because `speak` used to open with `speechSynthesis.cancel()`, and the dashboard says a *batch*:
+ * it claims everything unspoken and reads it in a loop. Every sentence in that loop killed the one
+ * before it, so only the last was ever heard — and the claim is a watermark, so the server had
+ * already stamped all of them spoken. The ones nobody heard were not pending any more. They were
+ * gone, silently, with nothing on screen to say so.
+ *
+ * ## Why a run counter rather than a flag
+ *
+ * `speechSynthesis.cancel()` does not merely stop the current utterance: Chrome then fires that
+ * utterance's `onend`. A queue that advanced on `onend` would answer "Stop speaking" by starting
+ * the next sentence. Each callback carries the run it was made in, `drop` moves the run on, and a
+ * callback from an abandoned run is ignored — which is what makes `drop` mean "and nothing after
+ * this" rather than "skip one".
+ *
+ * ## Why it is not React
+ *
+ * The ordering is the part that broke, and ordering is testable without a browser. Nothing in here
+ * touches `window`: the utterance is built by `play`, which the hook supplies.
+ */
+export function createSpeechQueue(deps: SpeechQueueDeps): SpeechQueue {
+  const waiting: SpeechItem[] = [];
+  let speaking = false;
+  let run = 0;
+
+  const advance = (): void => {
+    const next = waiting.shift();
+    if (!next) {
+      if (speaking) {
+        speaking = false;
+        deps.speakingChanged(false);
+      }
+      return;
+    }
+    /*
+     * Reported once for a batch, not once per sentence. The core's ring is driven by this, and a
+     * ring that blinks out between two sentences of the same announcement reads as "it stopped".
+     */
+    if (!speaking) {
+      speaking = true;
+      deps.speakingChanged(true);
+    }
+    const mine = run;
+    let settled = false;
+    deps.play(next, () => {
+      if (settled || mine !== run) return;
+      settled = true;
+      advance();
+    });
+  };
+
+  return {
+    enqueue(item) {
+      waiting.push(item);
+      while (waiting.length > MAX_QUEUED_UTTERANCES) waiting.shift();
+      if (!speaking) advance();
+    },
+    drop() {
+      /* Before `stop`, because cancelling is itself something the browser answers with `onend`. */
+      run += 1;
+      waiting.length = 0;
+      const wasSpeaking = speaking;
+      speaking = false;
+      deps.stop();
+      if (wasSpeaking) deps.speakingChanged(false);
+    },
+  };
+}
+
 export function useSpeech(options: { readonly lang?: string } = {}): SpeechControls {
   const [phase, setPhase] = React.useState<SpeechPhase>('idle');
   const [transcript, setTranscript] = React.useState('');
@@ -93,6 +216,7 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
   const [voices, setVoices] = React.useState<readonly { name: string; lang: string }[]>([]);
   const recognition = React.useRef<RecognitionLike | null>(null);
   const keeping = React.useRef(true);
+  const playback = React.useRef<SpeechQueue | null>(null);
 
   const supported = React.useMemo(() => recognitionConstructor() !== null, []);
   const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window;
@@ -114,6 +238,13 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
     return () => {
       recognition.current?.abort();
       recognition.current = null;
+      /*
+       * The queue is dropped, not merely cancelled. An utterance already playing fires its end
+       * callback after the page has gone, and a queue still holding items would answer that by
+       * starting the next one — a voice narrating a screen nobody is looking at.
+       */
+      playback.current?.drop();
+      playback.current = null;
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -199,45 +330,70 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
     setPhase('idle');
   }, []);
 
+  /**
+   * The one queue this hook speaks through, built on first use.
+   *
+   * Held in a ref rather than a `useMemo` because React is allowed to throw a memoised value away
+   * and rebuild it, and a rebuilt queue is an empty queue that has forgotten a callback the browser
+   * is still going to call — the sentences waiting behind the one playing would simply never be
+   * said, which is the failure this queue exists to end.
+   */
+  const playbackQueue = React.useCallback((): SpeechQueue => {
+    playback.current ??= createSpeechQueue({
+      play: (item, finished) => {
+        const utterance = new SpeechSynthesisUtterance(item.text);
+        utterance.rate = item.rate ?? 1;
+
+        const installed = window.speechSynthesis.getVoices();
+        /*
+         * A name the owner picked wins outright; otherwise the British preference decides.
+         *
+         * `chooseVoice` is deliberately a pure function over the list rather than a lookup here, so
+         * the fallback order — George, then the other en-GB male voices, then any British voice,
+         * then the browser's own — is testable without a browser, and so the sentence shown in
+         * settings is generated from the same decision that picks the voice rather than written
+         * beside it.
+         */
+        const named = item.voice
+          ? installed.find((voice) => voice.name === item.voice)
+          : undefined;
+        const chosen =
+          named ?? installed.find((voice) => voice.name === chooseVoice(installed).voice?.name);
+        if (chosen) utterance.voice = chosen;
+
+        /*
+         * A slightly slower, slightly lower delivery.
+         *
+         * Only applied when the caller did not ask for a rate. The default 1.0 on the Windows en-GB
+         * voices is a touch brisk for a sentence you are hearing rather than reading, and the pitch
+         * drop is what stops it sounding like a station announcement.
+         */
+        if (item.rate === undefined) utterance.rate = 0.96;
+        utterance.pitch = 0.95;
+
+        utterance.onend = () => finished();
+        /* A failure ends this sentence and no other: the queue owes the owner the rest of them. */
+        utterance.onerror = () => finished();
+        window.speechSynthesis.speak(utterance);
+      },
+      stop: () => window.speechSynthesis.cancel(),
+      speakingChanged: (speaking) =>
+        setPhase((current) => (speaking ? 'speaking' : current === 'speaking' ? 'idle' : current)),
+    });
+    return playback.current;
+  }, []);
+
   const speak = React.useCallback(
     (text: string, speakOptions: { voice?: string; rate?: number } = {}) => {
       if (!canSpeak || text.trim().length === 0) return;
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = speakOptions.rate ?? 1;
-
-      const installed = window.speechSynthesis.getVoices();
       /*
-       * A name the owner picked wins outright; otherwise the British preference decides.
-       *
-       * `chooseVoice` is deliberately a pure function over the list rather than a lookup here, so
-       * the fallback order — George, then the other en-GB male voices, then any British voice, then
-       * the browser's own — is testable without a browser, and so the sentence shown in settings is
-       * generated from the same decision that picks the voice rather than written beside it.
+       * Queued, never interrupting. Interrupting is `silence`, which the microphone button calls
+       * before it opens — so "stop talking now" is still something this hook does; it is simply no
+       * longer what every ordinary sentence does to the sentence in front of it.
        */
-      const named = speakOptions.voice
-        ? installed.find((voice) => voice.name === speakOptions.voice)
-        : undefined;
-      const chosen =
-        named ?? installed.find((voice) => voice.name === chooseVoice(installed).voice?.name);
-      if (chosen) utterance.voice = chosen;
-
-      /*
-       * A slightly slower, slightly lower delivery.
-       *
-       * Only applied when the caller did not ask for a rate. The default 1.0 on the Windows en-GB
-       * voices is a touch brisk for a sentence you are hearing rather than reading, and the pitch
-       * drop is what stops it sounding like a station announcement.
-       */
-      if (speakOptions.rate === undefined) utterance.rate = 0.96;
-      utterance.pitch = 0.95;
-
-      utterance.onend = () => setPhase((current) => (current === 'speaking' ? 'idle' : current));
-      utterance.onerror = () => setPhase('idle');
-      setPhase('speaking');
-      window.speechSynthesis.speak(utterance);
+      playbackQueue().enqueue({ text, ...speakOptions });
     },
-    [canSpeak],
+    [canSpeak, playbackQueue],
   );
 
   /*
@@ -252,9 +408,9 @@ export function useSpeech(options: { readonly lang?: string } = {}): SpeechContr
 
   const silence = React.useCallback(() => {
     if (!canSpeak) return;
-    window.speechSynthesis.cancel();
-    setPhase((current) => (current === 'speaking' ? 'idle' : current));
-  }, [canSpeak]);
+    /* Everything, not just the sentence in the air — the control says "Stop speaking", not "Skip". */
+    playbackQueue().drop();
+  }, [canSpeak, playbackQueue]);
 
   return {
     supported,

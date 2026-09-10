@@ -163,7 +163,7 @@ describe('a task claimed and then not handed out', () => {
   }
 
   /** The one task the unwind touched, found by the counter the unwind increments. */
-  async function unwoundTask(graphId: string) {
+  async function unwoundTasks(graphId: string) {
     const tasks = await harness.services.tasks.listByGraph(graphId);
     return tasks.filter((task) => task.reclaimCount > 0);
   }
@@ -186,7 +186,7 @@ describe('a task claimed and then not handed out', () => {
     expect(await harness.services.tasks.listActive()).toHaveLength(0);
     expect(await harness.services.tasks.countActive()).toBe(0);
 
-    const [released] = await unwoundTask(graphId);
+    const [released] = await unwoundTasks(graphId);
     expect(released).toBeDefined();
     expect(released!.state).toBe('ready');
     expect(released!.activeRunId).toBeNull();
@@ -241,7 +241,7 @@ describe('a task claimed and then not handed out', () => {
     ).rejects.toThrow('Postgres said no.');
     restore();
 
-    expect(await unwoundTask(graphId)).toHaveLength(1);
+    expect(await unwoundTasks(graphId)).toHaveLength(1);
   }, 60_000);
 
   it('leaves an ordinary claim exactly as it found it', async () => {
@@ -262,7 +262,7 @@ describe('a task claimed and then not handed out', () => {
     expect(task?.attempt).toBe(1);
     /* Untouched by the unwind: no attempt handed back, no reclaim counted, no lease released. */
     expect(task?.reclaimCount).toBe(0);
-    expect(await unwoundTask(graphId)).toHaveLength(0);
+    expect(await unwoundTasks(graphId)).toHaveLength(0);
     expect(await harness.services.tasks.countActive()).toBe(1);
 
     const run = await harness.services.missionRuns.findById(assignment!.runId);
@@ -288,7 +288,7 @@ describe('a task claimed and then not handed out', () => {
     }
     restore();
 
-    const [ended] = await unwoundTask(graphId);
+    const [ended] = await unwoundTasks(graphId);
     expect(ended?.state).toBe('failed');
     expect(ended?.reclaimCount).toBe(RECLAIM_GRACE + 1);
 
@@ -431,7 +431,8 @@ describe('a worker that cannot report its own failure', () => {
     const logs: string[] = [];
     const runner = runnerWith(
       {
-        events: () => Promise.reject(new ControlPlaneError('This worker was revoked.', 401, 'unauthorized')),
+        events: () =>
+          Promise.reject(new ControlPlaneError('This worker was revoked.', 401, 'unauthorized')),
         taskState: async (input) => {
           reports.push(input);
           return { ok: true, taskState: 'failed', stopRequested: false, pauseRequested: false };
@@ -443,11 +444,16 @@ describe('a worker that cannot report its own failure', () => {
     /* The revoked worker still stops. That part was right, and is deliberately unchanged. */
     await expect(runner.run()).rejects.toBeInstanceOf(ControlPlaneError);
 
-    /* But not instead of ending the task. */
+    /*
+     * But not instead of ending the task. The failure reported is the revocation itself, because
+     * with this token the very first `emit` in `run` already throws — which is exactly the shape
+     * this happens in: a worker whose token is pulled mid-shift fails on the next thing it says,
+     * whatever that was going to be, and the task it is holding has to end anyway.
+     */
     const failed = reports.filter((report) => report.taskState === 'failed');
-    expect(failed.length).toBeGreaterThan(0);
+    expect(failed).toHaveLength(1);
     expect(failed[0]?.failureCode).toBe('agent_error');
-    expect(String(failed[0]?.failureMessage)).toMatch(/nothing to review/);
+    expect(String(failed[0]?.failureMessage)).toMatch(/revoked/);
   });
 
   it('says out loud when the terminal report itself is refused', async () => {

@@ -313,9 +313,11 @@ export class TaskWorkerService {
     );
     const canRetry = task.reclaimCount < RECLAIM_GRACE;
     /*
-     * The unwind must not replace the failure that caused it. The worker still has to be told why
-     * its claim failed, and a control plane that cannot write these rows cannot write better ones
-     * either — a swallowed release leaves a stranded task *and* an unexplained one.
+     * Swallowed, and this is the one place in the claim path where that is right. If putting the
+     * task back also fails, the failure that caused the unwind is the more useful of the two — it
+     * is what the worker is answered with and what the route records — and replacing it with a
+     * second database error would hide the first while fixing nothing, because a control plane
+     * that cannot write these four rows cannot write better ones either.
      */
     await this.releaseClaim(task, runId, {
       returnTo: canRetry ? 'ready' : 'failed',

@@ -96,13 +96,35 @@ export async function currentCapacityDecision(
 
 type LastPass = Awaited<ReturnType<Services['operatorService']['recentTicks']>>[number] | null;
 
+/**
+ * A window row that also says when the figure on it was read.
+ *
+ * `CapacityWindowView` carries how a figure was known — "Measured", "Last known" — and not when,
+ * and "Last known" without an age is the half of that sentence that does not help: a reading taken
+ * four minutes ago and one taken four hours ago render identically, and only one of them is a basis
+ * for starting a mission. Worse, the two are genuinely different situations — the second usually
+ * means the worker that reported it has gone quiet — and the screen was unable to say so.
+ *
+ * Declared as a refinement of the domain view rather than a widening of it: every existing consumer
+ * of `CapacityView` keeps compiling and the wallboard's projection is untouched, while the surface
+ * that renders an age gets a required field it cannot silently lose.
+ */
+export interface CapacityWindowViewWithObservation extends CapacityWindowView {
+  /** When the utilisation figure was read. Null when there is no figure to age. */
+  readonly observedAt: string | null;
+}
+
+export interface CapacityViewWithObservations extends CapacityView {
+  readonly windows: readonly CapacityWindowViewWithObservation[];
+}
+
 export async function buildCapacityView(
   services: Services,
   now = new Date(),
-): Promise<CapacityView> {
+): Promise<CapacityViewWithObservations> {
   const { decision, account, lastFinished } = await currentCapacityDecision(services, now);
 
-  const windows: CapacityWindowView[] = RATE_WINDOWS.map((window) => {
+  const windows: CapacityWindowViewWithObservation[] = RATE_WINDOWS.map((window) => {
     const observed = account.windows[window].utilisationPercent;
     const resets = account.windows[window].resetsAt;
     return {
@@ -114,6 +136,14 @@ export async function buildCapacityView(
       resetsAt: resets.value,
       quality: observed.quality,
       qualityLabel: OBSERVATION_QUALITY_LABELS[observed.quality],
+      /*
+       * The reading's own time, carried from the observation rather than stamped with `now`.
+       * `mergeAccountLimits` answers each window from the newest worker that had a figure for it,
+       * which may not be a worker that has said anything since — stamping the render time would
+       * make every figure on the page look freshly taken, which is the one thing the quality label
+       * exists to prevent.
+       */
+      observedAt: observed.observedAt,
     };
   });
 
