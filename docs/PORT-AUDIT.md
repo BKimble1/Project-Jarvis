@@ -24,3 +24,32 @@ Verdicts are from reading the real code at 07ec0465, with the measurements taken
 Most of what I was asked to port already exists here, usually in a better form than the prototype's.
 Porting my versions over them would be a downgrade. So the work is: fix the genuine defects the
 audit found, and lock the existing guarantees into the real suites.
+
+## What was changed, and what was left alone
+
+Every row below is a defect that was measured in the real code before it was changed, and verified
+after. Nothing from the prototype was copied in; where the real system was already better, it was
+left alone and a test was added instead of a rewrite.
+
+| Commit               | Defect it removes                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `c45adcc`            | `evaluate only: build X` classified as work and provisioned a project, a repository and a mission. The prohibition held or failed on the punctuation after it.                                                                                                                                                                                                                             |
+| `e26af5c`            | An ordinal typed after the list had scrolled away accepted whatever proposal was open and provisioned a repository.                                                                                                                                                                                                                                                                        |
+| `eefaac3`            | A change to work in flight forked a second project; `focusedProjectId` was declared and never read; `subjectOf` did not know the preposition `to`.                                                                                                                                                                                                                                         |
+| `a8a5c64`, `e1f7ac4` | `isRetryable` read only the message, so a 403 saying "timeout" was retried and a 529 was given up on. The first attempt fixed only errors carrying a `status` property; the status Claude Code actually sends is inside the sentence. The same commit read child-process exit codes (137, 143) as HTTP verdicts, and indexed a failure-code table with a string read off an unknown error. |
+| `5a5ffa6`            | `tick` had no caller on a timer, so a mission whose last unit of work ended without a terminal report sat still, looking active, with nothing anywhere recording that it had stopped.                                                                                                                                                                                                      |
+| `d2c8dbd`            | A task claimed and then not handed out stayed `claimed` for ever, holding a slot against every ceiling, unreachable by the reclaim path because its worker was alive. A usage share in (0, 1] was believed, so an exhausted account could render as "100% left".                                                                                                                           |
+| `d52ef56`            | A batch of announcements was inaudible: each utterance cancelled its predecessor while the server had already stamped all of them spoken.                                                                                                                                                                                                                                                  |
+| `54b5beb`, `2950d14` | A question's answer was printed twice, a hand's width apart.                                                                                                                                                                                                                                                                                                                               |
+
+### Left alone deliberately
+
+- **The mission state machine, repair rounds and reviewer verdicts.** Richer than the prototype's
+  six phases. Only the missing timer was added.
+- **Retry ownership.** Four bounded mechanisms, deliberately layered so that a failed unit of work is
+  never auto-retried. The prototype's single budget would have been a downgrade.
+- **Percent validation.** `percentage()` already refused NaN, negative and out-of-range values rather
+  than clamping, with the reasoning written down. The prototype's 100× scale bug cannot occur here.
+- **The spoken-once watermark.** Server-side, pinned by `tests/integration/spoken-once.test.ts`, and
+  correct. Only the client's playback was wrong.
+- **Capacity-driven pacing.** Five layers, feeding a real governor. Nothing to port.
