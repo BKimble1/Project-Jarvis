@@ -1,6 +1,6 @@
 import { newId } from '../core/ids.js';
 import { createLogger } from '../core/logger.js';
-import { canRun, nextPhase } from './lifecycle.js';
+import { canRun, isTerminal, nextPhase } from './lifecycle.js';
 import { classifyError, RetryBudget } from './retry.js';
 import { DeterministicPlanner } from './planner.js';
 
@@ -155,6 +155,9 @@ export class Orchestrator {
   // ------------------------------------------------------------- controls
 
   pause(projectId) {
+    const current = this._project(projectId);
+    // Pausing something already finished is meaningless; don't rewrite history.
+    if (!current || isTerminal(current.status)) return current;
     const p = this._patchProject(projectId, { status: 'paused' });
     if (p) {
       this.bus.emit('project.paused', { projectId, project: p });
@@ -177,6 +180,8 @@ export class Orchestrator {
   }
 
   stop(projectId) {
+    const current = this._project(projectId);
+    if (!current || current.status === 'stopped') return current;
     const p = this._patchProject(projectId, { status: 'stopped' });
     if (p) {
       this.bus.emit('project.stopped', { projectId, project: p });

@@ -71,8 +71,10 @@ export function createApp({
     orchestrator, conversations, questions, backlog, usage, speech, clock, store, bus,
   });
 
-  // Single source of speech: every bus event is offered to the policy once.
+  // Single source of speech: every bus event is offered to the policy exactly
+  // once. Speech's own events are skipped so an utterance cannot feed itself.
   bus.on('*', (evt) => {
+    if (typeof evt.type === 'string' && evt.type.startsWith('speech.')) return;
     try { speech.consider(evt); } catch (err) { logger.error('speech.consider failed', err?.message); }
   });
 

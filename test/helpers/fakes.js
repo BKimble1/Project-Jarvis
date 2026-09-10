@@ -121,3 +121,26 @@ export function recordEvents(bus, types = null) {
 export async function settle(times = 5) {
   for (let i = 0; i < times; i++) await new Promise((r) => setImmediate(r));
 }
+
+/**
+ * Executor that blocks on a barrier so a test can act while work is genuinely
+ * in flight. `firstArrival` resolves as soon as a gated task starts.
+ */
+export function createGatedExecutor({ gateKind = 'implement', script = {} } = {}) {
+  const base = createScriptedExecutor({ script });
+  const arrived = [];
+  let openGate;
+  let announceArrival;
+  const gate = new Promise((resolve) => { openGate = resolve; });
+  const firstArrival = new Promise((resolve) => { announceArrival = resolve; });
+
+  const executor = async (task, ctx) => {
+    if (task.kind === gateKind) {
+      arrived.push(task.id);
+      announceArrival(task);
+      await gate;
+    }
+    return base(task, ctx);
+  };
+  return { executor, release: () => openGate(), firstArrival, arrived };
+}

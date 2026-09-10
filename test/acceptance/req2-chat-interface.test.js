@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeApp, createScriptedExecutor, recordEvents } from '../helpers/harness.js';
+import { makeApp, createScriptedExecutor, createGatedExecutor, recordEvents } from '../helpers/harness.js';
 
 /**
  * Acceptance requirement 2 — "Make chat the complete interface".
@@ -70,18 +70,27 @@ test('req2.4 "continue" resumes the right project', async (t) => {
   assert.equal(app.store.get('projects', start.projectId).status, 'delivered');
 });
 
-test('req2.5 status, pause and stop all work from chat', async (t) => {
-  const app = makeApp();
-  t.after(() => app.cleanup());
+test('req2.5 status, pause and stop all work from chat while a build is in flight', async (t) => {
+  const gated = createGatedExecutor();
+  const app = makeApp({ executor: gated.executor });
+  t.after(() => { gated.release(); return app.cleanup(); });
 
   const start = await say(app, 'build a markdown editor with preview and export');
+  await gated.firstArrival;
+
   const status = await say(app, "how's it going?");
   assert.equal(status.intent.kind, 'status');
-  assert.match(status.reply, /\w/);
+  assert.match(status.reply, /^I\b|^I'm\b/, `status must answer in first person, got: ${status.reply}`);
 
   const paused = await say(app, 'pause');
   assert.equal(paused.intent.kind, 'pause');
   assert.equal(app.store.get('projects', start.projectId).status, 'paused');
+
+  gated.release();
+  await app.orchestrator.run(start.projectId);
+  const afterRelease = app.store.get('projects', start.projectId);
+  assert.equal(afterRelease.status, 'paused', 'a paused build does not quietly finish itself');
+  assert.notEqual(afterRelease.phase, 'idle');
 
   const stopped = await say(app, 'stop');
   assert.equal(stopped.intent.kind, 'stop');

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../../src/app.js';
-import { AutoClock, StubProvider, liveMeasurement, failedMeasurement, createScriptedExecutor, silentLogger, recordEvents, settle } from './fakes.js';
+import { AutoClock, StubProvider, liveMeasurement, failedMeasurement, createScriptedExecutor, createGatedExecutor, silentLogger, recordEvents, settle } from './fakes.js';
 
 /** Build a fully wired app on a throwaway data dir. */
 export function makeApp(overrides = {}) {
@@ -29,4 +29,4 @@ export function makeApp(overrides = {}) {
 }
 
 
-export { AutoClock, StubProvider, liveMeasurement, failedMeasurement, createScriptedExecutor, silentLogger, recordEvents, settle };
+export { AutoClock, StubProvider, liveMeasurement, failedMeasurement, createScriptedExecutor, createGatedExecutor, silentLogger, recordEvents, settle };
