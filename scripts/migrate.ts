@@ -3,10 +3,20 @@
  * Applies every pending SQL migration using the driver the current environment is configured for.
  * Run locally with `npm run db:migrate`; Netlify runs it as part of the build command.
  */
-import 'dotenv/config';
+import { loadEnvFiles } from './workspaces';
 import { getDatabaseHandle } from '../src/server/db/client';
 import { runMigrations } from '../src/server/db/migrate';
 import { getConfig } from '../src/server/config/env';
+
+/*
+ * Before anything reads the environment: `.env.local`, then `.env`.
+ *
+ * This script is the reason the loader exists. It used to read `.env` only, so an owner who
+ * followed the setup documents and put `DATABASE_URL` in `.env.local` migrated the local PGlite
+ * database instead — and this printed "up to date" and exited 0 about a database nobody asked it
+ * to touch.
+ */
+loadEnvFiles();
 
 async function main(): Promise<void> {
   const config = getConfig();

@@ -10,6 +10,9 @@ import { clampCapacityLimits, type CapacityLimits } from '@/domain/capacity';
  *
  * The guiding rule is **fail closed**: in production, a missing owner identity, session secret
  * or database URL is a hard configuration error rather than a permissive default.
+ *
+ * The second rule is that **a blank value means unset**, everywhere and for every variable. See
+ * `withoutBlankValues`.
  */
 
 const bool = (defaultValue: boolean) =>
@@ -41,6 +44,35 @@ const positiveInt = (defaultValue: number, max = 1_000_000) =>
       }
       return parsed;
     });
+
+/**
+ * The environment with every blank value removed, so that `KEY=` is indistinguishable from a
+ * variable nobody set.
+ *
+ * `dotenv` turns a bare `KEY=` line into the empty string rather than leaving the variable unset,
+ * and `.env.example` is full of bare `KEY=` lines because that is how a template says "fill this
+ * in". Three documents tell the owner to `cp .env.example .env.local`, and doing so used to hand
+ * this schema `JARVIS_DB_DRIVER: ''`. `z.enum([...]).optional()` accepts `undefined`, not `''`, so
+ * `buildConfig` threw, and because it throws while a page is rendering, every page answered 500
+ * with a blank body — the least diagnosable failure this application has.
+ *
+ * The same shape had quieter versions. `PGLITE_DATA_DIR=` survived as a configured data directory
+ * that `server/db/client.ts` then read as falsy and opened in memory, so a restart silently
+ * discarded the morning's work. `JARVIS_KNOWLEDGE_EMBEDDINGS=` failed the enum outright.
+ *
+ * It is done once over the whole object rather than field by field on purpose: a per-field
+ * `.transform()` is a thing the next variable added to this schema can forget, and this class of
+ * failure is only ever discovered by an owner whose Jarvis will not start.
+ */
+function withoutBlankValues(source: unknown): unknown {
+  if (typeof source !== 'object' || source === null) return source;
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim() === '') continue;
+    kept[key] = value;
+  }
+  return kept;
+}
 
 const rawSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -259,6 +291,9 @@ const rawSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
+/** What every caller parses. `rawSchema` alone never sees a blank value. */
+const envSchema = z.preprocess(withoutBlankValues, rawSchema);
+
 export type RawEnv = z.infer<typeof rawSchema>;
 
 export interface AppConfig {
@@ -406,7 +441,7 @@ function normaliseBaseUrl(value: string | undefined, isProduction: boolean): str
 }
 
 export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = rawSchema.safeParse(source);
+  const parsed = envSchema.safeParse(source);
   if (!parsed.success) {
     const problems = parsed.error.issues.map(
       (issue) => `${issue.path.join('.')}: ${issue.message}`,
@@ -596,6 +631,11 @@ export function buildConfig(source: NodeJS.ProcessEnv = process.env): AppConfig 
        * PGlite is in-memory unless given a directory. Development defaults to one so a restart
        * does not silently discard everything the owner entered; tests keep the in-memory default
        * so each run starts clean.
+       *
+       * `??` is only correct here because a blank `PGLITE_DATA_DIR` never arrives: it used to,
+       * and the empty string then meant "a directory is configured" to this line, "no directory"
+       * to the PGlite client, and "survives a restart" to the readiness report. Three answers,
+       * one of them shown to the owner while the database was in memory.
        */
       pgliteDataDir:
         env.PGLITE_DATA_DIR ??

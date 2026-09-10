@@ -208,6 +208,25 @@ function runtimeCheck(): ReadinessCheck {
 
 /* ------------------------------------------------------------------ database */
 
+/**
+ * Whether the configured database still holds its contents after the process exits.
+ *
+ * Durability is a separate question from reachability, and the one that decides whether "restart
+ * without losing data" is true: an embedded database with no data directory is a perfectly
+ * working database that forgets everything.
+ *
+ * The test is truthiness, not `!== null`, because truthiness is the exact test `createHandle` in
+ * `server/db/client.ts` makes when it chooses between `new PGlite(dir)` and `new PGlite()`. The
+ * two used to differ, and the single value they differed on — the empty string, arriving from a
+ * bare `PGLITE_DATA_DIR=` line — was the one where this reported "survives a restart" about a
+ * database that was being opened in memory. An owner lost a morning's work to a check that had
+ * affirmed it was safe. It is a named function rather than an inline expression so that the
+ * condition has one home and a test can hold it to the client's behaviour.
+ */
+export function databaseSurvivesRestart(config: AppConfig): boolean {
+  return config.database.driver !== 'pglite' || Boolean(config.database.pgliteDataDir);
+}
+
 async function databaseChecks(input: ReadinessInput): Promise<ReadinessCheck[]> {
   const driver = input.config.database.driver;
   const checks: ReadinessCheck[] = [];
@@ -241,12 +260,7 @@ async function databaseChecks(input: ReadinessInput): Promise<ReadinessCheck[]> 
     blocking: true,
   });
 
-  /*
-   * Durability is a separate question from reachability, and the one that decides whether
-   * "restart without losing data" is true. An embedded database with no data directory is a
-   * perfectly working database that forgets everything.
-   */
-  const durable = driver !== 'pglite' || input.config.database.pgliteDataDir !== null;
+  const durable = databaseSurvivesRestart(input.config);
   checks.push({
     id: 'database_durable',
     area: 'database',

@@ -31,13 +31,16 @@
  * Dry run by default: it prints exactly what it would change and changes nothing. `--apply` is the
  * only thing that writes.
  */
-/* A plain Node process, so nothing loads `.env` for it. Real environment variables still win. */
-import 'dotenv/config';
+import { loadEnvFiles } from './workspaces';
 import { readsLikeAConversation } from '@/domain/build-brief';
 import type { Mission } from '@/domain/mission';
 import type { Project } from '@/domain/project';
 import { repositorySlug } from '@/domain/repository-name';
 import { getServices } from '@/server/container';
+import { closeDatabase } from '@/server/db/client';
+
+/* Before anything reads the environment: `.env.local`, then `.env`. */
+loadEnvFiles();
 
 function argValue(name: string): string | null {
   const flag = `--${name}=`;
@@ -208,9 +211,21 @@ async function findProject(
   return all.find((project) => project.name.toLowerCase() === target.toLowerCase()) ?? null;
 }
 
-void main()
-  .then(() => process.exit(process.exitCode ?? 0))
-  .catch((error: unknown) => {
+async function run(): Promise<void> {
+  try {
+    await main();
+  } catch (error: unknown) {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  } finally {
+    /*
+     * `--apply` writes, and this script exits by calling `process.exit`. Killing the process over
+     * an open embedded database is not the same as closing it, and the one command whose whole
+     * purpose is to repair a row is the last place to find that out.
+     */
+    await closeDatabase();
+  }
+  process.exit(process.exitCode ?? 0);
+}
+
+void run();

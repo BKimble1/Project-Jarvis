@@ -30,8 +30,7 @@
  * Non-zero when a blocking check is missing or failing — so it can be the last line of a setup
  * script, or a container's readiness probe, without anybody reading the output.
  */
-/* A plain Node process, so nothing loads `.env` for it. Real environment variables still win. */
-import 'dotenv/config';
+import { loadEnvFiles } from './workspaces';
 import {
   READINESS_AREAS,
   READINESS_AREA_LABELS,
@@ -42,8 +41,11 @@ import {
 } from '@/domain/readiness';
 import { getConfig } from '@/server/config/env';
 import { buildServices } from '@/server/container';
-import { getDb } from '@/server/db/client';
+import { closeDatabase, getDb } from '@/server/db/client';
 import { assembleReadiness } from '@/server/ops/readiness';
+
+/* Before anything reads the environment: `.env.local`, then `.env`. */
+loadEnvFiles();
 
 /** Aligned to the same width so the column of states reads as a column. */
 const MARK: Record<ReadinessState, string> = {
@@ -111,7 +113,25 @@ async function main(): Promise<void> {
   process.exitCode = report.canOperate ? 0 : 1;
 }
 
-void main().catch((error: unknown) => {
-  console.error(`\ndoctor failed: ${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+async function run(): Promise<void> {
+  try {
+    await main();
+  } catch (error: unknown) {
+    console.error(`\ndoctor failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  } finally {
+    /*
+     * PGlite holds the event loop open until its client is closed, so a doctor that opened the
+     * database and never closed it printed the entire report and then hung for ever. Measured: the
+     * first run against a data directory that does not exist yet exited in 15s, and every run
+     * after that had to be killed — which is how a hang this total went unnoticed.
+     *
+     * The docstring above offers this script as a container readiness probe and as the last line
+     * of a setup script. A probe that never returns is indistinguishable from a Jarvis that is
+     * broken, so closing the database is part of what this command promises, not tidiness.
+     */
+    await closeDatabase();
+  }
+}
+
+void run();

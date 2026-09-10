@@ -21,8 +21,7 @@
  * prints the parsed evaluation, which is the owner's own words coming back and is off by default
  * so that pasting the output of this command somewhere is always safe.
  */
-/* A plain Node process, so nothing loads `.env` for it. Real environment variables still win. */
-import 'dotenv/config';
+import { loadEnvFiles } from './workspaces';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -31,6 +30,9 @@ import { REASONING_TIMEOUT_MS, ideaEvaluationInput } from '@/domain/reasoning';
 import { buildWorkerConfig } from '@/worker/config';
 import { ReasoningRunner } from '@/worker/reasoning-runner';
 import { ClaudeAgentRuntime } from '@/worker/runtime/claude-agent-sdk';
+
+/* Before anything reads the environment: `.env.local`, then `.env`. */
+loadEnvFiles();
 
 const DEFAULT_IDEA =
   'A tiny app called QuickPick that lets someone enter two choices and randomly selects one ' +

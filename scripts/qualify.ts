@@ -18,10 +18,9 @@
  *   npm run qualify -- attest security "Reviewed the diff against docs/THREAT_MODEL.md."
  *   npm run qualify -- record-live <missionId> read|write
  */
-/* A plain Node process, so nothing loads `.env` for it. Real environment variables still win. */
-import 'dotenv/config';
+import { loadEnvFiles } from './workspaces';
 import { getConfig } from '@/server/config/env';
-import { getDb } from '@/server/db/client';
+import { closeDatabase, getDb } from '@/server/db/client';
 import { buildServices } from '@/server/container';
 import {
   CAPABILITY_LABELS,
@@ -29,6 +28,9 @@ import {
   QUALIFICATION_LEVEL_MEANING,
   describeActivation,
 } from '@/domain/qualification';
+
+/* Before anything reads the environment: `.env.local`, then `.env`. */
+loadEnvFiles();
 
 const OUTCOME_MARK: Record<string, string> = {
   pass: '  ok  ',
@@ -170,10 +172,26 @@ async function report(services: ReturnType<typeof buildServices>): Promise<void>
   process.stdout.write('\n');
 }
 
-main().then(
-  () => process.exit(0),
-  (error: unknown) => {
+async function run(): Promise<void> {
+  try {
+    await main();
+  } catch (error: unknown) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exit(1);
-  },
-);
+    process.exitCode = 1;
+  } finally {
+    /*
+     * `process.exit(0)` below used to be the only reason this command terminated at all: PGlite
+     * holds the event loop open until its client is closed, exactly as it did in `npm run doctor`,
+     * and exiting from under an open embedded database is not the same as closing it. A
+     * `qualify -- run` writes its results first, and this is what makes sure they are flushed.
+     */
+    await closeDatabase();
+  }
+  /*
+   * Still an explicit exit: the checks reach GitHub, and an idle keep-alive socket would hold the
+   * process open after the report is printed. The status is preserved rather than forced to 0.
+   */
+  process.exit(process.exitCode ?? 0);
+}
+
+void run();

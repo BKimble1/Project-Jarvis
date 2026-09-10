@@ -1,11 +1,14 @@
 #!/usr/bin/env tsx
 /** Seeds explicitly fictional demo data. Refuses to run against a non-demo configuration. */
-import 'dotenv/config';
+import { loadEnvFiles } from './workspaces';
 import { getConfig } from '../src/server/config/env';
 import { getDatabaseHandle } from '../src/server/db/client';
 import { runMigrations } from '../src/server/db/migrate';
 import { buildServices } from '../src/server/container';
 import { seedDemoData } from '../src/server/demo/seed';
+
+/* Before anything reads the environment: `.env.local`, then `.env`. */
+loadEnvFiles();
 
 async function main(): Promise<void> {
   const config = getConfig();

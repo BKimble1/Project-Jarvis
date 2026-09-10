@@ -16,11 +16,22 @@
  *
  * Pass `--skip-e2e` when browsers are unavailable (the step is otherwise always run).
  */
-/* So a local run sees the same `.env` the application and the migration script do. */
-import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
+import { loadEnvFiles } from './workspaces';
+
+/*
+ * So a local run sees the same configuration the application, the worker and the migration script
+ * do — `.env.local` first, then `.env`.
+ *
+ * Every step this gate spawns loads those files for itself, so this is not what makes the steps
+ * correct. It is what makes the *gate* correct: the flags that decide which steps run at all
+ * (`JARVIS_SKIP_E2E`, and the live-test switches Playwright and Vitest read from the environment
+ * they inherit) are read here, and reading `.env` alone meant an owner who configured Jarvis the
+ * documented way got a different set of steps than the one they had asked for.
+ */
+loadEnvFiles();
 
 interface Step {
   readonly name: string;
