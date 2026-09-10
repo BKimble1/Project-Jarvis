@@ -491,28 +491,23 @@ export function JarvisScreen(props: JarvisScreenProps) {
   }, [readBack, lastFromJarvis, speech]);
 
   /**
-   * The answer, with the sentence that is already under the core taken out of it.
+   * Whether the answer's opening sentence is already on the screen above the panel.
    *
    * A question's spoken line and its `answer.summary` are one string — the server sends `said` and
    * the answer together, and for a status question they are the same words — so the sentence landed
    * on screen twice at once: under the core, where the last thing Jarvis said always goes, and
    * again as the opening paragraph of the answer panel immediately below it. Two copies of one
-   * sentence, a hand's width apart, reads as two different pieces of information.
+   * sentence, a hand's width apart, read as two different pieces of information.
    *
    * Only that paragraph goes. Everything else the panel carries — the title, the provenance of the
    * sentence, the sections, the disambiguation list — is not a duplicate of anything and stays.
    *
-   * Emptied here rather than skipped inside `AnswerPanel` because the panel cannot know what else
-   * is on the screen around it: the command bar renders the same component with no core above it,
-   * and there the summary is the only place the answer appears at all.
-   */
-  /*
-   * The summary is already under the core, so the panel must not print it again.
-   *
-   * For a question `turn.said` *is* `answer.summary` (see `ConversationService`), and the screen
-   * shows that sentence under the core, speaks it, and lists it in the history. Printing it a
-   * fourth time in the panel a few centimetres below is the duplication, not the panel itself —
-   * the title, provenance, notice and sections below it are all still worth having.
+   * The panel is told not to print it, rather than handed an answer with the sentence removed. The
+   * first attempt did the latter and left the empty paragraph that had held it; and a panel that
+   * receives a blanked field cannot tell that from an answer that genuinely has no summary. The
+   * default is still to print, because everywhere else this panel appears — the command bar
+   * included — there is no core above it and the summary is the only copy of the answer. One caller
+   * knowing about its own layout is the smaller claim.
    */
   const summaryIsAlreadyOnScreen = React.useMemo(() => {
     if (!answer) return false;

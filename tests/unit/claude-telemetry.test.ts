@@ -140,6 +140,41 @@ describe('reading Claude capacity from the SDK', () => {
     expect(report?.windows.sevenDayOpus).toBeNull();
   });
 
+  it('refuses exactly 1, which is the boundary the whole decision turns on', () => {
+    /*
+     * The most likely way to get this rule wrong is `< 1` instead of `<= 1`, and 1 is the single
+     * worst figure to be wrong about: on the fraction scale it means a window that is *completely
+     * used up*, and believed as a percentage it renders as "99% left" — the governor clearing an
+     * exhausted account to start whatever it likes. Refusing it costs an unknown window, which
+     * narrows the loop to one thing at a time and says so.
+     *
+     * 1.5 is asserted beside it because a rule that refused everything up to 2 would pass the
+     * first assertion and be just as wrong.
+     */
+    const report = buildCapacityReport(
+      {
+        usage: {
+          rate_limits_available: true,
+          rate_limits: {
+            five_hour: { utilization: 1, resets_at: null },
+            seven_day: { utilization: 1.5, resets_at: null },
+            seven_day_opus: { utilization: 0.999, resets_at: null },
+          },
+        },
+      },
+      OPTIONS,
+    );
+
+    expect(
+      report?.windows.fiveHour,
+      'exactly 1 cannot be told apart from a spent window',
+    ).toBeNull();
+    expect(report?.windows.sevenDayOpus, 'and neither can anything just below it').toBeNull();
+    expect(report?.windows.sevenDay?.utilisationPercent, 'but 1.5 could only be a percentage').toBe(
+      1.5,
+    );
+  });
+
   it('still believes 0, and any figure a fraction could not be', () => {
     /*
      * The other half of the same decision. Zero means the same thing on either scale, and nothing
