@@ -1,4 +1,12 @@
-import { readFileSync, readdirSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  mkdirSync,
+  mkdtempSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parse as parseDotenv } from 'dotenv';
@@ -221,4 +229,95 @@ describe('scripts read the environment file the documents tell people to create'
   it('reads the more specific file first', () => {
     expect(ENV_FILES).toEqual(['.env.local', '.env']);
   });
+});
+
+describe('a command that opens the database gives it back', () => {
+  /**
+   * The half of the fix nothing else pins.
+   *
+   * PGlite holds the event loop open until its client is closed, so `npm run doctor` printed its
+   * whole report and then never returned — and because the first run against a data directory
+   * that does not exist yet does return, the hang only appeared on the second run. The docstring
+   * offers that command as a container readiness probe.
+   *
+   * Reverting the `await closeDatabase()` in `doctor.ts` broke no test at all, and the same
+   * omission was still live in `verify.ts --record`, which writes two qualification rows and then
+   * hung: measured at 45 seconds and still running. So this is a rule about every script rather
+   * than an assertion about the three that were fixed by hand.
+   *
+   * It reads sources rather than running the commands because running them means a real database
+   * and a real hang to wait out; the failure this guards against is a missing call, which is
+   * visible in the source.
+   */
+  it('closes the database in every script that opens one', () => {
+    const scripts = path.join(REPO_ROOT, 'scripts');
+    const opensDatabase = /\bgetDb\s*\(|\bgetDatabaseHandle\s*\(/;
+    const closesDatabase = /\bcloseDatabase\s*\(|\.close\s*\(\)/;
+
+    const everyScript = readdirSync(scripts).filter(
+      (file) => file.endsWith('.ts') || file.endsWith('.mts'),
+    );
+    const opening = everyScript.filter((file) =>
+      opensDatabase.test(readFileSync(path.join(scripts, file), 'utf8')),
+    );
+    /* If this ever finds none, the patterns have drifted and the rule proves nothing. */
+    expect(opening.length).toBeGreaterThan(3);
+
+    for (const file of opening) {
+      const source = readFileSync(path.join(scripts, file), 'utf8');
+      expect(
+        closesDatabase.test(source),
+        `${file} opens the database, so it must close it: an embedded database holds the process open for ever`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('the workspaces script still runs when it is the one that was run', () => {
+  /**
+   * The guard, exercised the way the guard fails.
+   *
+   * `scripts/workspaces.ts` now hosts `loadEnvFiles`, so every other script imports it, so its
+   * own `main()` had to be put behind "is this file the entry point?". That question is answered
+   * by comparing `process.argv[1]` with `import.meta.url`, and the two are produced differently:
+   * Node resolves a module specifier through the real path, the shell hands over whatever it was
+   * given. Reached through a symlinked checkout the two disagreed, and `npm run worker:workspaces`
+   * then printed nothing and exited 0 — which reads as "no preserved workspaces", not as a command
+   * that never ran. A wrong answer, silently, from the command whose only job is to say what is
+   * on disk.
+   *
+   * Run as a real process, because the fault was in how the process was started.
+   */
+  it('lists workspaces when reached through a symlinked checkout', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'jarvis-link-'));
+    const checkout = path.join(directory, 'checkout');
+    symlinkSync(REPO_ROOT, checkout);
+    const workspaceRoot = path.join(directory, 'workspaces');
+    mkdirSync(workspaceRoot);
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+        path.join(checkout, 'scripts', 'workspaces.ts'),
+      ],
+      {
+        /* tsx resolves the `@/…` aliases from the working directory, so it has to be a checkout. */
+        cwd: checkout,
+        encoding: 'utf8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          JARVIS_CONTROL_PLANE_URL: 'https://jarvis.example.com',
+          JARVIS_WORKER_TOKEN: 'token-for-a-worker-that-never-connects',
+          JARVIS_WORKER_WORKSPACE_ROOT: workspaceRoot,
+        },
+      },
+    );
+
+    expect(result.status, result.stderr || 'no output on stderr').toBe(0);
+    expect(result.stdout, 'the entry-point guard answered "no" and main() never ran').toContain(
+      workspaceRoot,
+    );
+  }, 60_000);
 });

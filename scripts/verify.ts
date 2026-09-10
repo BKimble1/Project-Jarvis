@@ -144,32 +144,42 @@ async function main(): Promise<void> {
 
   if (record) {
     const { getConfig } = await import('@/server/config/env');
-    const { getDb } = await import('@/server/db/client');
+    const { closeDatabase, getDb } = await import('@/server/db/client');
     const { buildServices } = await import('@/server/container');
     const config = getConfig();
     const services = buildServices(await getDb(), config);
-    await services.qualificationService.recordSuite({
-      kind: 'automated',
-      passed: true,
-      detail: `The full gate passed in ${seconds}s${skipE2e ? ', without the end-to-end step' : ''}.`,
-      testCount: null,
-    });
-    /*
-     * The simulated rung too, and honestly: the multi-agent smoke test runs inside the
-     * integration project this gate just passed. It drives the real orchestrator, the real
-     * routes, real workers and real git, replacing only the model and GitHub — which is exactly
-     * what "ran with replacement providers" means.
-     */
-    await services.qualificationService.recordSuite({
-      kind: 'simulated',
-      passed: true,
-      detail:
-        'The multi-agent smoke test passed as part of the integration suite: real orchestrator, real routes, real workers, real git, with the model and GitHub replaced.',
-      testCount: null,
-    });
-    console.log(
-      `  Recorded the automated and simulated suites as passing${config.qualification.buildRef ? ` for build ${config.qualification.buildRef}` : ''}.`,
-    );
+    try {
+      await services.qualificationService.recordSuite({
+        kind: 'automated',
+        passed: true,
+        detail: `The full gate passed in ${seconds}s${skipE2e ? ', without the end-to-end step' : ''}.`,
+        testCount: null,
+      });
+      /*
+       * The simulated rung too, and honestly: the multi-agent smoke test runs inside the
+       * integration project this gate just passed. It drives the real orchestrator, the real
+       * routes, real workers and real git, replacing only the model and GitHub — which is exactly
+       * what "ran with replacement providers" means.
+       */
+      await services.qualificationService.recordSuite({
+        kind: 'simulated',
+        passed: true,
+        detail:
+          'The multi-agent smoke test passed as part of the integration suite: real orchestrator, real routes, real workers, real git, with the model and GitHub replaced.',
+        testCount: null,
+      });
+      console.log(
+        `  Recorded the automated and simulated suites as passing${config.qualification.buildRef ? ` for build ${config.qualification.buildRef}` : ''}.`,
+      );
+    } finally {
+      /*
+       * The embedded database holds the event loop open until its client is closed, so this
+       * branch printed its last line and then never returned — the fault `npm run doctor` had,
+       * in the one script here that writes to the ladder. Measured against an existing
+       * `.jarvis-data` directory: the process was still alive 45 seconds later.
+       */
+      await closeDatabase();
+    }
   } else {
     console.log(
       '\n  This did not change the qualification ladder. To record it against a deployment:\n' +

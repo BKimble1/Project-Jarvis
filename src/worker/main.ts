@@ -75,7 +75,15 @@ export class JarvisWorkerProcess {
    */
   private runtimeTransition: string | null = null;
   private workspaceTransition: string | null = null;
-  /** The probe currently in flight, shared by every caller. See `refreshHealth`. */
+  /**
+   * A promise rather than a "probing" flag, which is the whole of the difference.
+   *
+   * A flag would let the second caller see that somebody else is asking and carry on with the
+   * verdict it already holds — which, on the path that matters, is the stale answer it came here
+   * to replace: the catch blocks ask precisely because what they believe about this machine has
+   * just been contradicted. Handing it the first caller's promise makes it wait for the fresh
+   * answer instead, and costs it nothing but the `claude auth status` it did not spawn.
+   */
   private probing: Promise<void> | null = null;
 
   constructor(private readonly deps: WorkerRuntimeDeps) {}
@@ -121,12 +129,14 @@ export class JarvisWorkerProcess {
    *
    * ## Why only one probe runs at a time
    *
-   * Three places ask for one: the poll loop's timer, and the two catch blocks that re-check this
-   * machine after a failure — and a failing control plane makes those fire together. Two probes in
-   * flight can finish out of order, and the older answer would then not merely overwrite the newer
-   * one but announce a transition that never happened: "the Claude runtime became available again"
-   * while it is in fact still gone. Sharing the in-flight probe makes the second caller wait for
-   * the first rather than spawn a second `claude auth status` beside it.
+   * Four places ask for one. Boot asks once, before any loop is running, and cannot race anything;
+   * the other three can be in flight together — the poll loop's timer, and the two catch blocks
+   * that re-check this machine after a failure, which one unreachable control plane sets off at
+   * the same moment. Two probes in flight can finish out of order, and the older answer would then
+   * not merely overwrite the newer one but announce a transition that never happened: "the Claude
+   * runtime became available again" while it is in fact still gone. Sharing the in-flight probe
+   * makes the second caller wait for the first rather than spawn a second `claude auth status`
+   * beside it.
    */
   private async refreshHealth(): Promise<void> {
     this.probing ??= this.probeHealth().finally(() => {

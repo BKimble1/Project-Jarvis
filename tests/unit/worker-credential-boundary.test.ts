@@ -265,7 +265,7 @@ describe('the environment a worker hands to a child process', () => {
       GITHUB_OAUTH_CLIENT_SECRET: 'd75784cd52e4a1b8c9f0e3d6a7b2c5f8e1d4a7b0',
       MICROSOFT_CLIENT_SECRET: 'Abc8Q~-KNDCdEfGhIjKlMnOpQrStUvWxYz012345',
       JARVIS_PUSH_PRIVATE_KEY: 'ScFpbhrcTfHRqLmNoPqRsTuVwXyZ0123456789abcdef',
-    } as NodeJS.ProcessEnv);
+    } as unknown as NodeJS.ProcessEnv);
 
     for (const name of [
       'JARVIS_CREDENTIAL_KEY',
@@ -295,7 +295,7 @@ describe('the environment a worker hands to a child process', () => {
       MY_SERVICE_API_KEY: 'the-project-under-test-needs-this',
       GITHUB_OAUTH_CLIENT_ID: 'Iv1.abc123def456',
       PATH: '/usr/bin',
-    } as NodeJS.ProcessEnv);
+    } as unknown as NodeJS.ProcessEnv);
 
     expect(safe.JARVIS_SOMETHING_NOBODY_ADDED_YET_TOKEN).toBeUndefined();
     expect(safe.JARVIS_FUTURE_SIGNING_KEY).toBeUndefined();

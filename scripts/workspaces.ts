@@ -19,11 +19,17 @@
  * owner types rather than a thing a schedule decides. Nothing here runs automatically.
  *
  * It also holds `loadEnvFiles`, which every other `scripts/*.ts` entry point calls. That is not
- * where such a thing belongs, and it is here because it needed a home in a module with no
- * dependency on the control plane: the worker scripts import it too, and the worker is a separate
- * process that may not reach into `@/server`.
+ * where such a thing belongs. It is here because the loader needs `dotenv`, a devDependency, so it
+ * cannot live in `src/server/config/env.ts` — that module ships in the production server bundle —
+ * and because `scripts/worker.ts` and `scripts/worker-health.ts` import it too: the worker is a
+ * separate process and may not reach into `@/server`.
+ *
+ * The price is paid the other way instead. `doctor`, `migrate` and `seed-demo` are control-plane
+ * commands and now load this module's `@/worker` imports to get a dotenv wrapper. That is two
+ * cheap modules and no side effects, but it is the wrong direction, and the honest fix is a
+ * loader module of its own that imports nothing from either side.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config as loadEnv } from 'dotenv';
@@ -121,17 +127,37 @@ async function main(): Promise<void> {
   );
 }
 
-/*
- * Only when this file is what was run.
+/**
+ * Whether this file is what was run, rather than a module something else imported.
  *
  * Every other script imports `loadEnvFiles` from here, and importing a module evaluates it. Left
  * unguarded, `npm run doctor` would print a list of mission workspaces before printing anything of
  * its own, and would inherit whatever exit code the listing set.
+ *
+ * The two paths are compared twice, once as given and once through `realpath`, because they are
+ * produced differently: Node resolves a module specifier through the real path, so
+ * `import.meta.url` is already de-symlinked, while `process.argv[1]` is whatever the shell was
+ * handed. A checkout reached through a symlinked parent — `~/work` → `/mnt/data/work`, a bind
+ * mount, macOS `/tmp` — made them disagree, and a guard that answers "no" is silent: the command
+ * printed nothing and exited 0, which reads as "no preserved workspaces" rather than as a command
+ * that never ran. The unresolved comparison is kept for `--preserve-symlinks-main`, which leaves
+ * `import.meta.url` pointing at the link instead.
  */
-const invokedDirectly =
-  process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+function isEntryPoint(): boolean {
+  const invoked = process.argv[1];
+  if (invoked === undefined) return false;
+  const here = fileURLToPath(import.meta.url);
+  const asGiven = path.resolve(invoked);
+  if (asGiven === here) return true;
+  try {
+    return realpathSync(asGiven) === realpathSync(here);
+  } catch {
+    /* An `argv[1]` that is not a file on disk cannot be this module. */
+    return false;
+  }
+}
 
-if (invokedDirectly) {
+if (isEntryPoint()) {
   loadEnvFiles();
   void main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
