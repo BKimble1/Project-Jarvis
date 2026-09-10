@@ -321,8 +321,14 @@ export class Orchestrator {
       if (this._changeQueue.get(project.id)?.length) return { phase: this._project(project.id).phase };
     }
 
-    const pending = this._tasks(project.id).filter((t) => kinds.includes(t.kind) && (t.status === 'pending' || t.status === 'running'));
+    const all = this._tasks(project.id);
+    const pending = all.filter((t) => kinds.includes(t.kind) && (t.status === 'pending' || t.status === 'running'));
     const parked = pending.filter((t) => t.status === 'pending' && t.blockedByQuestionId);
+    if (all.some((t) => t.status === 'failed' || t.needsRepair)) repairsNeeded = true;
+
+    // A failure anywhere in this phase goes to repair, whichever phase found it.
+    if (repairsNeeded) return { phase: 'repairing' };
+
     if (parked.length > 0 && this._runnableTasks(project.id, ['implement', 'verify', 'review', 'repair']).length === 0) {
       // Waiting on a genuinely material answer. Progress is saved; the
       // question.answered handler resumes this loop automatically.
@@ -330,27 +336,30 @@ export class Orchestrator {
       return { halt: true };
     }
 
-    const failed = this._tasks(project.id).filter((t) => kinds.includes(t.kind) && t.status === 'failed');
-    if (failed.length > 0) repairsNeeded = true;
-
-    if (!sawWork && pending.length > 0 && parked.length === 0) {
-      // Dependencies in another kind are still outstanding — go back a phase.
-      return { phase: kinds[0] === 'verify' ? 'implementing' : 'implementing' };
+    if (!sawWork) {
+      // Nothing in this phase could run. Fall back to whichever phase still
+      // holds runnable work rather than spinning between phases.
+      if (all.some((t) => t.kind === 'repair' && t.status === 'pending')) return { phase: 'repairing' };
+      if (all.some((t) => t.kind === 'implement' && t.status === 'pending')) return { phase: 'implementing' };
+      if (pending.length > 0 && parked.length === 0) {
+        return this._block(project.id,
+          `I cannot finish ${project.title}: ${pending.length} step(s) depend on work that never completed. Tell me how you want to proceed.`);
+      }
     }
 
     const current = this._project(project.id);
-    const phase = nextPhase(current.phase, { repairsNeeded });
+    const phase = nextPhase(current.phase, { repairsNeeded: false });
     return { phase: phase === 'done' ? 'delivering' : phase };
   }
 
   async _phaseRepair(project) {
-    const rounds = (this._repairRounds.get(project.id) ?? 0) + 1;
+    const rounds = (this._project(project.id)?.repairRounds ?? 0) + 1;
     this._repairRounds.set(project.id, rounds);
     this._patchProject(project.id, { repairRounds: rounds });
 
     if (rounds > MAX_REPAIR_ROUNDS) {
       return this._block(project.id,
-        `I could not get ${project.title} passing after ${MAX_REPAIR_ROUNDS} repair rounds. I need you to look at the failing work with me.`);
+        `I could not get ${project.title} passing after ${MAX_REPAIR_ROUNDS} repair rounds. I need you to look at the failing step with me.`);
     }
 
     this._setAction(`I am repairing ${project.title}.`, project.id);
@@ -366,7 +375,15 @@ export class Orchestrator {
         dependsOn: [],
         meta: { repairs: task.id, reason: task.error ?? task.result?.reason ?? 'verification failure' },
       }, keyMap);
-      this.store.patch('tasks', task.id, { status: 'cancelled', needsRepair: false, repairedBy: repair.id });
+      if (task.kind === 'verify' || task.kind === 'review') {
+        // A check that failed must be re-run after the repair, not discarded.
+        this.store.patch('tasks', task.id, {
+          status: 'pending', error: null, result: null, needsRepair: false,
+          startedAt: null, finishedAt: null, dependsOn: unique([...(task.dependsOn ?? []), repair.id]),
+        });
+      } else {
+        this.store.patch('tasks', task.id, { status: 'cancelled', needsRepair: false, repairedBy: repair.id });
+      }
       if (plan) this.store.patch('plans', plan.id, { taskIds: unique([...(plan.taskIds ?? []), repair.id]) });
     }
 
@@ -377,16 +394,16 @@ export class Orchestrator {
       if (!current || !canRun(current)) return { halt: true };
       const results = await Promise.all(runnable.map((task) => this._executeTask(current, task)));
       if (results.some((r) => r.blockedProject)) return { halt: true };
+      if (results.some((r) => r.repairsNeeded)) {
+        // The repair itself failed. Don't spin: escalate on the next round.
+        break;
+      }
     }
 
-    // Repaired work has to be re-proven, so the original verify/review tasks
-    // are reset rather than assumed good.
+    // Repaired work has to be re-proven, so completed checks are reset.
     for (const task of this._tasks(project.id)) {
-      if ((task.kind === 'verify' || task.kind === 'review') && (task.status === 'done' || task.status === 'failed')) {
-        this.store.patch('tasks', task.id, { status: 'pending', error: null, result: null, needsRepair: false });
-      }
-      if (task.kind === 'implement' && task.status === 'failed') {
-        this.store.patch('tasks', task.id, { status: 'cancelled' });
+      if ((task.kind === 'verify' || task.kind === 'review') && task.status === 'done') {
+        this.store.patch('tasks', task.id, { status: 'pending', error: null, result: null, needsRepair: false, startedAt: null, finishedAt: null });
       }
     }
     return { phase: 'verifying' };
@@ -446,6 +463,8 @@ export class Orchestrator {
       scope: project.scope ?? [],
       answers: this._answers(project.id),
       attempt: (task.attempts ?? 0) + 1,
+      clock: this.clock,
+      usage: this.usage,
     };
 
     try {

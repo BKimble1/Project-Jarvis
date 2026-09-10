@@ -103,14 +103,21 @@ export function extractFeatures(text, max = 6) {
   return features;
 }
 
+const LABEL_PREFIXES = [
+  /^(?:please|can you|could you|go ahead and|also|and|plus|then|next|now|as well as)\s+/i,
+  /^(?:build|make|create|add|implement|set ?up|write|support|include|give me|i want|i need)\s+/i,
+  /^(?:me\s+)?(?:a|an|the|some)\s+/i,
+];
+
 function cleanLabel(part) {
-  return String(part)
-    .replace(/^(?:please\s+)?(?:can you\s+)?(?:go ahead and\s+)?/i, '')
-    .replace(/^(?:build|make|create|add|implement|set up|write)\s+/i, '')
-    .replace(/^(?:me\s+)?(?:a|an|the)\s+/i, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80);
+  let label = String(part).replace(/\s+/g, ' ').trim();
+  // Strip stacked lead-ins ("also add a dark mode") until nothing is left to strip.
+  for (let pass = 0; pass < 6; pass++) {
+    const before = label;
+    for (const re of LABEL_PREFIXES) label = label.replace(re, '');
+    if (label === before) break;
+  }
+  return label.trim().slice(0, 80);
 }
 
 function slugify(label) {
