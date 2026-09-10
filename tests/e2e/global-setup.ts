@@ -83,6 +83,24 @@ const WARM_API = [
   '/api/missions',
   '/api/ask',
   '/api/ask/conversations',
+  /*
+   * The two the dashboard fires by itself, which is why they cost more than any list above.
+   *
+   * Every test that opens `/dashboard` posts an operating event on arrival and a conversation
+   * turn the moment anything is typed, so whichever test gets there first pays for compiling
+   * both. Measured in a failing gate run: `/api/conversation` compiled in 12.1s and answered in
+   * 20.5s, past the 15s `expect` budget, and the failure was reported against a project lookup
+   * that had been correct all along; `/api/operating/events` answered one POST in 22.0s in the
+   * same run.
+   */
+  '/api/conversation',
+  '/api/operating/events',
+  /*
+   * And one the mission fixture calls in teardown, which is the disguised case this list exists
+   * for: the same run timed out on `DELETE /api/workers/<id>` while cleaning up, and reported it
+   * against the sandbox mission test that had already passed.
+   */
+  `/api/workers/${'00000000-0000-4000-8000-000000000000'}`,
 ];
 
 /** Routes that must not be warmed: they change state or belong to another auth surface. */
