@@ -6,6 +6,7 @@ import {
   standaloneCancellation,
   type ConversationContext,
 } from '@/domain/interpretation';
+import { describesNewProject } from '@/domain/new-project';
 import { classifyTranscript } from '@/domain/voice';
 import { readRefinement } from '@/domain/refinement';
 
@@ -274,5 +275,77 @@ describe('a refinement needs something to refine', () => {
     expect(interpretMessage('go ahead', STANDING).kind).toBe('follow_up');
     expect(interpretMessage('Where are we?', STANDING).kind).toBe('question');
     expect(interpretMessage('pause', STANDING).command).toBe('pause');
+  });
+});
+
+/**
+ * A prohibition written as a scope, and the punctuation that used to defeat it.
+ *
+ * ## What was measured before this existed
+ *
+ * `interpretMessage('evaluate only: build a budget app')` returned
+ * `{ kind: 'work', action: 'build', noBuildYet: false }`, and `describesNewProject` on the same
+ * string returned true with `deriveProjectName` = "Budget". That is a project, a repository and a
+ * mission, created from a sentence whose first two words forbid all three.
+ *
+ * The cause was not the marker being unknown — it was `IMPERATIVE_WORK` treating the colon as a
+ * clause boundary, which put `build` at the start of a clause and let it win. The same sentence
+ * with a comma was read correctly. A prohibition whose force depends on the punctuation after it
+ * is not one, so the table below fixes the outcome across every separator people actually type.
+ *
+ * The last row is the control: it is the phrasing that always worked, and it must keep working.
+ */
+describe('narrowing a request to judgement forbids the build, whatever follows it', () => {
+  const separators = [
+    { label: 'a colon', message: 'evaluate only: build a budget app' },
+    { label: 'an em dash', message: 'evaluate only — build a budget app' },
+    { label: 'an en dash', message: 'evaluate only – build a budget app' },
+    { label: 'a hyphen', message: 'evaluate only - build a budget app' },
+    { label: 'a full stop', message: 'evaluate only. build a budget app' },
+    { label: 'a semicolon', message: 'evaluate only; build a budget app' },
+    { label: 'a comma', message: 'evaluate only, build a budget app' },
+    { label: 'nothing at all', message: 'evaluate only build a budget app' },
+  ];
+
+  for (const entry of separators) {
+    it(`reads "evaluate only" followed by ${entry.label} as an idea, not an instruction`, () => {
+      const interpretation = interpretMessage(entry.message);
+      expect(interpretation.kind).toBe('idea');
+      expect(interpretation.noBuildYet).toBe(true);
+      expect(interpretation.action).not.toBe('build');
+    });
+  }
+
+  const wordings = [
+    'assessment only',
+    'review only',
+    'appraisal only',
+    'only assess',
+    'just review',
+  ];
+  for (const wording of wordings) {
+    it(`recognises "${wording}" as the same prohibition`, () => {
+      const interpretation = interpretMessage(`${wording}: build a budget app`);
+      expect(interpretation.kind).toBe('idea');
+      expect(interpretation.noBuildYet).toBe(true);
+    });
+  }
+
+  it('still reads a plain build instruction as work', () => {
+    const interpretation = interpretMessage('build a budget app');
+    expect(interpretation.kind).toBe('work');
+    expect(interpretation.action).toBe('build');
+    expect(interpretation.noBuildYet).toBe(false);
+    expect(describesNewProject('build a budget app')).toBe(true);
+  });
+
+  it('does not fire on "only" used about anything else', () => {
+    for (const message of [
+      'only add dark mode',
+      'build it, but only for me',
+      'I only want the login page fixed',
+    ]) {
+      expect(interpretMessage(message).noBuildYet).toBe(false);
+    }
   });
 });

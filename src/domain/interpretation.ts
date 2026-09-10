@@ -253,6 +253,43 @@ const NEGATED_WORK =
   /\b(?:do ?n(?:o|')t|dont|never|no need to|hold off|not yet|don ?t|rather not|no rush to)\b[^.!?]*\b(?:build\w*|make|making|start\w*|creat\w*|implement\w*|writ\w*|cod\w*|ship\w*|deploy\w*|do it|anything)\b|\b(?:build|make|start|create|implement)\w*\b[^.!?]*\bnot yet\b/;
 
 /**
+ * The same prohibition, written as a scope rather than as a negative.
+ *
+ * ## The message that made this necessary
+ *
+ *     "evaluate only: build a budget app"
+ *
+ * Measured against the interpreter before this existed: `kind: 'work'`, `action: 'build'`,
+ * `noBuildYet: false`, `describesNewProject: true`, `deriveProjectName: "Budget"` — a project, a
+ * repository and a mission, for a sentence whose first two words forbid exactly that.
+ *
+ * `NEGATED_WORK` did not catch it because there is no negative in it. Nobody wrote "don't"; they
+ * narrowed the request instead, which is the ordinary way to ask for judgement about something you
+ * have described in build language. And the punctuation decided the outcome: `IMPERATIVE_WORK`
+ * treats a colon, a semicolon, a full stop and a spaced dash as clause boundaries, so
+ * "evaluate only: build …" put a work verb at the start of a clause and won, while
+ * "evaluate only, build …" — the same sentence with a comma — did not. A prohibition that holds or
+ * fails on the punctuation after it is not a prohibition.
+ *
+ * ## Why it is a marker rather than a longer `ADVICE`
+ *
+ * `ADVICE` answers "is this person asking me to think?", and it is allowed to lose to an explicit
+ * instruction — "I have an idea for an app, build it" is a build, and that ordering is deliberate.
+ * This answers a different question: "have they said that thinking is *all* I may do?". That one
+ * is not allowed to lose to a work verb, for the same reason `NEGATED_WORK` is tested before work:
+ * the sentence contains the strongest verb in the language and means the opposite.
+ *
+ * ## Why the false positive is acceptable
+ *
+ * "Build the app, and review only the pricing page" narrows a review, not the build, and this reads
+ * it as a prohibition. That costs one clarifying exchange. The failure in the other direction costs
+ * a repository. The repo already takes this side of the trade — see `describesNewProject` on
+ * "Do not build an app yet" — and this stays on it.
+ */
+const ASSESSMENT_ONLY =
+  /\b(?:(?:evaluat(?:e|ion)|assess(?:ment)?|apprais(?:e|al)|review|critique|analys(?:e|is)|analyz(?:e|is)|research|feedback)[\s-]+only|only[\s-]+(?:evaluate|assess|appraise|review|critique|analyse|analyze|research)|just[\s-]+(?:evaluate|assess|appraise|review|critique|analyse|analyze))\b/;
+
+/**
  * A dismissal, and the words people wrap one in.
  *
  * Split from the cancellation *test* on purpose. Matching one of these means the message contains a
@@ -773,7 +810,8 @@ export function interpretMessage(
    * across the whole message to any "build" anywhere in it — which is how "Is this worth building?
    * … Do not build it yet." came out as a flat refusal of everything.
    */
-  const noBuildYet = NEGATED_WORK.test(punctuated);
+  const assessmentOnly = ASSESSMENT_ONLY.test(punctuated);
+  const noBuildYet = NEGATED_WORK.test(punctuated) || assessmentOnly;
 
   /*
    * Every reading below carries the constraint, whatever kind it lands on.
@@ -856,7 +894,7 @@ export function interpretMessage(
    * question, which costs one clarifying sentence rather than a wrong answer to the wrong subject.
    */
   const commissionsThinking =
-    (IDEA.test(text) || ADVICE.test(text)) && !IMPERATIVE_WORK.test(punctuated);
+    assessmentOnly || ((IDEA.test(text) || ADVICE.test(text)) && !IMPERATIVE_WORK.test(punctuated));
 
   const pace = PACE.find((entry) => entry.pattern.test(text));
   if (pace && !commissionsThinking) {
