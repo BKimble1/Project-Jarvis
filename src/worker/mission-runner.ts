@@ -1340,13 +1340,19 @@ function hashInput(input: Record<string, unknown>): string {
  * Codes with no honest equivalent are absent rather than approximated. A control-plane
  * `rate_limited` is not `github_rate_limited`, and answering with the nearest-looking code would
  * send an owner to look at the wrong system entirely; they fall through to the caller's default.
+ *
+ * A `Map` rather than an object literal because one of the two keys looked up here is read off an
+ * unknown error and could be any string at all. An object literal answers `toString` — and
+ * `constructor`, and `__proto__` — with something inherited and truthy, so a lookup that ought to
+ * miss would return a function where the signature promises a `MissionFailureCode`, and the
+ * control plane would reject the failure report that carried it.
  */
-const MISSION_FAILURE_BY_ERROR_CODE: Readonly<Partial<Record<string, MissionFailureCode>>> = {
-  forbidden: 'policy_violation',
-  validation_failed: 'policy_violation',
-  conflict: 'plan_superseded',
-  timeout: 'timeout',
-};
+const MISSION_FAILURE_BY_ERROR_CODE: ReadonlyMap<string, MissionFailureCode> = new Map([
+  ['forbidden', 'policy_violation'],
+  ['validation_failed', 'policy_violation'],
+  ['conflict', 'plan_superseded'],
+  ['timeout', 'timeout'],
+]);
 
 /**
  * Why a mission failed, in the taxonomy the owner reads.
@@ -1373,11 +1379,11 @@ export function classifyFailure(error: unknown): MissionFailureCode {
   if (error instanceof DeliveryError) return error.failureCode;
   if (error instanceof GitError) return 'git_error';
   if (error instanceof ControlPlaneError) {
-    return MISSION_FAILURE_BY_ERROR_CODE[error.code] ?? 'worker_lost';
+    return MISSION_FAILURE_BY_ERROR_CODE.get(error.code) ?? 'worker_lost';
   }
 
   const { code } = readErrorSignals(error);
-  const structured = code === null ? undefined : MISSION_FAILURE_BY_ERROR_CODE[code];
+  const structured = code === null ? undefined : MISSION_FAILURE_BY_ERROR_CODE.get(code);
   if (structured) return structured;
 
   const message = describe(error).toLowerCase();

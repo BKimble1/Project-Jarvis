@@ -68,6 +68,35 @@ describe('isRetryable', () => {
     expect(isRetryable(network('UND_ERR_CONNECT_TIMEOUT', 'fetch failed'))).toBe(true);
   });
 
+  it('reads a status the subprocess could only put in the sentence', () => {
+    /*
+     * The likeliest way the structured reading is wrong: it is not there. The SDK runs `claude` in
+     * a subprocess and an API failure inside it arrives as the line the CLI printed, status and
+     * all, on an ordinary `Error`. Reading only the adjectives around that number is the original
+     * defect intact — this is the 403 that says "timeout", one layer further out.
+     */
+    expect(
+      isRetryable(
+        new Error(
+          'API Error: 403 {"type":"error","error":{"message":"request timeout while validating the credential"}}',
+        ),
+      ),
+    ).toBe(false);
+    expect(isRetryable(new Error('API Error: 400 invalid_request_error: rate limit field'))).toBe(
+      false,
+    );
+    /* And the other half of it: a 5xx that happens to use none of the four known phrases. */
+    expect(isRetryable(new Error('API Error: 500 Internal Server Error'))).toBe(true);
+    expect(isRetryable(new Error('Claude Code process exited with code 1: API Error: 529'))).toBe(
+      true,
+    );
+    expect(isRetryable(new Error('Request failed with status code 503'))).toBe(true);
+
+    /* A number with nothing introducing it as a status is just a number. */
+    expect(isRetryable(new Error('the model returned 404 candidate patches'))).toBe(false);
+    expect(isRetryable(new Error('rate limit reached for claude-opus-4'))).toBe(true);
+  });
+
   it('still reads the message when the error carries nothing structured', () => {
     /* A failure crossing the `claude` subprocess boundary can be a sentence and nothing more. */
     expect(isRetryable(new Error('API error: Overloaded'))).toBe(true);
@@ -81,14 +110,25 @@ describe('isRetryable', () => {
     expect(isRetryable(network('ERR_SOMETHING_NEW', 'the API is overloaded'))).toBe(true);
   });
 
-  it('does not read a zero status as a verdict from a server', () => {
+  it('does not read a number that is not a verdict as one', () => {
     /*
-     * `ControlPlaneError` uses status 0 for "nothing answered". Treated as an HTTP status it would
-     * mean the opposite — a server replied, and not with a 5xx — so it must not be read as one.
+     * `ControlPlaneError` uses status 0 for "nothing answered", and a subprocess killed by a
+     * signal exits with 128 plus the signal number. Read as HTTP statuses both would say "a
+     * server answered, and not with a 5xx" — the opposite of what each means, and it would take
+     * the message rules out of the decision as well.
      */
     expect(readErrorSignals(new ControlPlaneError('unreachable', 0, 'network_error')).status).toBe(
       null,
     );
+    expect(readErrorSignals(Object.assign(new Error('killed'), { status: 143 })).status).toBe(null);
+    expect(
+      readErrorSignals(Object.assign(new Error('done'), { response: { status: 200 } })).status,
+    ).toBe(null);
+
+    /* So the message still decides, exactly as it would if the number were not there at all. */
+    expect(
+      isRetryable(Object.assign(new Error('claude exited: request timeout'), { status: 137 })),
+    ).toBe(true);
   });
 });
 
@@ -144,6 +184,17 @@ describe('classifyFailure', () => {
     expect(
       classifyFailure(Object.assign(new Error('the run hit its time limit'), { code: 'conflict' })),
     ).toBe('plan_superseded');
+
+    /*
+     * The code is read off an unknown error, so it can be any string — including one an object
+     * literal would answer from its prototype. A miss has to miss.
+     */
+    expect(classifyFailure(Object.assign(new Error('odd'), { code: 'toString' }))).toBe(
+      'agent_error',
+    );
+    expect(classifyFailure(Object.assign(new Error('odd'), { code: 'constructor' }))).toBe(
+      'agent_error',
+    );
   });
 
   it('keeps the classifications that were already right', () => {

@@ -610,7 +610,12 @@ export const ERROR_CAUSE_DEPTH = 4;
 
 /** What an error knows about itself, as opposed to what it says. */
 export interface ErrorSignals {
-  /** An HTTP status, from `status`, `statusCode`, `httpStatus` or `response.status`. */
+  /**
+   * A server's verdict on the request, when one reached a server at all.
+   *
+   * Only a failure status is ever reported here. A number outside that range on an error object
+   * is something else wearing the name — see `httpFailureStatus`.
+   */
   readonly status: number | null;
   /** A machine code: a Node `errno` such as `ECONNRESET`, or a domain error's `JarvisErrorCode`. */
   readonly code: string | null;
@@ -643,10 +648,10 @@ export function readErrorSignals(error: unknown): ErrorSignals {
         ? (record.response as Record<string, unknown>)
         : null;
     status ??=
-      httpStatus(record.status) ??
-      httpStatus(record.statusCode) ??
-      httpStatus(record.httpStatus) ??
-      httpStatus(response?.status);
+      httpFailureStatus(record.status) ??
+      httpFailureStatus(record.statusCode) ??
+      httpFailureStatus(record.httpStatus) ??
+      httpFailureStatus(response?.status);
     code ??= typeof record.code === 'string' && record.code.length > 0 ? record.code : null;
     current = record.cause;
   }
@@ -655,17 +660,28 @@ export function readErrorSignals(error: unknown): ErrorSignals {
 }
 
 /**
- * A status, or null for a property that merely shares the name.
+ * The band a number has to be in before it is believed to be a server's verdict.
  *
- * Range-checked rather than merely numeric, because `status` is a popular property name and one
- * of the things carrying it is the worker's own `ControlPlaneError`, whose status is `0` when the
- * request never reached the control plane at all. Read as an HTTP status that zero would say "a
- * server answered, and not with a 5xx" — the exact opposite of what it means.
+ * It starts at 400 rather than 100 because `status` is a popular property name and most of what
+ * carries it is not HTTP. The worker's own `ControlPlaneError` sets it to `0` when nothing
+ * answered, and `status` is also where Node's own child-process helpers put an exit code — which
+ * for a process killed by a signal is 128 plus the signal number, so 137 for SIGKILL and 143 for
+ * SIGTERM. Every one of those passes a 100-to-599 test and is then read as "a server answered,
+ * and not with a 5xx" — the opposite of what each of them means, and worse than reading nothing,
+ * because a status found here silences the message rules that would otherwise have decided.
+ *
+ * Nothing is lost by ignoring the band below: no request that succeeded or was redirected arrives
+ * here as a failure, so a 1xx, 2xx or 3xx on an error object is a number that means something
+ * else.
  */
-function httpStatus(value: unknown): number | null {
+const HTTP_FAILURE_STATUS_MIN = 400;
+const HTTP_STATUS_MAX = 599;
+
+/** A server's verdict, or null for a property that merely shares the name. */
+function httpFailureStatus(value: unknown): number | null {
   const numeric = typeof value === 'string' ? Number(value) : value;
   if (typeof numeric !== 'number' || !Number.isInteger(numeric)) return null;
-  return numeric >= 100 && numeric <= 599 ? numeric : null;
+  return numeric >= HTTP_FAILURE_STATUS_MIN && numeric <= HTTP_STATUS_MAX ? numeric : null;
 }
 
 /**
@@ -714,12 +730,28 @@ export const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A status named in the sentence, for the failures that arrive as one.
+ *
+ * The SDK runs `claude` in a subprocess, and an API failure inside it reaches the worker as
+ * whatever the CLI printed: `API Error: 529 {"type":"error"…}`. The status is there — it is just
+ * in the prose rather than on the object, and reading only the adjectives around it is the
+ * original defect in its commonest shape. A 403 whose body says "request timeout" was retried on
+ * the word; `API Error: 500` was given up on because no word in it was familiar. Both are decided
+ * here now, by the number, before any adjective is consulted.
+ *
+ * Anchored on the words that introduce a status, because a bare three-digit number in a message
+ * means nothing in particular and there is no hurry to guess. `[45]\d\d` is
+ * `HTTP_FAILURE_STATUS_MIN`…`HTTP_STATUS_MAX` said the only way a pattern can say it: the text
+ * gets the same band as the object, so neither can be used to smuggle past the other.
+ */
+const STATUS_IN_MESSAGE = /(?:api error|http(?:\s+error)?|status(?:\s+code)?)\D{0,3}([45]\d\d)\b/i;
+
+/**
  * The last resort: phrases worth acting on when the error carries nothing else.
  *
- * The SDK runs `claude` in a subprocess, and a failure that crosses that boundary can reach the
- * worker as a sentence and nothing more — no status, no code, no prototype. These four are what
- * this classifier was originally built from; they are kept, one rung below the structured signals
- * instead of in front of them.
+ * What is left once neither the object nor the text names a status: a sentence with no number in
+ * it at all. These four are what this classifier was originally built from; they are kept, below
+ * every reading of what the server actually said instead of in front of them.
  */
 export const RETRYABLE_MESSAGE_HINTS: readonly string[] = [
   'overloaded',
@@ -729,27 +761,41 @@ export const RETRYABLE_MESSAGE_HINTS: readonly string[] = [
 ];
 
 /**
+ * One rule for a status, wherever it was found.
+ *
+ * Extracted so that a status on the object and a status in the text cannot come to disagree: the
+ * question "does this number mean later or no" has one answer, and a rule kept in two places is
+ * how the two readings of an error drifted apart in the first place.
+ */
+function statusIsRetryable(status: number): boolean {
+  return status >= RETRYABLE_STATUS_FLOOR || RETRYABLE_CLIENT_STATUSES.has(status);
+}
+
+/**
  * Is the identical request worth making again?
  *
- * A status decides whenever there is one, in both directions: it is the API's own account of what
- * happened, and no phrase in the body of a 403 turns a permanent refusal into a passing
- * condition. A recognised network code decides next, for the failures that never reached a server
- * to be given a status by.
+ * A status decides whenever one can be found, in both directions: it is the API's own account of
+ * what happened, and no phrase in the body of a 403 turns a permanent refusal into a passing
+ * condition. On the object first, because that reading cannot be confused by a quoted sentence;
+ * then in the message, because a failure that crossed the `claude` subprocess boundary has
+ * nowhere else to put it.
  *
- * Prose speaks only when the error carries neither. A code that is present but unrecognised falls
- * through to it rather than being read as a refusal: an unknown code is evidence about where the
- * failure came from, not about whether it will recur, and treating it as "not retryable" would
- * quietly stop the worker retrying a genuinely overloaded API.
+ * A recognised network code sits between the two, for the failures that never reached a server to
+ * be given a status by. A code that is present but unrecognised falls through rather than being
+ * read as a refusal: an unknown code is evidence about where the failure came from, not about
+ * whether it will recur, and treating it as "not retryable" would quietly stop the worker
+ * retrying a genuinely overloaded API.
+ *
+ * The phrases speak last, and only for an error that names no status anywhere.
  */
 export function isRetryable(error: unknown): boolean {
   const signals = readErrorSignals(error);
-  if (signals.status !== null) {
-    return (
-      signals.status >= RETRYABLE_STATUS_FLOOR || RETRYABLE_CLIENT_STATUSES.has(signals.status)
-    );
-  }
+  if (signals.status !== null) return statusIsRetryable(signals.status);
   if (signals.code !== null && RETRYABLE_NETWORK_CODES.has(signals.code)) return true;
 
   const message = describe(error).toLowerCase();
+  const spoken = STATUS_IN_MESSAGE.exec(message);
+  if (spoken) return statusIsRetryable(Number(spoken[1]));
+
   return RETRYABLE_MESSAGE_HINTS.some((hint) => message.includes(hint));
 }

@@ -80,7 +80,9 @@ export interface SpeechControls extends SpeechState {
   /** Stop listening and throw it away. */
   cancel(): void;
   reset(): void;
+  /** Say this after anything already waiting. It never interrupts; `silence` is the interrupt. */
   speak(text: string, options?: { voice?: string; rate?: number }): void;
+  /** Stop speaking, and abandon whatever was queued behind it. */
   silence(): void;
   setPhase(phase: SpeechPhase): void;
 }
