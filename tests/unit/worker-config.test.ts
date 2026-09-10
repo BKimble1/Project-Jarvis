@@ -25,7 +25,7 @@ describe('a worker environment filled in from the template', () => {
   };
 
   const withBlank = (key: string) =>
-    buildWorkerConfig({ ...REQUIRED, [key]: '' } as NodeJS.ProcessEnv);
+    buildWorkerConfig({ ...REQUIRED, [key]: '' } as unknown as NodeJS.ProcessEnv);
 
   it('does not refuse to start over a blank line the template itself ships', () => {
     expect(withBlank('JARVIS_WORKER_AUTH_MODE').authMode).toBe('subscription');
@@ -60,7 +60,7 @@ describe('a worker environment filled in from the template', () => {
       ANTHROPIC_API_KEY: 'sk-ant-test-key-value',
       JARVIS_WORKER_NAME: 'macbook',
       JARVIS_WORKER_MAX_TURNS: '120',
-    } as NodeJS.ProcessEnv);
+    } as unknown as NodeJS.ProcessEnv);
     expect(config.authMode).toBe('api_key');
     expect(config.name).toBe('macbook');
     expect(config.maxTurns).toBe(120);

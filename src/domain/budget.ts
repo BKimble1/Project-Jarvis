@@ -271,21 +271,21 @@ export const MAX_UNPRICED_RECORD_SHARE = 0.25;
  * answer did not enforce that owner's limit either, it only refused all their work. The fix for
  * that deployment is a price table or a provider that reports cost.
  *
- * ## And what it does not yet cover
+ * ## What carries the rest of it
  *
- * The clause holds only while a window contains *no* priced work at all. One reported cent beside
- * a subscription worker's tokenful, costless rows puts the ratio back in charge, it reads them as
- * a ledger with most of its money missing, and every plan is refused again — the same outage, one
- * priced call later.
+ * The clause above holds only while a window contains *no* priced work at all. One reported cent
+ * beside a subscription worker's tokenful, costless rows would put the ratio back in charge, read
+ * them as a ledger with most of its money missing, and refuse every plan again — the same outage,
+ * one priced call later.
  *
- * The answer to that is `costBasis: 'subscription'`, which says *free* rather than *unknown* and
- * so stays out of the numerator whatever else is in the window. **Nothing writes it yet.** The
- * worker knows which it is (`claude-agent-sdk.ts` drops the counterfactual cost on a subscription
- * session) and then throws that knowledge away at the wire: `runUsageSchema` in `mission-run.ts`
- * carries no billing field, so `usageRowForRun` in `usage-ledger.ts` sees an absent cost and can
- * only write `unknown`. Carrying the billing mode on the run report and writing this basis there
- * is the change that finishes this; until it lands, the clause above is the whole protection and
- * it is thinner than it looks.
+ * `costBasis: 'subscription'` is what covers that, because it says *free* rather than *unknown*
+ * and so stays out of the numerator whatever else is in the window. It is written from the run's
+ * own billing mode: the worker knows which credential paid (`claude-agent-sdk.ts` drops the
+ * counterfactual cost on a subscription session), `RunUsage.billing` carries that to the control
+ * plane, and `usageRowForRun` writes the basis rather than guessing from an absent figure.
+ *
+ * A worker too old to send the field still reports `unknown`, which is exactly what its silence
+ * means — and for that deployment the zero-spend clause above is still the whole protection.
  */
 export function spendIsMeasurable(totals: UsageTotals): boolean {
   if (totals.recordCount === 0) return true;

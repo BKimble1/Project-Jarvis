@@ -156,6 +156,8 @@ export class ScriptedRuntime implements AgentRuntime {
                 outputTokens: 340,
                 cacheReadTokens: 0,
                 totalCostUsd: 0.0123,
+                /* A fixture, not a credential. `unknown` is the honest answer for one. */
+                billing: 'unknown',
                 turns: 3,
                 durationMs: 4200,
               },

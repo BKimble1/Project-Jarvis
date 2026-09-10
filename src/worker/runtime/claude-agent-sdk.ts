@@ -562,6 +562,12 @@ function extractUsage(
     totalCostUsd: billing === 'subscription' ? null : (message.total_cost_usd ?? null),
     turns: message.num_turns ?? null,
     durationMs: message.duration_ms ?? null,
+    /*
+     * And which of the two the null above is. Dropping the counterfactual cost is only half of
+     * telling the truth about a subscription run: the ledger has to be able to tell "free" from
+     * "nobody said", and this is the only place in the system that knows which.
+     */
+    billing,
   };
 }
 

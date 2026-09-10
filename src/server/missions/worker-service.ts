@@ -664,6 +664,8 @@ export class WorkerService {
                   totalCostUsd: input.usage.totalCostUsd ?? null,
                   turns: input.usage.turns ?? null,
                   durationMs: input.usage.durationMs ?? null,
+                  /* Absent means a worker that predates the field, which is exactly `unknown`. */
+                  billing: input.usage.billing ?? 'unknown',
                 }
               : null,
           }

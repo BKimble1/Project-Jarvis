@@ -67,6 +67,26 @@ export interface MissionRun {
   readonly repairRound: number;
 }
 
+/**
+ * Which credential paid for a run.
+ *
+ * Travels beside the tokens because the absence of a cost means two completely different things
+ * depending on it, and only the worker knows which. On a subscription the marginal cost really is
+ * nothing, so a run reports tokens and no money on purpose; on an API key a missing cost means the
+ * provider did not tell us, and the spend total is understating reality by an unknown amount.
+ *
+ * Without this field the ledger could not tell those apart and recorded both as `unknown`, which
+ * is how a deployment that had spent nothing all week ended up with an operator that refused every
+ * plan: `spendIsMeasurable` fails closed on unmeasured spending, and a subscription worker's runs
+ * are 100% unpriced by design. See `costBasis` in `domain/budget.ts`.
+ *
+ * `unknown` is a real answer, not a placeholder: a runtime that is not the Claude Agent SDK — the
+ * scripted one, or whatever replaces it — genuinely does not know, and saying so is what keeps the
+ * ledger honest rather than guessing free.
+ */
+export const RUN_BILLING = ['subscription', 'api', 'unknown'] as const;
+export type RunBilling = (typeof RUN_BILLING)[number];
+
 export interface RunUsage {
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
@@ -74,6 +94,14 @@ export interface RunUsage {
   readonly totalCostUsd: number | null;
   readonly turns: number | null;
   readonly durationMs: number | null;
+  /**
+   * Required, with `unknown` as the way to decline.
+   *
+   * Optional would mean a runtime that forgot it reads as a missing cost of unknown provenance —
+   * which is the exact state this field exists to remove, arrived at by omission instead of by
+   * measurement.
+   */
+  readonly billing: RunBilling;
 }
 
 export const runUsageSchema = z.object({
@@ -83,6 +111,12 @@ export const runUsageSchema = z.object({
   totalCostUsd: z.number().min(0).max(100_000).nullish(),
   turns: z.number().int().min(0).max(100_000).nullish(),
   durationMs: z.number().int().min(0).max(2_147_483_647).nullish(),
+  /*
+   * Nullish on the wire, unlike the interface, because a worker built before this field existed
+   * still reports and its runs must still be recorded. An absent value reads as `unknown`, which
+   * is exactly what such a worker's silence means.
+   */
+  billing: z.enum(RUN_BILLING).nullish(),
 });
 
 /* ------------------------------------------------------------------- events */

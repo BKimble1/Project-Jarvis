@@ -1,4 +1,5 @@
 import type { UsageKind, UsageOutcome } from '@/domain/budget';
+import type { RunBilling } from '@/domain/mission-run';
 import type { CapacityObservation } from '@/domain/claude-capacity';
 import type { UsageCreateInput } from '@/server/repositories/accounting-types';
 
@@ -27,10 +28,25 @@ import type { UsageCreateInput } from '@/server/repositories/accounting-types';
  * ## What is not claimed
  *
  * `reportedCostUsd` is set only when the provider actually gave a number, and `costBasis` says so.
- * An absent cost is `unknown`, never zero: zero is a claim that something was free, and a budget
- * computed from zeroes is a budget that does not hold. A subscription worker reports no cost at
- * all — its marginal cost really is nothing — so its rows carry tokens and an unknown basis rather
- * than a fabricated figure.
+ * An absent cost is never zero in the money column: zero is a claim that something was free, and a
+ * budget computed from zeroes is a budget that does not hold.
+ *
+ * But an absent cost has two quite different meanings, and this used to record both as `unknown`.
+ * A subscription worker reports no cost *on purpose* — its marginal cost really is nothing, and
+ * the runtime drops the counterfactual API price rather than show an owner a bill they will not
+ * receive. An API-key worker that reports no cost means the provider did not say, and the total is
+ * understating reality by an unknown amount. Only the first is safe to enforce a limit against.
+ *
+ * Recording them the same way is how a deployment that had spent nothing all week ended up with an
+ * operator that refused every plan: `spendIsMeasurable` fails closed on unmeasured spending, and a
+ * subscription worker's rows are 100% unpriced by design. So the run now carries its billing mode
+ * (see `RunUsage.billing`) and a subscription run is written as `subscription` — a *measured*
+ * zero, which stays out of the unpriced count whatever else is in the window, rather than as a
+ * missing figure that drags the whole ledger below being worth enforcing.
+ *
+ * Still never `reportedCostUsd: 0`. Zero in the money column would put subscription work into the
+ * same total as API work at a price of nothing, and a week of it would read as a week of free API
+ * calls rather than as a week the subscription paid for.
  */
 export function usageRowForRun(input: {
   readonly kind: UsageKind;
@@ -50,6 +66,7 @@ export function usageRowForRun(input: {
     readonly cacheReadTokens?: number | null;
     readonly totalCostUsd?: number | null;
     readonly durationMs?: number | null;
+    readonly billing?: RunBilling | null;
   };
   readonly outcome: UsageOutcome;
   readonly failureCode?: string | null;
@@ -72,7 +89,17 @@ export function usageRowForRun(input: {
     outputTokens: input.usage.outputTokens ?? null,
     cachedInputTokens: input.usage.cacheReadTokens ?? null,
     reportedCostUsd: reported ?? null,
-    costBasis: reported === null || reported === undefined ? 'unknown' : 'reported',
+    /*
+     * Reported beats everything: a worker that names a figure has one, whatever it is paying with.
+     * Below that, a subscription run is free and anything else is unmeasured — including a worker
+     * old enough not to send the field at all, whose silence is exactly "nobody said".
+     */
+    costBasis:
+      reported !== null && reported !== undefined
+        ? 'reported'
+        : input.usage.billing === 'subscription'
+          ? 'subscription'
+          : 'unknown',
     durationMs: input.usage.durationMs ?? null,
     outcome: input.outcome,
     /*

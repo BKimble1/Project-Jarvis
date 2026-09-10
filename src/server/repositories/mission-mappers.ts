@@ -169,6 +169,16 @@ function toUsage(row: Row<typeof missionRuns>): RunUsage | null {
     totalCostUsd: row.usageCostUsd,
     turns: row.usageTurns,
     durationMs: row.usageDurationMs,
+    /*
+     * `mission_runs` does not store it, and deliberately does not.
+     *
+     * The question billing answers is "was the missing cost free or unmeasured?", and the only
+     * consumer of that answer is the spend ledger, which records it durably in
+     * `usage_records.cost_basis` at the moment the run reports. Reading it back off the run row
+     * would be a second copy of the same fact, free to drift, for a column nothing displays —
+     * `mission-live.tsx` shows a cost only when there is one, and a subscription run has none.
+     */
+    billing: 'unknown',
   };
 }
 

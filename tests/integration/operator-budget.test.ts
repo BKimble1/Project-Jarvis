@@ -501,10 +501,61 @@ describe('the operating loop, its slots and its money', () => {
     });
 
     /*
-     * Blake's deployment as it actually is tonight: one worker, one subscription, and a ledger
-     * whose rows still say `unknown` because that is what the run reporter writes today. There is
-     * no money anywhere in the window, so there is nothing for those rows to be understating, and
-     * the loop keeps working rather than refusing every plan until somebody deletes the limit.
+     * The one that closes the gap the two above only papered over.
+     *
+     * A window with no priced work at all is measurable at the total it reports, zero — but that
+     * clause holds only while *nothing* is priced. One reported cent beside a subscription
+     * worker's tokenful, costless rows used to put the ratio back in charge, read them as a ledger
+     * with most of its money missing, and refuse every plan again: the same outage, one priced
+     * call later.
+     *
+     * What makes it hold now is that the run says which it is. Nothing here sets `costBasis` by
+     * hand — the worker reports `billing: 'subscription'` on the real protocol, and the ledger
+     * writes a measured zero rather than a missing figure.
+     */
+    it('keeps working when a real subscription run sits beside one priced call', async () => {
+      await operatingAtLiveRead({ dailySpendUsd: 20 });
+      const { missionId } = await readyMission();
+      await harness.services.missions.approvePlan(
+        missionId,
+        { planVersion: 1, acknowledgedRiskLevel: 'low', pausedProjectOverride: false },
+        'owner',
+      );
+      const enrolled = await harness.services.workerService.enrol('billing-worker', 2);
+      const assignment = await harness.services.workerService.claim(enrolled.worker.id, {
+        heartbeat: HEARTBEAT,
+        accepts: ['execution'],
+      });
+      expect(assignment, 'the fixture needs a real claimed run to report against').not.toBeNull();
+      await harness.services.workerService.reportRunState(enrolled.worker.id, {
+        runId: assignment!.runId,
+        usage: { inputTokens: 40_000, outputTokens: 9_000, billing: 'subscription' },
+      });
+
+      /* The one priced call. An answer Jarvis gave through the API, costing a cent. */
+      await harness.services.usage.record({
+        kind: 'answer',
+        reportedCostUsd: 0.01,
+        costBasis: 'reported',
+        occurredAt: new Date(),
+      });
+
+      const totals = await weekTotals();
+      expect(totals.recordCount).toBe(2);
+      expect(totals.unknownCount, 'the subscription run is measured, not unknown').toBe(0);
+      expect(spendIsMeasurable(totals)).toBe(true);
+
+      const next = await readyMission();
+      const result = await harness.services.operatorService.tick();
+      const entry = result.started.find((item) => item.missionId === next.missionId);
+      expect(entry?.outcome, JSON.stringify(result.started)).toBe('queued');
+    });
+
+    /*
+     * And the same deployment with a worker too old to send the field. Its rows say `unknown`,
+     * because that is genuinely all its silence tells us — but there is no money anywhere in the
+     * window for them to be understating, so the loop keeps working rather than refusing every
+     * plan until somebody deletes the limit.
      */
     it('keeps working on a day whose ledger has no money in it at all', async () => {
       await operatingAtLiveRead({ dailySpendUsd: 20 });

@@ -15,6 +15,7 @@ import {
   type TaskState,
 } from '@/domain/mission-task';
 import type { MissionFailureCode } from '@/domain/mission';
+import type { RunBilling } from '@/domain/mission-run';
 import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
 import { deriveWorkerHealth } from '@/domain/worker';
 import type { OperatingMode } from '@/domain/operating-mode';
@@ -874,6 +875,7 @@ export class TaskWorkerService {
         totalCostUsd?: number | null;
         turns?: number | null;
         durationMs?: number | null;
+        billing?: RunBilling | null;
       } | null;
       completionSummary?: string | null;
       failureCode?: string | null;
