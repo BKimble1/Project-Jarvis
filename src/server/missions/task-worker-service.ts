@@ -17,6 +17,8 @@ import {
 import type { MissionFailureCode } from '@/domain/mission';
 import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
 import { deriveWorkerHealth } from '@/domain/worker';
+import type { OperatingMode } from '@/domain/operating-mode';
+import { beginsNoNewWork } from './worker-service';
 
 /**
  * How long a *worker* may be silent before Jarvis takes back the tasks it is holding.
@@ -137,6 +139,17 @@ export interface TaskWorkerServiceDeps {
    * work after a demotion.
    */
   readonly currentLevel: () => Promise<QualificationLevel>;
+  /**
+   * How much Jarvis is allowed to do right now.
+   *
+   * Required and asked late, for the same two reasons as `currentLevel` above, and it arrived a
+   * change later than it should have. `WorkerService.claim` gained a mode gate and this one did
+   * not — but the worker's work loop calls `claimAndRun` and, the moment that returns nothing,
+   * falls straight through to `claimAndRunTask`. So a paused Jarvis stopped handing out missions
+   * and went on handing out task agent sessions, and the gate on the other path made it reach this
+   * one sooner. A pause has to mean the same thing on both.
+   */
+  readonly currentMode: () => Promise<OperatingMode>;
   readonly clock?: () => Date;
 }
 
@@ -164,6 +177,20 @@ export class TaskWorkerService {
       (AGENT_ROLES as readonly string[]).includes(role),
     );
     if (valid.length === 0) return null;
+
+    /*
+     * The mode gate, in the same position relative to the same question as the one in
+     * `WorkerService.claim`: before anything is claimed, and never in the way of work already in
+     * flight. Nothing here hands a worker back a task it already holds — `claimNext` only ever
+     * takes a fresh `ready` row — so refusing at the top cannot strand a live agent session, and a
+     * task the worker is already running is reported on through `reportTaskState`, which this does
+     * not touch.
+     *
+     * Null rather than a throw, because a 403 is fatal to the worker's poll loop and a paused
+     * Jarvis wants its worker still connected, still heartbeating, and ready the moment the owner
+     * comes back.
+     */
+    if (beginsNoNewWork(await this.deps.currentMode())) return null;
 
     const posture = await this.deps.orchestrator.posture();
     const limits = await this.deps.orchestrator.limits();

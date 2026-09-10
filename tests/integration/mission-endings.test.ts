@@ -2,11 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { MissionPlanContent } from '@/domain/mission-plan';
 import type { MissionTask, TaskState } from '@/domain/mission-task';
+import { AGENT_ROLES } from '@/domain/agent-role';
 import { projectInputSchema } from '@/domain/project';
 import { WORKER_VERSION } from '@/domain/worker-protocol';
 import { PARKED_TASK_STATES } from '@/server/missions/orchestrator';
-import { currentCapacityDecision } from '@/server/operator/capacity-view';
-import { WorkerService } from '@/server/missions/worker-service';
 import { createHarness, type TestHarness } from '../helpers/services';
 
 /**
@@ -371,56 +370,6 @@ describe('claiming a mission while Jarvis is not starting work', () => {
     await harness.close();
   });
 
-  /**
-   * The worker service with its mode reader attached.
-   *
-   * This is the wiring `container.ts` must have — one thunk, closing over the operator state
-   * repository, exactly as `currentLevel` and `reasoningCapacity` already do — and it is written
-   * out here because the container is owned elsewhere and does not pass it yet. When it does,
-   * every one of these cases can be pointed at `harness.services.workerService` and this helper
-   * deleted; until then it is the only way to exercise the gate against the real claim SQL.
-   */
-  function gatedWorkerService(): WorkerService {
-    const services = harness.services;
-    return new WorkerService({
-      missions: services.missionRepo,
-      plans: services.plans,
-      approvals: services.approvals,
-      clarifications: services.clarifications,
-      runs: services.missionRuns,
-      events: services.missionEvents,
-      commands: services.missionCommands,
-      permissions: services.permissions,
-      verifications: services.verifications,
-      artifacts: services.artifacts,
-      workers: services.workerRepo,
-      usage: services.usage,
-      tasks: services.tasks,
-      projects: services.projects,
-      sources: services.sources,
-      evidence: services.evidence,
-      missionService: services.missions,
-      concurrencyLimit: harness.config.missions.concurrencyLimit,
-      allowWebResearch: harness.config.missions.allowWebResearch,
-      currentLevel: () => services.qualificationService.currentLevel(),
-      reasoning: services.reasoningRepo,
-      applyReasoning: (workerId, outcome) => services.reasoningService.apply(workerId, outcome),
-      reasoningCapacity: async () =>
-        (
-          await currentCapacityDecision(
-            {
-              workerRepo: services.workerRepo,
-              charterService: services.charterService,
-              operatorService: services.operatorService,
-            },
-            now,
-          )
-        ).decision,
-      currentMode: async () => (await services.operatorState.get()).mode,
-      clock: () => now,
-    });
-  }
-
   async function queuedMission(): Promise<string> {
     counter += 1;
     const project = await harness.services.projects.create(
@@ -495,7 +444,7 @@ describe('claiming a mission while Jarvis is not starting work', () => {
     await setMode('emergency_stop');
     const workerId = await enrol('stopped-worker');
 
-    const assignment = await gatedWorkerService().claim(workerId, {
+    const assignment = await harness.services.workerService.claim(workerId, {
       heartbeat: HEARTBEAT,
       accepts: ['execution'],
     });
@@ -511,7 +460,7 @@ describe('claiming a mission while Jarvis is not starting work', () => {
     const workerId = await enrol('paused-worker');
 
     expect(
-      await gatedWorkerService().claim(workerId, {
+      await harness.services.workerService.claim(workerId, {
         heartbeat: HEARTBEAT,
         accepts: ['execution'],
       }),
@@ -520,22 +469,60 @@ describe('claiming a mission while Jarvis is not starting work', () => {
   }, 60_000);
 
   /*
-   * `off` is the mode a deployment that has never been configured is in, and the operations screen,
-   * the wallboard and `next-actions` all already read it as "not running". A worker that starts a
-   * mission on a Jarvis that says it is off is the same defect as the one above wearing a different
-   * label.
+   * The other claim path, which the mission gate on its own made *worse*.
+   *
+   * The worker's work loop calls `claimAndRun` and, the moment that returns nothing, falls straight
+   * through to `claimAndRunTask` — a different route, a different service, and originally no mode
+   * gate at all. So a paused Jarvis stopped handing out missions and went on handing out task agent
+   * sessions, reaching that path sooner than before the gate existed. This is the same test as the
+   * one above, one protocol over.
    */
-  it('hands out nothing while switched off', async () => {
-    await queuedMission();
+  it('hands out no task while paused either', async () => {
+    const missionId = await queuedMission();
+    const proposal = await harness.services.orchestrator.proposeGraph(missionId, {});
+    await harness.services.orchestrator.approveGraph(
+      missionId,
+      { graphVersion: proposal.graph.version, fingerprint: proposal.graph.fingerprint },
+      'owner',
+    );
+    const workerId = await enrol('paused-task-worker');
+
+    await setMode('paused');
+    expect(
+      await harness.services.taskWorkerService.claimTask(workerId, [...AGENT_ROLES]),
+    ).toBeNull();
+
+    /*
+     * And then the same call again once the mode is back, which is what makes the assertion above
+     * about the mode rather than about an empty queue: the task was claimable the whole time.
+     */
+    await setMode('supervised');
+    expect(
+      await harness.services.taskWorkerService.claimTask(workerId, [...AGENT_ROLES]),
+    ).not.toBeNull();
+  }, 60_000);
+
+  /*
+   * And `off` is deliberately not one of them.
+   *
+   * `off` is the mode a deployment that has never been configured is in — it is the schema default
+   * for `operator_state.mode`, and only the hands-off setup screen ever moves a deployment off it.
+   * Refusing to claim in it would mean a fresh install where the owner asks for something in chat
+   * gets a mission that is created, planned, approved, queued, and then never claimed by anybody,
+   * with no message saying why. See `beginsNoNewWork` for why that costs nothing in safety: the
+   * loop cannot propose in `off`, so everything queued there was queued because the owner asked.
+   */
+  it('still runs what the owner asked for on a deployment nobody has configured', async () => {
+    const missionId = await queuedMission();
     const workerId = await enrol('off-worker');
 
     expect((await harness.services.operatorState.get()).mode).toBe('off');
-    expect(
-      await gatedWorkerService().claim(workerId, {
-        heartbeat: HEARTBEAT,
-        accepts: ['execution'],
-      }),
-    ).toBeNull();
+    const assignment = await harness.services.workerService.claim(workerId, {
+      heartbeat: HEARTBEAT,
+      accepts: ['execution'],
+    });
+    expect(assignment).not.toBeNull();
+    expect(assignment?.missionId).toBe(missionId);
   }, 60_000);
 
   /*
@@ -546,7 +533,7 @@ describe('claiming a mission while Jarvis is not starting work', () => {
     const missionId = await queuedMission();
     await setMode('paused');
     const workerId = await enrol('resumed-worker');
-    const service = gatedWorkerService();
+    const service = harness.services.workerService;
 
     expect(
       await service.claim(workerId, { heartbeat: HEARTBEAT, accepts: ['execution'] }),
@@ -572,7 +559,7 @@ describe('claiming a mission while Jarvis is not starting work', () => {
     const missionId = await queuedMission();
     await setMode('supervised');
     const workerId = await enrol('mid-flight-worker');
-    const service = gatedWorkerService();
+    const service = harness.services.workerService;
 
     const first = await service.claim(workerId, { heartbeat: HEARTBEAT, accepts: ['execution'] });
     expect(first).not.toBeNull();

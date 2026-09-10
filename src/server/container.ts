@@ -591,6 +591,16 @@ export function buildServices(
     reasoning: reasoningRepo,
     reasoningCapacity,
     applyReasoning: (workerId, outcome) => reasoningService.apply(workerId, outcome),
+    /*
+     * Read at claim time, not at start-up, for the same reason `currentLevel` is: the owner
+     * reaches for Pause or the emergency stop while this process is running, and a mode captured
+     * at construction would keep handing out missions for as long as the deployment stayed up.
+     *
+     * A thunk also lets it close over `operatorStateRepo`, which is declared further down with the
+     * rest of the operator's wiring — the same forward reference `reasoningCapacity` above makes,
+     * resolved at call time rather than at construction.
+     */
+    currentMode: async () => (await operatorStateRepo.get()).mode,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 
@@ -644,6 +654,8 @@ export function buildServices(
     limits: config.missions.capacity,
     allowWebResearch: config.missions.allowWebResearch,
     currentLevel,
+    /* Read at claim time, exactly as on `workerService` above, and for the same reason. */
+    currentMode: async () => (await operatorStateRepo.get()).mode,
     ...(overrides.clock ? { clock: overrides.clock } : {}),
   });
 

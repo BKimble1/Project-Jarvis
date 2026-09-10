@@ -115,14 +115,12 @@ export interface WorkerServiceDeps {
    * emergency stop *while the process is running*, and a mode read at construction would keep
    * handing out missions for as long as the deployment stayed up.
    *
-   * **Optional only so that a container which has not been taught to pass it still compiles, and
-   * a claim path with no mode reader has no mode gate.** Nothing about this is a safe default — it
-   * is the behaviour the gate exists to remove — so every wiring of this service should pass
-   * `async () => (await operatorStateRepo.get()).mode`, thunked exactly like `currentLevel` and
-   * `reasoningCapacity` so the forward reference to a repository declared later resolves at call
-   * time rather than at construction.
+   * Required, deliberately. It was briefly optional so that a container which had not been taught
+   * to pass it still compiled — which is a default that silently removes the gate, in the one
+   * service where a missing gate means a paused Jarvis carries on working. A wiring that forgets
+   * it should not compile.
    */
-  readonly currentMode?: () => Promise<OperatingMode>;
+  readonly currentMode: () => Promise<OperatingMode>;
   /** The reasoning queue. See `claimReasoning`. */
   readonly reasoning: ReasoningRepository;
   /**
@@ -154,23 +152,37 @@ const POLL_INTERVAL_IDLE_MS = 3000;
 /**
  * Is this a mode in which no new mission work may begin?
  *
- * Three modes, and the same three the operations panel, the wallboard and `next-actions` already
- * group together as "not running" — so the gate agrees with what every screen is telling the owner
- * rather than being a fourth opinion.
+ * Two modes, and the two that `operating-mode.ts` describes as "states you enter from anywhere"
+ * rather than rungs of a ladder. `emergency_stop` comes from `modeStopsRunningWork`, so that a
+ * mode which takes running work down has one definition rather than two; `paused` is the mode
+ * whose own words are "nothing new begins".
  *
- * `emergency_stop` comes from `modeStopsRunningWork`: a mode that takes work already running down
- * self-evidently starts none, and asking the domain rather than repeating its answer here means
- * there is one place to change if the emergency stop ever gains a sibling. `paused` is the mode
- * whose own words are "nothing new begins". `off` is the third because a deployment that says it
- * is not watching anything must not be quietly running an agent session: the operations panel has
- * always drawn it as paused, and the mode's own meaning is "I will not start work".
+ * ## Why `off` is not the third
+ *
+ * It reads like it should be — `OPERATING_MODE_MEANING.off` says "I am not watching anything and
+ * will not start work", and the operations panel draws it much as it draws a pause. But `off` is
+ * the *default for a deployment nobody has configured yet*: `operator_state.mode` defaults to it
+ * in the schema, and only `hands-off.ts` ever moves a deployment off it. Nothing else in the
+ * mission flow reads it, so a fresh install has been happily running the missions its owner asked
+ * for the whole time.
+ *
+ * Putting it in this list would turn that default into a silent outage — Blake types an idea, the
+ * mission is created, planned, approved and queued, and then no worker ever claims it, with no
+ * message anywhere saying why. That is the exact class of fault this audit exists to remove, and
+ * it would be introduced by a gate meant to fix one.
+ *
+ * The ladder says what it costs to leave `off` out, and it is nothing: the loop already refuses to
+ * observe (`modeObserves`) or to propose (`modeMayPropose`) in `off`, so no mission Jarvis chose
+ * for itself can exist to be claimed. Everything queued in `off` was queued because the owner
+ * asked for it, and refusing to run what the owner explicitly asked for is not what "off" buys
+ * them. Pausing is.
  *
  * This says nothing about work already in flight — see the call site in `claim`, which returns a
  * worker's existing run to it whatever the mode is.
  */
 export function beginsNoNewWork(mode: OperatingMode): boolean {
   if (modeStopsRunningWork(mode)) return true;
-  return mode === 'paused' || mode === 'off';
+  return mode === 'paused';
 }
 
 export class WorkerService {
@@ -305,16 +317,8 @@ export class WorkerService {
 
   /* -------------------------------------------------------------------- claim */
 
-  /**
-   * Read the mode and say whether new work may start.
-   *
-   * A service built without a mode reader answers "work may start", which is what this whole
-   * method exists to stop — see `WorkerServiceDeps.currentMode`. It is written as a false rather
-   * than a throw because a control plane that refused every claim on a wiring mistake would take
-   * the factory down completely, which is a worse failure than the one it is guarding.
-   */
+  /** Read the mode and say whether new work may start. */
   private async modeBeginsNoNewWork(): Promise<boolean> {
-    if (!this.deps.currentMode) return false;
     return beginsNoNewWork(await this.deps.currentMode());
   }
 
