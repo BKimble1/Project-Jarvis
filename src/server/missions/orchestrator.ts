@@ -28,6 +28,7 @@ import { assertTransition } from '@/domain/mission-state';
 import {
   assertTaskTransition,
   isTerminalTaskState,
+  satisfiesDependency,
   type MissionTask,
   type TaskState,
 } from '@/domain/mission-task';
@@ -131,6 +132,86 @@ export const SWEEPABLE_MISSION_STATES = [
   'verifying',
   'creating_pull_request',
 ] as const satisfies readonly MissionState[];
+
+/**
+ * The task states no code in Jarvis moves a task out of.
+ *
+ * The transition *table* offers exits from both — `repair_required → awaiting_review` for a repair
+ * that came back, `awaiting_review → succeeded` for a verdict — so reading the table alone suggests
+ * these are ordinary waypoints. Reading the callers is what settles it, and only one of those exits
+ * has one:
+ *
+ *  - `awaiting_review` is left only by `applyVerdict`, and only for the task the review task names
+ *    in `reviewsTaskId`. A reviewer that comes back `unavailable` fails its own review task, so the
+ *    work it was reviewing waits for a verdict that is never coming.
+ *  - `repair_required` has no caller at all. `materialiseRepair` parks the reviewed task there and
+ *    creates a *new* repair task with its own fresh review; the original stays parked whether the
+ *    repair round succeeds, fails, or is never claimed.
+ *
+ * Being parked is not on its own an ending and must not be treated as one. This list is read by
+ * `anyTaskCanStillProgress`, which keeps the mission open while anything *else* can still move, so
+ * a repair round in flight or a review still to be claimed holds it open on its own account.
+ * `waiting_for_input`, `waiting_for_permission` and `paused` are absent for the opposite reason:
+ * those wait on the owner, who is a mover, and ending a mission underneath a question Jarvis asked
+ * is exactly the behaviour this must not acquire.
+ */
+export const PARKED_TASK_STATES = [
+  'awaiting_review',
+  'repair_required',
+] as const satisfies readonly TaskState[];
+
+/**
+ * Could anything still happen to any of these tasks?
+ *
+ * Asked of the whole graph rather than of one task at a time, because being stuck travels along a
+ * dependency edge and the per-task version of this question could not see that. `tick` promotes a
+ * `blocked` task only when `satisfiesDependency` accepts every dependency — which means `succeeded`
+ * or `skipped` — and fails one only when `dependencyIsUnreachable` flags a dependency, which means
+ * `failed`, `stopped` or `cancelled`. A parked dependency is neither. So a task waiting on one is
+ * never promoted and never failed: it sits in `blocked` for ever, and reading `blocked` as
+ * "something could still happen here" kept the whole mission alive on the strength of it.
+ *
+ * That is the original sink one hop upstream, and `awaiting_review` is how it is reached. The wire
+ * schema accepts every `TaskState` and `T('running', 'awaiting_review', ['worker', 'system'])` lets
+ * a worker park its own task; in the decomposed graph integration, verification, review and
+ * delivery all sit downstream of the builder, so one such report strands four tasks and the only
+ * reviewer that could unpark the fifth is one of the four. Today's `task-runner` never sends it, so
+ * this is a hole rather than an outage — and the reason the rule is "can anything still move?"
+ * rather than "is every row terminal?" is precisely that it should not rest on which states the
+ * worker of the day happens to use.
+ *
+ * Hence a fixpoint rather than a predicate: a task is live if it is neither terminal nor parked
+ * and, while it is waiting, every dependency it waits on is itself live. Iterated until nothing
+ * more drops, which terminates because the live set only ever shrinks.
+ */
+function anyTaskCanStillProgress(tasks: readonly MissionTask[]): boolean {
+  const isParked = (state: TaskState): boolean =>
+    (PARKED_TASK_STATES as readonly TaskState[]).includes(state);
+  const stateByKey = new Map(tasks.map((task) => [task.key, task.state]));
+  const live = new Map(
+    tasks
+      .filter((task) => !isTerminalTaskState(task.state) && !isParked(task.state))
+      .map((task) => [task.key, task]),
+  );
+
+  let settled = false;
+  while (!settled) {
+    settled = true;
+    for (const [key, task] of live) {
+      if (task.state !== 'blocked') continue;
+      const waitingOnSomethingDead = task.dependsOn.some((dependency) => {
+        const state = stateByKey.get(dependency);
+        /* An edge to a task outside this graph is not ours to judge, as in `computeReadiness`. */
+        if (state === undefined) return false;
+        return !satisfiesDependency(state) && !live.has(dependency);
+      });
+      if (!waitingOnSomethingDead) continue;
+      live.delete(key);
+      settled = false;
+    }
+  }
+  return live.size > 0;
+}
 
 export const CAPACITY_POSTURE_SETTING = 'jarvis.capacity.posture';
 export const CAPACITY_LIMITS_SETTING = 'jarvis.capacity.limits';
@@ -625,46 +706,99 @@ export class MissionOrchestrator {
     await this.reflectMissionState(mission, current, limits);
   }
 
+  /**
+   * Decide what the mission's own state should be, given what its tasks are doing.
+   *
+   * The rule is "can any task still make progress?", and it replaced "is every task terminal?".
+   * The old question left two shapes of mission alive for ever with nothing able to move them —
+   * see `PARKED_TASK_STATES` for the running one, and the `queued` branch below for the other.
+   *
+   * Everything here is derived from the rows on every call, so a mission that arrives at the same
+   * shape twice reaches the same conclusion twice, and a tick that finds nothing to do is free.
+   */
   private async reflectMissionState(
     mission: Mission,
     tasks: readonly MissionTask[],
     limits: CapacityLimits,
   ): Promise<void> {
-    const anyRunning = tasks.some(
+    void limits;
+    let current = mission;
+
+    /*
+     * A worker holding a task is what makes a queued mission a running one.
+     *
+     * Deliberately not an early return any more. It used to be one, which meant a mission whose
+     * tasks had *all* finished while it was still queued needed a second tick before anything
+     * looked at the ending — and outside a test the second tick is not guaranteed to come.
+     */
+    const heldByAWorker = tasks.some(
       (task) =>
         !isTerminalTaskState(task.state) && task.state !== 'blocked' && task.state !== 'ready',
     );
-    const delivery = tasks.find((task) => task.taskType === 'delivery');
-    const allDone = tasks.every((task) => isTerminalTaskState(task.state));
-    const anyFailed = tasks.some((task) => task.state === 'failed');
+    if (current.state === 'queued' && heldByAWorker) {
+      current = (await this.moveMission(current, 'running', 'system')) ?? current;
+    }
 
-    if (mission.state === 'queued' && anyRunning) {
-      await this.moveMission(mission, 'running', 'system');
+    const delivery = tasks.find((task) => task.taskType === 'delivery');
+    if (delivery?.state === 'succeeded' && current.state !== 'pull_request_ready') {
+      await this.moveMission(current, 'pull_request_ready', 'system');
+      await this.buildReceipt(current.id);
       return;
     }
-    if (delivery?.state === 'succeeded' && mission.state !== 'pull_request_ready') {
-      await this.moveMission(mission, 'pull_request_ready', 'system');
-      await this.buildReceipt(mission.id);
-      return;
+
+    /*
+     * Only a mission Jarvis is still driving can be ended from here.
+     *
+     * `queued` is in the list and used to be absent, which was the whole of the second sink: every
+     * task failed before a worker claimed one, so `anyRunning` was false, the mission never became
+     * `running`, and not one of the terminal branches applied. `queued → failed` has been in the
+     * transition table the whole time.
+     *
+     * Everything else is left alone on purpose. A mission that is `pausing`, `paused`, `stopping`,
+     * `waiting_for_input` or `waiting_for_permission` is where somebody put it, and a background
+     * sweep that ended it would be overruling them.
+     */
+    if (current.state !== 'running' && current.state !== 'queued') return;
+    /* No graph rows at all is a graph mid-write, not a mission that finished. */
+    if (tasks.length === 0) return;
+    if (anyTaskCanStillProgress(tasks)) return;
+
+    const anyFailed = tasks.some((task) => task.state === 'failed');
+    /*
+     * A mission that owed a draft pull request and has not opened one did not complete.
+     *
+     * Reached when delivery ended in some terminal state that is not `succeeded` and is not
+     * `failed` either — skipped, stopped or cancelled. Calling that `completed` would put a
+     * mission with no pull request beside the ones that have one, in the same list, saying the
+     * same word.
+     */
+    const undelivered = delivery !== undefined && delivery.state !== 'succeeded';
+    /*
+     * `queued → completed` is not a move the state machine has, and inventing one would be wrong
+     * anyway: a mission that never started has nothing to show for itself. So a queued mission
+     * that can no longer move ends as `failed`, with the receipt to say what happened to each task.
+     */
+    if (anyFailed || undelivered || current.state === 'queued') {
+      await this.moveMission(current, 'failed', 'system');
+    } else {
+      await this.moveMission(current, 'completed', 'worker');
     }
-    if (allDone && !anyFailed && mission.state === 'running' && !delivery) {
-      await this.moveMission(mission, 'completed', 'worker');
-      await this.buildReceipt(mission.id);
-      return;
-    }
-    if (allDone && anyFailed && mission.state === 'running') {
-      await this.moveMission(mission, 'failed', 'system');
-      await this.buildReceipt(mission.id);
-    }
-    void limits;
+    await this.buildReceipt(current.id);
   }
 
+  /**
+   * Move the mission, and hand back what it became.
+   *
+   * Returns the updated row rather than void so a caller that makes two decisions in one pass has
+   * the current state for the second one: `transition` is a compare-and-set against the state it
+   * was given, so passing a stale mission through it a second time silently does nothing.
+   */
   private async moveMission(
     mission: Mission,
     to: Mission['state'],
     actor: 'owner' | 'worker' | 'system',
-  ): Promise<void> {
-    if (mission.state === to) return;
+  ): Promise<Mission | null> {
+    if (mission.state === to) return mission;
     const transition = assertTransition(mission.state, to, actor);
     const updated = await this.deps.missions.transition(
       mission.id,
@@ -672,12 +806,13 @@ export class MissionOrchestrator {
       { lastActivityAt: this.clock() },
       mission.state,
     );
-    if (!updated) return;
+    if (!updated) return null;
     await this.deps.events.record(mission.id, {
       type: 'state_changed',
       actor,
       summary: `${mission.state} → ${to}${transition ? `: ${transition.summary}` : ''}`,
     });
+    return updated;
   }
 
   private async failTask(

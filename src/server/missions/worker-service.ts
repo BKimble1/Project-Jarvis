@@ -22,6 +22,7 @@ import type {
   WorkerRunStateInput,
 } from '@/domain/worker-protocol';
 import { WORKER_VERSION, isCompatibleWorkerVersion } from '@/domain/worker-protocol';
+import { modeStopsRunningWork, type OperatingMode } from '@/domain/operating-mode';
 import { RATE_WINDOWS, type CapacityDecision, type RateWindow } from '@/domain/claude-capacity';
 import {
   REASONING_LEASE_MS,
@@ -107,6 +108,21 @@ export interface WorkerServiceDeps {
    * start-up would keep handing out work it is no longer entitled to.
    */
   readonly currentLevel: () => Promise<QualificationLevel>;
+  /**
+   * How much Jarvis is allowed to do right now.
+   *
+   * A thunk for the same reason `currentLevel` is one: the owner reaches for Pause or the
+   * emergency stop *while the process is running*, and a mode read at construction would keep
+   * handing out missions for as long as the deployment stayed up.
+   *
+   * **Optional only so that a container which has not been taught to pass it still compiles, and
+   * a claim path with no mode reader has no mode gate.** Nothing about this is a safe default — it
+   * is the behaviour the gate exists to remove — so every wiring of this service should pass
+   * `async () => (await operatorStateRepo.get()).mode`, thunked exactly like `currentLevel` and
+   * `reasoningCapacity` so the forward reference to a repository declared later resolves at call
+   * time rather than at construction.
+   */
+  readonly currentMode?: () => Promise<OperatingMode>;
   /** The reasoning queue. See `claimReasoning`. */
   readonly reasoning: ReasoningRepository;
   /**
@@ -134,6 +150,28 @@ export interface WorkerServiceDeps {
 /** How often the worker should come back. Faster while it holds work, slower while idle. */
 const POLL_INTERVAL_BUSY_MS = 1000;
 const POLL_INTERVAL_IDLE_MS = 3000;
+
+/**
+ * Is this a mode in which no new mission work may begin?
+ *
+ * Three modes, and the same three the operations panel, the wallboard and `next-actions` already
+ * group together as "not running" — so the gate agrees with what every screen is telling the owner
+ * rather than being a fourth opinion.
+ *
+ * `emergency_stop` comes from `modeStopsRunningWork`: a mode that takes work already running down
+ * self-evidently starts none, and asking the domain rather than repeating its answer here means
+ * there is one place to change if the emergency stop ever gains a sibling. `paused` is the mode
+ * whose own words are "nothing new begins". `off` is the third because a deployment that says it
+ * is not watching anything must not be quietly running an agent session: the operations panel has
+ * always drawn it as paused, and the mode's own meaning is "I will not start work".
+ *
+ * This says nothing about work already in flight — see the call site in `claim`, which returns a
+ * worker's existing run to it whatever the mode is.
+ */
+export function beginsNoNewWork(mode: OperatingMode): boolean {
+  if (modeStopsRunningWork(mode)) return true;
+  return mode === 'paused' || mode === 'off';
+}
 
 export class WorkerService {
   private readonly clock: () => Date;
@@ -268,6 +306,19 @@ export class WorkerService {
   /* -------------------------------------------------------------------- claim */
 
   /**
+   * Read the mode and say whether new work may start.
+   *
+   * A service built without a mode reader answers "work may start", which is what this whole
+   * method exists to stop — see `WorkerServiceDeps.currentMode`. It is written as a false rather
+   * than a throw because a control plane that refused every claim on a wiring mistake would take
+   * the factory down completely, which is a worse failure than the one it is guarding.
+   */
+  private async modeBeginsNoNewWork(): Promise<boolean> {
+    if (!this.deps.currentMode) return false;
+    return beginsNoNewWork(await this.deps.currentMode());
+  }
+
+  /**
    * Take the next runnable mission.
    *
    * Two paths converge here: a mission `queued` for execution, and a mission `inspecting` that
@@ -285,6 +336,31 @@ export class WorkerService {
     /* A worker already holding a run gets that run back rather than a second one. */
     const held = await this.currentAssignment(workerId);
     if (held) return this.buildAssignment(held.mission, held.run);
+
+    /*
+     * The mode gate, and it sits exactly here for a reason.
+     *
+     * *After* the held-run check, because Pause says "work already running finishes or stops
+     * safely" — a worker mid-session polls this same method to get its run back, and refusing it
+     * here would strand a live agent rather than let it finish, which is the opposite of the
+     * promise. *Before* the inspection claim as well as the execution one, because an inspection is
+     * a real read-only agent session and "nothing new begins" covers it too.
+     *
+     * Null, not a throw. A 403 is fatal to the worker's poll loop, and a paused Jarvis wants its
+     * worker still connected and still heartbeating so it can be handed work the moment the owner
+     * comes back — this is "no work right now", which the worker has always known how to handle.
+     * The refusal writes no event because there is no mission to write it against: nothing was
+     * claimed, and the mode change that caused this is already in the audit log.
+     *
+     * **This stops mission claims, which is not the whole factory, and the gap is worth naming
+     * here rather than being discovered.** The worker's work loop calls `claimAndRun` and, the
+     * moment it returns nothing, falls straight through to `claimAndRunTask` — which reaches
+     * `TaskWorkerService.claimTask` through `/api/worker/claim-task`, and that path reads no mode
+     * at all. So a paused Jarvis still hands out task agent sessions, and this gate makes it reach
+     * that path *sooner*. The same gate belongs there, in the same position relative to the same
+     * held-work check, and is not written yet.
+     */
+    if (await this.modeBeginsNoNewWork()) return null;
 
     if (input.accepts.includes('inspection')) {
       const inspection = await this.claimInspection(workerId, now);
