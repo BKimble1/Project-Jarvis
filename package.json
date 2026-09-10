@@ -1,0 +1,17 @@
+{
+  "name": "project-jarvis",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Jarvis — a chat-first autonomous build agent with real subscription telemetry.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test \"test/unit/*.test.js\" \"test/acceptance/*.test.js\"",
+    "test:unit": "node --test \"test/unit/*.test.js\"",
+    "test:acceptance": "node --test \"test/acceptance/*.test.js\"",
+    "usage": "node scripts/usage-probe.js"
+  }
+}
