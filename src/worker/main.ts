@@ -22,6 +22,22 @@ import { checkWorkspaceRoot, listWorkspaces } from './workspace';
  * Closing the Jarvis browser tab has no effect on it. That is the whole point.
  */
 
+/**
+ * How long a health fact is believed before the worker checks it again.
+ *
+ * Two minutes, from two directions that meet at about the same number. It cannot be much shorter,
+ * because `availability()` spawns `claude auth status` — the runtime caches its own verdict for
+ * exactly that reason — and the poll it rides on runs every second or three. It should not be much
+ * longer, because the control plane already forms its own opinion of a worker on a two-minute
+ * scale (`WORKER_DISCONNECT_SECONDS`), so a health fact that can be two minutes stale never
+ * becomes the reason a status light is wrong for longer than the status light already allows.
+ *
+ * The failure it is bounded against is the one where both facts were read once at boot and never
+ * again: a Claude login that expired at lunchtime left the worker heartbeating
+ * `runtimeAvailable: true` until somebody restarted it, while every claim was silently skipped.
+ */
+export const HEALTH_REPROBE_INTERVAL_MS = 120_000;
+
 export interface WorkerRuntimeDeps {
   readonly config: WorkerConfig;
   readonly client: ControlPlaneClient;
@@ -29,6 +45,11 @@ export interface WorkerRuntimeDeps {
   readonly delivery: GitHubDelivery | null;
   readonly log?: (message: string) => void;
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * The clock, injected for the same reason `sleep` is: the re-probe is on a timer, and a test
+   * that had to wait two real minutes to see one is a test nobody runs.
+   */
+  readonly now?: () => Date;
 }
 
 export class JarvisWorkerProcess {
@@ -43,6 +64,19 @@ export class JarvisWorkerProcess {
   private runtimeDetail = 'Not yet checked.';
   private workspaceHealthy = false;
   private workspaceDetail = 'Not yet checked.';
+  /** When the last probe ran, so the next one is due rather than constant. Null means never. */
+  private lastHealthProbeAtMs: number | null = null;
+  /*
+   * The most recent change of each verdict, in words, for the heartbeat to carry.
+   *
+   * One line each rather than a log, which is what keeps this bounded without a limit to justify:
+   * what an owner staring at a worker that is taking no work needs is when it stopped being able
+   * to, and the newest answer is the only one that says that.
+   */
+  private runtimeTransition: string | null = null;
+  private workspaceTransition: string | null = null;
+  /** The probe currently in flight, shared by every caller. See `refreshHealth`. */
+  private probing: Promise<void> | null = null;
 
   constructor(private readonly deps: WorkerRuntimeDeps) {}
 
@@ -56,6 +90,10 @@ export class JarvisWorkerProcess {
       : new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private now(): Date {
+    return this.deps.now ? this.deps.now() : new Date();
+  }
+
   /** Begin draining: finish the current mission, then stop. Triggered by SIGTERM/SIGINT. */
   drain(): void {
     if (this.draining) return;
@@ -67,24 +105,101 @@ export class JarvisWorkerProcess {
     this.stopped = true;
   }
 
+  /**
+   * Ask again whether this worker can actually do anything, and notice if the answer moved.
+   *
+   * Both facts used to be established once, during boot, and never revisited. A Claude login that
+   * expired mid-afternoon, or a workspace root that stopped being writable when a disk filled,
+   * left the worker heartbeating `runtimeAvailable: true` for the rest of its life while
+   * `wantsWork` refused every claim in silence — a worker that reads as connected and idle, takes
+   * nothing for hours, and explains itself nowhere.
+   *
+   * The transition is remembered separately from the verdict because the verdict alone cannot say
+   * it changed. `runtimeAvailable: false` on a worker that has been that way since it started is a
+   * setup problem the owner already knows about; the same field on a worker that was working an
+   * hour ago is a login that expired, and it is the second one somebody needs to be told about.
+   *
+   * ## Why only one probe runs at a time
+   *
+   * Three places ask for one: the poll loop's timer, and the two catch blocks that re-check this
+   * machine after a failure — and a failing control plane makes those fire together. Two probes in
+   * flight can finish out of order, and the older answer would then not merely overwrite the newer
+   * one but announce a transition that never happened: "the Claude runtime became available again"
+   * while it is in fact still gone. Sharing the in-flight probe makes the second caller wait for
+   * the first rather than spawn a second `claude auth status` beside it.
+   */
   private async refreshHealth(): Promise<void> {
+    this.probing ??= this.probeHealth().finally(() => {
+      this.probing = null;
+    });
+    await this.probing;
+  }
+
+  private async probeHealth(): Promise<void> {
+    const at = this.now();
+    /*
+     * Stamped before the probes, not after: `availability()` may sit for its full timeout waiting
+     * on a hung CLI, and dating the probe from when it finished would let a slow probe shorten the
+     * interval to the next one.
+     */
+    const firstProbe = this.lastHealthProbeAtMs === null;
+    this.lastHealthProbeAtMs = at.getTime();
+
     const availability = await this.deps.runtime.availability();
+    /*
+     * Boot is never a transition. Both fields start `false` because nothing has been asked yet,
+     * so treating the first answer as a change would announce a recovery that never happened.
+     */
+    if (!firstProbe && availability.available !== this.runtimeAvailable) {
+      this.runtimeTransition = availability.available
+        ? `Claude runtime became available again at ${at.toISOString()}.`
+        : `Claude runtime stopped being available at ${at.toISOString()}.`;
+      this.log(this.runtimeTransition);
+    }
     this.runtimeAvailable = availability.available;
     this.runtimeDetail = availability.detail;
 
     const workspace = await checkWorkspaceRoot(this.deps.config.workspaceRoot);
+    if (!firstProbe && workspace.ok !== this.workspaceHealthy) {
+      this.workspaceTransition = workspace.ok
+        ? `Workspace root became writable again at ${at.toISOString()}.`
+        : `Workspace root stopped being writable at ${at.toISOString()}.`;
+      this.log(this.workspaceTransition);
+    }
     this.workspaceHealthy = workspace.ok;
     this.workspaceDetail = workspace.detail;
+  }
+
+  /**
+   * Re-probe when the last answer has aged past `HEALTH_REPROBE_INTERVAL_MS`.
+   *
+   * Driven from the poll loop, because that is the loop that keeps running for the whole length of
+   * a mission and because the heartbeat it sends immediately afterwards is the only channel these
+   * facts have. Hanging it off the work loop would stop the re-probing for exactly as long as a
+   * session lasts, which is exactly the stretch in which a login expires.
+   */
+  private async refreshHealthIfDue(): Promise<void> {
+    const last = this.lastHealthProbeAtMs;
+    if (last !== null && this.now().getTime() - last < HEALTH_REPROBE_INTERVAL_MS) return;
+    await this.refreshHealth();
   }
 
   private async heartbeat(): Promise<WorkerHeartbeatInput> {
     const workspaces = await listWorkspaces(this.deps.config.workspaceRoot);
     const described = describeWorkerConfig(this.deps.config);
 
+    /*
+     * Ordered by what an owner needs first, because the control plane keeps the first twelve. The
+     * current complaint, then when it started — a worker that is refusing work says why, and a
+     * worker that recovered says when, which is the difference between "it has always been broken"
+     * and "something changed at 14:03".
+     */
     const diagnostics = [
       ...this.deps.config.diagnostics,
       this.runtimeAvailable ? null : this.runtimeDetail,
       this.workspaceHealthy ? null : this.workspaceDetail,
+      this.runtimeTransition,
+      this.workspaceTransition,
       workspaces.length > 0 ? `${workspaces.length} preserved workspace(s) on disk.` : null,
     ].filter((entry): entry is string => entry !== null);
 
@@ -147,9 +262,11 @@ export class JarvisWorkerProcess {
    *
    * ## What each loop owns
    *
-   * The poll loop owns talking: the heartbeat, the revoke directive, and handing owner commands to
-   * whatever is running. The work loop owns doing: claiming, running, and deciding when a drain is
-   * complete. Neither touches the other's business, and only the work loop ever blocks for long.
+   * The poll loop owns talking: the heartbeat, the revoke directive, handing owner commands to
+   * whatever is running, and — on `HEALTH_REPROBE_INTERVAL_MS` — re-establishing the two facts the
+   * heartbeat reports about this machine, since a heartbeat is only worth as much as the facts in
+   * it. The work loop owns doing: claiming, running, and deciding when a drain is complete.
+   * Neither touches the other's business, and only the work loop ever blocks for long.
    *
    * `stopped` is the one thing they share, and it is set by whichever notices first. A revoke seen
    * by the poll loop ends the poll loop immediately but lets the work loop finish the mission it
@@ -346,6 +463,7 @@ export class JarvisWorkerProcess {
 
     while (!this.stopped) {
       try {
+        await this.refreshHealthIfDue();
         const response = await this.deps.client.poll({
           heartbeat: await this.heartbeat(),
           wantsWork: this.wantsWork(),

@@ -19,12 +19,20 @@ import { buildBranchName, slugifyForBranch } from '@/domain/workspace-safety';
 import { deriveWorkerHealth } from '@/domain/worker';
 
 /**
- * How long a task may sit with a silent worker before Jarvis takes it back.
+ * How long a *worker* may be silent before Jarvis takes back the tasks it is holding.
  *
  * Several multiples of `WORKER_DISCONNECT_SECONDS`, which is the point at which a worker stops
  * being *described* as connected — right for a status light, far too eager for taking work away.
- * A running task checks in every thirty seconds, so a worker that is genuinely alive keeps its
- * work with a wide margin, and only one that has really gone loses it.
+ * A restart, a closed laptop lid or a home connection dropping for a minute crosses that line
+ * routinely; the worker's poll loop beats every second or three, so ten minutes of nothing at all
+ * is a process that has really gone rather than one that hiccuped.
+ *
+ * The word "worker" is the whole of the fix this constant carries. It used to be spent on the
+ * *task's* last activity, which is a different quantity: a task speaks when its agent does
+ * something, and a real Claude session thinks for many minutes at a time without emitting an
+ * event. Every long session therefore satisfied the ten-minute half of the test permanently, and
+ * the only thing still standing between a running agent and having its work re-queued under
+ * another worker was the two-minute disconnect line — which a brief blip crosses.
  */
 export const ABANDONED_AFTER_MS = 10 * 60_000;
 
@@ -619,14 +627,22 @@ export class TaskWorkerService {
    * and blocks every future writer on that mission. One crash and that part of the factory is shut
    * until somebody notices.
    *
-   * ## Why a longer threshold than "disconnected"
+   * ## Why a longer threshold than "disconnected", and why it is measured on the heartbeat
    *
    * `WORKER_DISCONNECT_SECONDS` is the point at which Jarvis stops *describing* a worker as
    * connected, which is the right answer for a status light and much too eager for taking work
    * away from it. A restart, a laptop lid, a flaky home connection all cross that line routinely,
    * and a reclaim that fired on one of them would run the same task twice. `ABANDONED_AFTER_MS` is
-   * deliberately several multiples of it, and a running task now checks in every thirty seconds —
-   * so a worker that is genuinely alive keeps its work with a wide margin.
+   * deliberately several multiples of it.
+   *
+   * That margin only means anything if it is spent on the quantity that measures life. It was
+   * spent on the task's `lastActivityAt` instead, and a task is quiet for as long as its agent is
+   * thinking — measured in tens of minutes on real sessions, with nothing wrong. So a running
+   * agent was one two-minute gap in heartbeats away from having its task taken back and handed to
+   * a live worker, with every owner command from that moment on delivered to a run nobody was
+   * executing. The worker's heartbeat is the only thing here that is independent of what an agent
+   * is doing, so the window is measured against that and the task's silence decides nothing on its
+   * own.
    *
    * ## What fences the old worker out
    *
@@ -645,23 +661,45 @@ export class TaskWorkerService {
     );
 
     /*
-     * `registered` counts as gone. It means "enrolled but never seen", and a worker that has never
-     * once heartbeated cannot be the one keeping a ten-minute-old task alive — either it claimed
-     * and died before its first beat, or the row was left behind by something worse. `unhealthy`
-     * does not count: that is a late heartbeat, which is the exact case the margin exists for.
+     * Has the worker holding this task really gone?
+     *
+     * Three cases answer themselves without a window. A task with no worker is held by nobody. A
+     * worker row that is not in the list has been deleted underneath its own task. `registered`
+     * means "enrolled but never seen", and a process that has never once beaten cannot be the one
+     * running the agent session in question — either it died before its first beat, or the row was
+     * left behind by something worse. `revoked` may not report at all, so waiting for it to fall
+     * silent would be waiting for something that already happened.
+     *
+     * Everything else is judged on how long it has actually been silent, not on the label derived
+     * from that silence. `disconnected` is only the two-minute mark, and this is the sweep that
+     * must not act on two minutes.
      */
-    const gone = (workerId: string | null): boolean => {
+    const workerGone = (workerId: string | null): boolean => {
       if (!workerId) return true;
-      const status = health.get(workerId)?.effectiveStatus;
-      return (
-        status === undefined ||
-        status === 'registered' ||
-        status === 'disconnected' ||
-        status === 'revoked'
-      );
+      const state = health.get(workerId);
+      if (!state) return true;
+      if (state.effectiveStatus === 'registered' || state.effectiveStatus === 'revoked') {
+        return true;
+      }
+      /*
+       * A heartbeat timestamp that will not parse, which `deriveWorkerHealth` reports as an age of
+       * null. Treated as gone for the same reason an unreadable task timestamp is below: a clock
+       * that cannot be read is not evidence that something is alive, and the task-side test still
+       * has to agree before anything is taken.
+       */
+      if (state.heartbeatAgeSeconds === null) return true;
+      return state.heartbeatAgeSeconds * 1000 >= ABANDONED_AFTER_MS;
     };
 
-    const stale = (task: MissionTask): boolean => {
+    /*
+     * The second half, which decides nothing on its own and exists for one narrow case.
+     *
+     * Task reports and heartbeats travel on different routes, from different loops in the worker,
+     * so a worker can be reporting its task's progress while its polls are failing. A task that
+     * said something thirty seconds ago is demonstrably being worked on, whatever the heartbeat
+     * looks like, and must not be taken from it.
+     */
+    const taskQuiet = (task: MissionTask): boolean => {
       const last = task.lastActivityAt ? Date.parse(task.lastActivityAt) : null;
       if (last === null || Number.isNaN(last)) return true;
       return now.getTime() - last >= ABANDONED_AFTER_MS;
@@ -672,7 +710,7 @@ export class TaskWorkerService {
     let leasesReleased = 0;
 
     for (const task of await this.deps.tasks.listActive()) {
-      if (!gone(task.assignedWorkerId) || !stale(task)) continue;
+      if (!workerGone(task.assignedWorkerId) || !taskQuiet(task)) continue;
 
       /*
        * The lease first. A task returning to `ready` that still holds a lease over its own files
