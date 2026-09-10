@@ -19,6 +19,7 @@ export class Orchestrator {
   constructor({
     store, bus, clock, scheduler, pool, questions, backlog,
     speech = null, usage = null, planner = new DeterministicPlanner(),
+    settingsProvider = () => ({ mode: 'autonomous' }),
     logger = createLogger('orchestrator'), maxTaskAttempts = 3,
   }) {
     this.store = store;
@@ -33,6 +34,7 @@ export class Orchestrator {
     this.speech = speech;
     this.usage = usage;
     this.planner = planner;
+    this.settingsProvider = settingsProvider;
     this.log = logger;
     this.maxTaskAttempts = maxTaskAttempts;
 
@@ -46,7 +48,13 @@ export class Orchestrator {
       const projectId = evt.payload?.projectId;
       const questionId = evt.payload?.question?.id ?? evt.payload?.questionId;
       if (!projectId || !questionId) return;
-      this._unblockTasksFor(projectId, questionId, evt.payload?.question?.answer ?? evt.payload?.answer);
+      const answer = evt.payload?.question?.answer ?? evt.payload?.answer;
+      this._unblockTasksFor(projectId, questionId, answer);
+      const project = this._project(projectId);
+      if (project?.planApprovalQuestionId === questionId) {
+        this._patchProject(projectId, { planApprovalQuestionId: null });
+        if (isDeclined(answer)) { this.pause(projectId); return; }
+      }
       // Resume automatically — the operator answered, they should not have to
       // also say "continue".
       const p = this.run(projectId);
@@ -76,13 +84,18 @@ export class Orchestrator {
       blockedReason: null,
       deliverableIds: [],
     };
+    const mode = this._mode();
+    if (mode === 'paused') {
+      // The operator has Jarvis held: record the work, start nothing.
+      project.status = 'paused';
+    }
     this.store.put('projects', project.id, project);
     this.bus.emit('project.created', { projectId: project.id, project });
     this._setAction(project.evaluationOnly
       ? `I am evaluating ${project.title}.`
       : `I am planning ${project.title}.`, project.id);
 
-    if (autostart) {
+    if (autostart && project.status === 'active') {
       const p = this.run(project.id);
       if (p && typeof p.catch === 'function') p.catch((err) => this.log.error('run failed', err?.message));
     }
@@ -230,6 +243,7 @@ export class Orchestrator {
       const project = this._project(projectId);
       if (!project) return null;
       if (!canRun(project)) return project;
+      if (this._awaitingPlanApproval(project)) return project;
 
       let outcome;
       switch (project.phase) {
@@ -299,8 +313,27 @@ export class Orchestrator {
     });
     this.bus.emit('plan.revised', { projectId: project.id, plan });
 
+    if (project.evaluationOnly) return { phase: 'delivering' };
+
+    if (this._mode() === 'ask-first') {
+      // The operator asked to see the plan before anything is built. This is a
+      // deliberate setting, not a routine approval stop.
+      const scope = (this._project(project.id).scope ?? []).join(', ');
+      const question = this.questions.ask({
+        projectId: project.id,
+        taskId: null,
+        text: `I plan to build ${scope || project.title}. Shall I go ahead?`,
+        recommendedDefault: 'yes',
+        options: ['yes', 'change the plan'],
+      });
+      this._patchProject(project.id, { planApprovalQuestionId: question.id });
+      this._setPhase(project.id, 'implementing');
+      this._setAction(`I am waiting for you to okay the plan for ${project.title}.`, project.id);
+      return { halt: true };
+    }
+
     // A plan is not a deliverable. Keep going.
-    return { phase: project.evaluationOnly ? 'delivering' : 'implementing' };
+    return { phase: 'implementing' };
   }
 
   async _phaseTasks(project, kinds) {
@@ -599,6 +632,17 @@ export class Orchestrator {
 
   // ------------------------------------------------------------- internals
 
+  _mode() {
+    try { return this.settingsProvider()?.mode ?? 'autonomous'; }
+    catch { return 'autonomous'; }
+  }
+
+  _awaitingPlanApproval(project) {
+    const id = project.planApprovalQuestionId;
+    if (!id) return false;
+    return this.store.get('questions', id)?.status === 'open';
+  }
+
   _project(id) { return this.store.get('projects', id); }
   _task(id) { return this.store.get('tasks', id); }
   _tasks(projectId) { return this.store.find('tasks', (t) => t.projectId === projectId); }
@@ -722,6 +766,10 @@ function oneSentence(text, max = 120) {
 
 function firstSentence(text) {
   return oneSentence(text ?? '', 80);
+}
+
+function isDeclined(answer) {
+  return /^\s*(?:no\b|nope\b|don'?t\b|stop\b|wait\b|hold\b|not yet\b|change the plan\b)/i.test(String(answer ?? ''));
 }
 
 function unique(list) {

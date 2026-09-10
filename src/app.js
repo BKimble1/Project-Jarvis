@@ -65,6 +65,7 @@ export function createApp({
   const orchestrator = new Orchestrator({
     store, bus, clock, scheduler, pool, questions, backlog,
     speech, usage, planner: new DeterministicPlanner(), logger: logger.child('orchestrator'),
+    settingsProvider: () => store.get('settings', 'app') ?? settings,
   });
 
   const dispatcher = new ChatDispatcher({

@@ -178,3 +178,55 @@ test('drain() stops at an empty backlog instead of inventing work', async (t) =>
   assert.equal(h.store.ids('projects').length, 0);
   assert.equal(emptied.length, 1);
 });
+
+test('ask-first mode shows the plan and waits, then builds on approval', async (t) => {
+  let mode = 'ask-first';
+  const h = build();
+  h.orchestrator.settingsProvider = () => ({ mode });
+  t.after(h.cleanup);
+
+  const project = await h.orchestrator.submit({ title: 'App', goal: 'a chart and a table' });
+  await h.orchestrator.run(project.id);
+
+  const question = h.questions.open(project.id)[0];
+  assert.ok(question, 'it asked before building');
+  assert.match(question.text, /shall i go ahead/i);
+  assert.match(question.text, /chart/i, 'the plan itself is in the question');
+  assert.equal(question.recommendedDefault, 'yes');
+  assert.equal(h.store.find('tasks', (x) => x.status === 'done').length, 0, 'nothing was built yet');
+
+  h.questions.answer(question.id, 'yes');
+  await h.orchestrator.run(project.id);
+  assert.equal(h.store.get('projects', project.id).status, 'delivered');
+});
+
+test('declining the plan in ask-first mode pauses instead of building anyway', async (t) => {
+  const h = build();
+  h.orchestrator.settingsProvider = () => ({ mode: 'ask-first' });
+  t.after(h.cleanup);
+
+  const project = await h.orchestrator.submit({ title: 'App', goal: 'a risky migration' });
+  await h.orchestrator.run(project.id);
+  const question = h.questions.open(project.id)[0];
+
+  h.questions.answer(question.id, 'no, change the plan');
+  await h.orchestrator.run(project.id);
+
+  assert.equal(h.store.get('projects', project.id).status, 'paused');
+  assert.equal(h.store.find('tasks', (x) => x.status === 'done').length, 0, 'a decline built nothing');
+});
+
+test('paused mode records the work without starting it', async (t) => {
+  const h = build();
+  h.orchestrator.settingsProvider = () => ({ mode: 'paused' });
+  t.after(h.cleanup);
+
+  const project = await h.orchestrator.submit({ title: 'App', goal: 'anything at all' });
+  assert.equal(project.status, 'paused');
+  assert.equal(h.store.find('tasks', (x) => x.projectId === project.id).length, 0, 'nothing was planned or run');
+
+  h.orchestrator.settingsProvider = () => ({ mode: 'autonomous' });
+  h.orchestrator.resume(project.id);
+  await h.orchestrator.run(project.id);
+  assert.equal(h.store.get('projects', project.id).status, 'delivered', 'it picks up where it was held');
+});

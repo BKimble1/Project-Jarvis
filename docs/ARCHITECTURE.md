@@ -56,6 +56,16 @@ planning → implementing → verifying → reviewing → delivering → idle
 - After delivery, `drain()` works the authorized backlog and stops when it is
   empty. It never synthesizes work.
 
+### Operating modes
+
+The dashboard's mode control is real behaviour, not decoration:
+
+- `autonomous` — the loop above, unattended.
+- `ask-first` — Jarvis plans, then shows the plan as a decision card and waits.
+  Approving builds it; declining pauses the project rather than building anyway.
+  This is a deliberate setting, not a routine approval stop.
+- `paused` — new requests are recorded as projects and left unstarted.
+
 ## Chat as the interface
 
 `ChatDispatcher` is the only entry point the dashboard needs:

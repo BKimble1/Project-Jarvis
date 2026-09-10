@@ -65,6 +65,13 @@ export class ChatDispatcher {
       evaluationOnly,
     });
     this.conversations.bindProject(conversationId, project.id);
+    if (project.status === 'paused') {
+      return {
+        projectId: project.id,
+        ask: null,
+        reply: `I'm held in paused mode, so I've saved ${project.title} without starting it. Switch to autonomous and I'll run it.`,
+      };
+    }
     return {
       projectId: project.id,
       ask: null,
