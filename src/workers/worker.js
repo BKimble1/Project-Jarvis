@@ -155,13 +155,21 @@ export function createEchoExecutor({ clock = null, delayMs = 0, failurePlan = {}
   async function echoExecutor(task, ctx = {}) {
     if (!task || typeof task !== 'object') throw new TypeError('echo executor requires a task object');
     const taskId = task.id ?? null;
-    const attempt = (attempts.get(taskId) ?? 0) + 1;
-    attempts.set(taskId, attempt);
+    // Key attempts by whatever identifies the task: two id-less tasks must not
+    // share one failure script (and so consume each other's attempts).
+    const key = task.id ?? task.title ?? task.kind ?? null;
+    const attempt = (attempts.get(key) ?? 0) + 1;
+    attempts.set(key, attempt);
 
     const wait = Math.max(0, Number(delayMs) || 0);
     if (wait > 0) {
       const sleeper = ctx?.clock ?? clock;
-      if (sleeper?.sleep) await sleeper.sleep(wait);
+      // Never fall back to a raw timer, and never silently drop a configured
+      // delay: a pace that quietly does nothing is worse than a loud failure.
+      if (typeof sleeper?.sleep !== 'function') {
+        throw new Error('echo executor was given delayMs but no clock to sleep on');
+      }
+      await sleeper.sleep(wait);
     }
 
     const failure = plannedFor(task, attempt);
@@ -177,8 +185,8 @@ export function createEchoExecutor({ clock = null, delayMs = 0, failurePlan = {}
     };
   }
 
-  /** Attempts recorded for a task id — lets tests assert retry counts. */
-  echoExecutor.attemptsFor = (taskId) => attempts.get(taskId ?? null) ?? 0;
+  /** Attempts recorded for a task id (or title/kind) — lets tests assert retries. */
+  echoExecutor.attemptsFor = (taskKey) => attempts.get(taskKey ?? null) ?? 0;
   echoExecutor.reset = () => attempts.clear();
   return echoExecutor;
 }

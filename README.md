@@ -27,6 +27,13 @@ No dependencies. Node 22+, `node:` builtins only, no build step.
 - **Speaks plainly.** First person, one to three short sentences, the same text
   on screen and aloud. Minor progress is batched; delivery, blockers and
   questions are announced. Nothing is ever spoken twice or replayed on refresh.
+- **Modes that mean something.** `Autonomous` runs unattended. `Ask first`
+  shows you the plan and waits — approve and it builds, decline and it pauses
+  rather than building anyway. `Paused` records new requests without starting
+  them.
+- **Reminders you manage in chat.** "Remind me to renew the domain" holds it
+  without authorizing it; "what are my reminders?", "go ahead with the domain
+  reminder" and "drop the logs reminder" do the rest.
 - **A clean dashboard.** The animated core, one current-action sentence, chat,
   compact mode and health controls, and the usage circles. A decision card only
   when you need to act; deliverables only when they exist; diagnostics in a
@@ -35,7 +42,9 @@ No dependencies. Node 22+, `node:` builtins only, no build step.
   and measurement freshness, read from the authenticated subscription usage
   endpoint. A stale reading is labelled stale with its age; no reading at all
   says "Unavailable" with a recovery action. Unknown never looks like 0%.
-  Those same numbers pace real work concurrency and timing.
+  Those same numbers pace real work: concurrency drops band by band as the plan
+  fills up, and once a window is spent the work is held and picked back up by
+  itself when the window resets.
 
 ## Doing real work
 

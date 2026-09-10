@@ -43,7 +43,8 @@ export const BANDS = Object.freeze([
 /** @returns {typeof BANDS[number]|null} null when the reading is not a number. */
 export function bandFor(remainingPercent) {
   if (!Number.isFinite(remainingPercent)) return null;
-  return BANDS.find((b) => remainingPercent >= b.atLeastPercent) ?? BANDS[BANDS.length - 1];
+  // The last band's threshold is -Infinity, so every finite reading lands in one.
+  return BANDS.find((b) => remainingPercent >= b.atLeastPercent);
 }
 
 /**
