@@ -5,26 +5,9 @@ import { FakeClock } from '../../src/core/clock.js';
 import { EventBus } from '../../src/core/bus.js';
 import { Worker, createEchoExecutor } from '../../src/workers/worker.js';
 import { WorkerPool } from '../../src/workers/pool.js';
-
-// The shared harness imports src/app.js, which wires modules other agents are
-// still writing; these tests stay standalone on purpose.
-function silentLogger() {
-  const noop = () => {};
-  const l = { debug: noop, info: noop, warn: noop, error: noop };
-  l.child = () => l;
-  return l;
-}
-
-function recordEvents(bus, types = null) {
-  const seen = [];
-  bus.on('*', (evt) => { if (!types || types.includes(evt.type)) seen.push(evt); });
-  return {
-    all: () => seen,
-    ofType: (t) => seen.filter((e) => e.type === t),
-    count: (t) => seen.filter((e) => e.type === t).length,
-    types: () => seen.map((e) => e.type),
-  };
-}
+// Helpers come from fakes.js rather than harness.js: harness.js wires the whole
+// app, and these are unit tests of the workers alone.
+import { silentLogger, recordEvents, settle } from '../helpers/fakes.js';
 
 function task(i, over = {}) {
   return { id: `t${i}`, projectId: 'proj_1', planId: 'plan_1', title: `task ${i}`, kind: 'implement', ...over };
@@ -61,10 +44,6 @@ async function drive(clock, promise, { stepMs = 1_000, maxSteps = 500 } = {}) {
   if (!state.done) throw new Error('promise did not settle within the virtual time budget');
   await tracked;
   return state;
-}
-
-async function settle(times = 8) {
-  for (let i = 0; i < times; i += 1) await new Promise((r) => setImmediate(r));
 }
 
 // ---------------------------------------------------------------- Worker
@@ -395,6 +374,30 @@ test('stats() reports the contracted shape', async () => {
 
   await drive(clock, pool.submit(task(1), {}));
   assert.deepEqual(pool.stats(), { size: 3, inFlight: 0, peakConcurrency: 1, restarts: 0, crashed: 0 });
+
+  // No clock nudging here: the slot must already be released when the caller resumes.
+  const direct = await pool.submit(task(2), {});
+  assert.equal(direct.taskId, 't2');
+  assert.equal(pool.inFlight, 0);
+});
+
+test('the pool passes the caller context through and stamps the attempt', async () => {
+  const clock = new FakeClock(0);
+  const seen = [];
+  const executor = async (t, ctx) => {
+    seen.push({ scope: ctx.scope, attempt: ctx.attempt, poolAttempt: ctx.poolAttempt, workerId: ctx.workerId });
+    if (seen.length === 1) throw transient();
+    return { taskId: t.id };
+  };
+  const pool = new WorkerPool({
+    clock, bus: new EventBus(), scheduler: stubScheduler({ concurrency: 1, clock }), size: 1, executor,
+    logger: silentLogger(),
+  });
+
+  const state = await drive(clock, pool.submit(task(1), { scope: ['auth'], attempt: 2 }));
+  assert.equal(state.ok, true, state.error?.message);
+  assert.deepEqual(seen.map((s) => s.poolAttempt), [1, 2]);
+  assert.deepEqual(seen[1], { scope: ['auth'], attempt: 2, poolAttempt: 2, workerId: 'worker-1' });
 });
 
 test('shutdown fails queued work and refuses new submissions', async () => {

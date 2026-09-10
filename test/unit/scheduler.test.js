@@ -5,15 +5,9 @@ import { FakeClock } from '../../src/core/clock.js';
 import { EventBus } from '../../src/core/bus.js';
 import { Scheduler, bandFor, BANDS, UNKNOWN_CONCURRENCY, UNKNOWN_PACE_MS } from '../../src/orchestrator/scheduler.js';
 import { WorkerPool } from '../../src/workers/pool.js';
-
-// The shared harness imports src/app.js, which wires modules other agents are
-// still writing; these tests stay standalone on purpose.
-function silentLogger() {
-  const noop = () => {};
-  const l = { debug: noop, info: noop, warn: noop, error: noop };
-  l.child = () => l;
-  return l;
-}
+// Helpers come from fakes.js rather than harness.js: harness.js wires the whole
+// app, and these are unit tests of the scheduler alone.
+import { silentLogger } from '../helpers/fakes.js';
 
 /** A CapacityWindow with a given remaining percentage. */
 function win(remainingPercent, key = 'five_hour') {

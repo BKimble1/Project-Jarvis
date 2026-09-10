@@ -27,7 +27,7 @@ export class ChatDispatcher {
     this.conversations.append(conversationId, { role: 'user', text: clean });
 
     const ctx = this.conversations.context(conversationId);
-    const intent = classify(clean, ctx);
+    const intent = reclassify(classify(clean, ctx), clean, ctx);
     const ref = resolveReference(clean, ctx);
     const out = await this._act({ conversationId, text: clean, intent, ref, ctx });
 
@@ -172,6 +172,28 @@ export class ChatDispatcher {
     if (!text) return { projectId: null, ask: null, reply: `I'm here — what should I build?` };
     return { projectId: ctx.activeProjectId ?? null, ask: null, reply: `I'm here. Describe what you want and I'll build it.` };
   }
+}
+
+/**
+ * An explicit "change it/that" with a plausible referent is a change even when
+ * the wording also reads like a fresh brief — otherwise a reference we cannot
+ * resolve would silently fork a second project.
+ */
+function reclassify(intent, text, ctx) {
+  if (intent.kind !== 'build') return intent;
+  if (!looksLikeChange(text) || !hasReferent(ctx)) return intent;
+  return { ...intent, kind: 'change', payload: { ...intent.payload, text, reclassified: 'build->change' } };
+}
+
+/** "change that", "update it", "instead of ..." — an edit to existing work. */
+function looksLikeChange(text) {
+  const t = String(text ?? '').trim();
+  return /^(?:change|update|modify|tweak|adjust|revise|rework)\s+(?:it|that|this|the project|the build)\b/i.test(t)
+    || /\b(?:instead of|rather than)\b/i.test(t);
+}
+
+function hasReferent(ctx) {
+  return Boolean(ctx?.activeProjectId) || (ctx?.recentProjects?.length ?? 0) > 0;
 }
 
 function titleFrom(goal) {

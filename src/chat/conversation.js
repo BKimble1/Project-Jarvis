@@ -37,7 +37,7 @@ export class ConversationService {
   ensure(conversationId) {
     const id = normalizeId(conversationId);
     const existing = this.store.get(CONVERSATIONS, id);
-    if (existing) return { ...existing };
+    if (existing) return copyConversation(existing);
     const now = this.clock.now();
     const conversation = {
       id,
@@ -50,7 +50,7 @@ export class ConversationService {
       lastTurnAt: null,
     };
     this.store.put(CONVERSATIONS, id, conversation);
-    return { ...conversation };
+    return copyConversation(conversation);
   }
 
   /**
@@ -80,8 +80,8 @@ export class ConversationService {
       updatedAt: turn.at,
     });
     const projectId = turn.meta.projectId ?? conversation.projectId ?? null;
-    this.bus.emit('chat.message', { turn: { ...turn }, conversationId: id, projectId });
-    return { ...turn };
+    this.bus.emit('chat.message', { turn: copyTurn(turn), conversationId: id, projectId });
+    return copyTurn(turn);
   }
 
   /** The most recent `limit` turns, oldest first. */
@@ -93,7 +93,7 @@ export class ConversationService {
     const turns = this.store
       .find(TURNS, (t) => t && t.conversationId === id)
       .sort((a, b) => (a.index ?? 0) - (b.index ?? 0) || (a.at ?? 0) - (b.at ?? 0));
-    return turns.slice(-count).map((t) => ({ ...t }));
+    return turns.slice(-count).map(copyTurn);
   }
 
   /** Point the conversation at the project it is currently about. */
@@ -110,7 +110,7 @@ export class ConversationService {
       updatedAt: this.clock.now(),
     };
     this.store.put(CONVERSATIONS, id, updated);
-    return { ...updated };
+    return copyConversation(updated);
   }
 
   activeProject(conversationId) {
@@ -173,8 +173,21 @@ export class ConversationService {
     const scoped = activeProjectId ? open.filter((q) => q.projectId === activeProjectId) : [];
     const pool = scoped.length ? scoped : open;
     const chosen = pool.reduce((best, q) => (best === null || (q.askedAt ?? 0) >= (best.askedAt ?? 0) ? q : best), null);
-    return chosen ? { ...chosen } : null;
+    return chosen ? { ...chosen, options: [...(chosen.options ?? [])] } : null;
   }
+}
+
+function copyConversation(conversation) {
+  return {
+    ...conversation,
+    projectIds: [...(conversation.projectIds ?? [])],
+    lastOptions: [...(conversation.lastOptions ?? [])],
+  };
+}
+
+/** Callers get their own copy — the store's records stay immutable from outside. */
+function copyTurn(turn) {
+  return { ...turn, meta: { ...(turn.meta ?? {}) } };
 }
 
 function normalizeId(conversationId) {

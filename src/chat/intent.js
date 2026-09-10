@@ -106,7 +106,11 @@ const OPTION_PICK_RE = /^(?:the\s+)?(?:first|second|third|fourth|fifth|last)\b|\
 const EVALUATION_MARKERS = [
   /\b(?:but|and)?\s*(?:for now,?\s*)?(?:please\s+)?do(?:n'?t| not)\s+(?:actually\s+)?(?:build|code|implement|start (?:building|coding)|write (?:any )?code)(?:\s+(?:it|this|that|anything))?(?:\s+(?:yet|now|for now|just yet))?/gi,
   /\b(?:but|and)?\s*(?:just|only)\s+(?:evaluate|assess|analy[sz]e|review|research|scope|estimate|investigate|look into|think about)(?:\s+(?:it|this|that))?(?:\s+first)?/gi,
-  /\b(?:but|and)?\s*(?:evaluation|evaluate|assessment|assess|review|analysis|research|feasibility)\s+only\b(?=\s*(?:[,.;!?]|$|first\b|for\s+now\b|please\b|no\b|then\b|and\b))(?:\s+(?:first|for now|please))?/gi,
+  // Noun forms ("evaluation only") are always an instruction about the work.
+  /\b(?:but|and)?\s*(?:evaluation|assessment|analysis|research|feasibility)\s+only\b(?:\s+(?:first|for now|please))?/gi,
+  // Verb forms are only an instruction when nothing follows that "only" could
+  // be qualifying — "let users review only their own posts" must stay a build.
+  /\b(?:but|and)?\s*(?:evaluate|assess|analy[sz]e|review)\s+only\b(?=\s*(?:[,.;!?]|$|first\b|for\b|then\b|and\b|please\b|no\b))(?:\s+(?:first|for now|please))?/gi,
   /\b(?:but|and)?\s*no\s+(?:code|coding|implementation|building|changes)\s*(?:yet|for now|please)?/gi,
   /\b(?:but|and)?\s*without\s+(?:building|implementing|writing (?:any )?code|any code)(?:\s+it)?/gi,
   /\b(?:but|and)?\s*evaluate\s+(?:it\s+|this\s+|that\s+)?first(?:\s+please)?/gi,

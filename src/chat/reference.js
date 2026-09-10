@@ -111,11 +111,14 @@ function titleScore(project, textTokens, lowerText) {
   const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const distinct = tokenize(title).filter((t) => t.length >= 3 && !STOPWORDS.has(t));
   if (!distinct.length) return 0;
-  const hits = distinct.filter((t) => textTokens.has(t)).length;
-  if (!hits) return 0;
+  const hits = distinct.filter((t) => textTokens.has(t));
+  if (!hits.length) return 0;
   // Naming the whole title verbatim is a much stronger signal than one word.
   const verbatim = normalizedTitle.length >= 3 && lowerText.includes(normalizedTitle);
-  return hits + (verbatim ? distinct.length : 0);
+  // One short generic word in common ("cli", "bot") is not a reference: a new
+  // request that happens to mention "CLI" must not point at an old CLI project.
+  if (hits.length === 1 && !verbatim && hits[0].length < 5) return 0;
+  return hits.length + (verbatim ? distinct.length : 0);
 }
 
 /**

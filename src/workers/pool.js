@@ -183,21 +183,34 @@ export class WorkerPool {
     job.attempts += 1;
 
     const ctx = { ...(job.ctx ?? {}), poolAttempt: job.attempts };
-    const promise = worker.run(job.task, ctx)
-      .then((result) => {
+    const promise = (async () => {
+      let ok = false;
+      let result;
+      let error;
+      try {
+        result = await worker.run(job.task, ctx);
+        ok = true;
+      } catch (err) {
+        error = err;
+      }
+
+      // Release the slot BEFORE settling the caller's promise, so `inFlight`
+      // and `stats()` are already accurate when the awaiting caller resumes.
+      this._active -= 1;
+      this._running.delete(promise);
+
+      if (ok) {
         this._completed += 1;
+        this._free.push(worker);
         job.resolve(result);
-      })
-      .catch((err) => {
-        this._handleFailure(job, worker, err);
-      })
-      .finally(() => {
-        this._active -= 1;
-        this._running.delete(promise);
+      } else {
+        this._handleFailure(job, worker, error);
         if (worker.state !== 'crashed') this._free.push(worker);
-        this._notify();
-        this._pump();
-      });
+      }
+
+      this._notify();
+      this._pump();
+    })();
 
     this._running.add(promise);
   }
