@@ -4,9 +4,13 @@
  * Two separate decisions live here, deliberately kept apart:
  *
  *  - `renderSentence(event)` turns a bus event into the ONE short first-person
- *    sentence Jarvis would use for it. It is the single renderer: chat and
- *    speech both call it, so the spoken line is character-for-character the
- *    line on screen. It knows nothing about mute, quiet hours or batching.
+ *    sentence Jarvis would use for it, so the spoken line is
+ *    character-for-character the line on screen. It knows nothing about mute,
+ *    quiet hours or batching. NOTE: the orchestrator still formats its own
+ *    `currentAction()` wording (`describeProject` in
+ *    `src/orchestrator/orchestrator.js`); the two must agree word for word —
+ *    `req3.2` proves it end to end and the unit tests below pin the shared
+ *    sentences here so a drift is caught in this module too.
  *  - `shouldSpeak(event, {settings, clock})` decides whether that sentence is
  *    allowed out loud right now, and how urgent it is.
  *
@@ -57,19 +61,37 @@ export function shouldSpeak(event, { settings = {}, clock } = {}) {
 
   if (!type) return { speak: false, reason: 'unknown_event', priority };
   // Mute wins over everything, including blockers and questions.
-  if (settings.muted) return { speak: false, reason: 'muted', priority };
-  if (settings.voiceEnabled === false) return { speak: false, reason: 'voice_disabled', priority };
+  const silenced = suppressionReason(clock, settings, { exempt: true });
+  if (silenced) return { speak: false, reason: silenced, priority };
   if (!SPEAKABLE.has(type)) return { speak: false, reason: 'not_notable', priority };
   if (type === SPOKEN_CHAT && payloadOf(event)?.turn?.role !== 'assistant') {
     return { speak: false, reason: 'not_assistant_turn', priority };
   }
 
-  if (inQuietHours(clock, settings) && !EXEMPT_SET.has(type)) {
-    return { speak: false, reason: 'quiet_hours', priority };
-  }
+  const suppressed = suppressionReason(clock, settings, { exempt: EXEMPT_SET.has(type) });
+  if (suppressed) return { speak: false, reason: suppressed, priority };
 
   if (BATCHABLE_SET.has(type)) return { speak: true, reason: 'batched', priority };
   return { speak: true, reason: SPEAK_ALWAYS.includes(type) ? 'always' : 'notable', priority };
+}
+
+/**
+ * Why speech is silenced *right now*, independent of any particular event:
+ * `'muted' | 'voice_disabled' | 'quiet_hours' | null`.
+ *
+ * `shouldSpeak` and `SpeechService.flushBatch` both go through this so a batch
+ * summary — which has no single event type of its own — can never be governed
+ * by a different rule than the events that fed it.
+ *
+ * @param {{exempt?:boolean}} [opts] `exempt:true` skips only the quiet-hours
+ *   check (blockers and questions are allowed to break quiet hours; nothing is
+ *   allowed to break mute).
+ */
+export function suppressionReason(clock, settings = {}, { exempt = false } = {}) {
+  if (settings?.muted) return 'muted';
+  if (settings?.voiceEnabled === false) return 'voice_disabled';
+  if (!exempt && inQuietHours(clock, settings)) return 'quiet_hours';
+  return null;
 }
 
 /** True when `eventType` is minor progress that must be collapsed into a summary. */
@@ -97,8 +119,14 @@ export function inQuietHours(clock, settings = {}) {
   if (start === null || end === null) return false;
   if (start === end) return false; // zero-width window is "no quiet hours"
 
+  // Time comes from the injected clock or not at all: a clock that cannot say
+  // what time it is must never be read as "midnight", which would silently put
+  // an overnight window permanently in force.
+  const now = clock?.now?.();
+  if (!Number.isFinite(now)) return false;
+
   const zone = quiet.timezone || clock?.timezone?.() || 'UTC';
-  const minutes = minutesOfDay(clock?.now?.() ?? 0, zone);
+  const minutes = minutesOfDay(now, zone);
   if (minutes === null) return false;
 
   return start < end
@@ -168,8 +196,9 @@ const PHASE_LABEL = {
 };
 
 /**
- * The single event -> sentence renderer. Chat and speech both go through it,
- * so what Jarvis says is exactly what Jarvis shows.
+ * The event -> sentence renderer behind everything Jarvis says out loud, and
+ * the wording chat shows for the same event, so what Jarvis says is exactly
+ * what Jarvis shows.
  *
  * @param {{type:string, payload?:object}} event  bus envelope (or a bare payload with `type`)
  * @param {{projectTitle?:string|null}} [ctx]     project title for events that only carry an id
@@ -178,7 +207,13 @@ const PHASE_LABEL = {
 export function renderSentence(event, { projectTitle = null } = {}) {
   const type = typeOf(event);
   if (!type) return null;
-  const p = payloadOf(event);
+  const text = renderFor(type, payloadOf(event), projectTitle);
+  // A sentence that sanitises away to nothing — an empty, whitespace-only or
+  // emoji-only blocker reason — is nothing to say. Never an empty utterance.
+  return text ? text : null;
+}
+
+function renderFor(type, p, projectTitle) {
   const title = p.project?.title ?? projectTitle ?? p.projectTitle ?? null;
   const name = nameOf(title);
 

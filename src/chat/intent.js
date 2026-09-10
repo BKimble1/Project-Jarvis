@@ -212,6 +212,17 @@ export function titleFrom(text) {
   return short.charAt(0).toUpperCase() + short.slice(1);
 }
 
+/**
+ * Whole-word containment. Raw `includes` would let the option "No" be answered
+ * by the word "know" — and silently answering a material question with text
+ * that was never a choice is exactly the failure a decision card exists to
+ * prevent.
+ */
+function containsPhrase(haystack, needle) {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, 'i').test(haystack);
+}
+
 function matchesOption(clean, options) {
   const lower = clean.toLowerCase();
   if (OPTION_PICK_RE.test(lower)) return true;
@@ -219,7 +230,9 @@ function matchesOption(clean, options) {
   return list.some((opt) => {
     const o = String(opt ?? '').trim().toLowerCase();
     if (!o) return false;
-    return o === lower || (lower.length <= 60 && (lower.includes(o) || o.includes(lower)));
+    if (o === lower) return true;
+    if (lower.length > 60) return false;
+    return containsPhrase(lower, o) || containsPhrase(o, lower);
   });
 }
 

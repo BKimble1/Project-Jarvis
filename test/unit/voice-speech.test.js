@@ -28,6 +28,11 @@ function harness({ settings = {}, startMs = NOON, timezone = 'UTC', batchWindowM
   return {
     dir, clock, store, bus, spoken, speech,
     revive: (over = {}) => new SpeechService({ store, bus, clock, settings, batchWindowMs, ...over }),
+    // A real restart: a brand new Store reading the same directory off disk, so
+    // nothing survives in memory that the persisted state does not carry.
+    reboot: (over = {}) => new SpeechService({
+      store: new Store({ dir, clock }), bus, clock, settings, batchWindowMs, ...over,
+    }),
     cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -112,7 +117,18 @@ test('dedupe keys are distinct per event and per project', (t) => {
   assert.equal(keys.length, 4);
   assert.equal(new Set(keys).size, keys.length, 'every spoken item has a distinct key');
   assert.equal(keys[0], `project.delivered|${PROJECT_ID}|delivered`);
+  assert.equal(keys[1], `project.blocked|${PROJECT_ID}|I need working credentials: the token expired.`);
+  assert.equal(keys[2], `question.asked|${PROJECT_ID}|q_1`);
   assert.equal(salientId('task.completed', { taskId: 'tsk_9' }), 'tsk_9');
+
+  // Two projects doing the same work are two pieces of news, not one: the
+  // project id is part of the key, so neither silences the other.
+  h.store.put('projects', 'prj_2', { id: 'prj_2', title: 'the deploy script' });
+  const twin = (projectId) => ({ type: 'project.delivered', payload: { projectId, project: { id: projectId, status: 'delivered' } } });
+  assert.equal(h.speech.consider(twin(PROJECT_ID)), null, 'this project was already announced');
+  const other = h.speech.consider(twin('prj_2'));
+  assert.equal(other.key, 'project.delivered|prj_2|delivered');
+  assert.equal(other.text, 'I delivered the deploy script.');
 });
 
 test('the persisted key set survives a restart, so nothing is spoken twice', (t) => {
@@ -392,8 +408,11 @@ test('every utterance is one short first-person sentence', (t) => {
   assert.equal(h.spoken.length, 4);
   for (const item of h.spoken) {
     assert.match(item.text, /^I /, `"${item.text}" must be first person`);
-    assert.ok(sentenceCount(item.text) <= 2, `"${item.text}" should be one or two sentences`);
-    assert.ok(item.text.length <= 180, `"${item.text}" is too long to speak`);
+    assert.equal(sentenceCount(item.text), 1, `"${item.text}" must be exactly one sentence`);
+    // 120 chars is the cap; only a question is allowed the longer 180 so a real
+    // question is not cut off mid-word.
+    const cap = item.text.startsWith('I need to know:') ? 180 : 120;
+    assert.ok(item.text.length <= cap, `"${item.text}" is ${item.text.length} chars — too long to speak`);
     assert.equal(/[*`#]|\n/.test(item.text), false, `"${item.text}" must be plain speech`);
     assert.equal(/\p{Extended_Pictographic}/u.test(item.text), false);
     assert.ok(['high', 'normal'].includes(item.priority));
@@ -436,6 +455,120 @@ test('history is bounded and old items are dropped from the store', (t) => {
   }
   assert.equal(speech.lastSeq, 6);
   assert.deepEqual(speech.history(10).map((i) => i.seq), [4, 5, 6]);
+  assert.deepEqual(speech.history(2).map((i) => i.seq), [5, 6]);
+  assert.deepEqual(speech.history(0), [], 'asking for none returns none, not everything');
   assert.equal(h.store.get('speech', 'sp_1'), null, 'trimmed items leave the store too');
   assert.ok(h.store.get('speech', 'sp_6'));
+});
+
+// ================================================================= the hard
+// Two extra tests for the two requirements most likely to break subtly, plus
+// the window arithmetic that decides when a batch is spoken.
+
+test('one delivery stays one utterance however the payload drifts, and across a real restart', (t) => {
+  const h = harness();
+  t.after(h.cleanup);
+
+  const first = h.speech.consider(delivered('dlv_real'));
+  assert.equal(first.text, `I delivered ${PROJECT_TITLE}.`);
+  assert.equal(first.key, `project.delivered|${PROJECT_ID}|delivered`);
+
+  // The same news re-broadcast in every shape the orchestrator and the bus
+  // replay can produce it in. None of these is a *different* delivery, so none
+  // of them may earn a second key — in particular a broadcast made before the
+  // project record was flipped to 'delivered' must not slip through.
+  const rebroadcasts = [
+    delivered('dlv_real'),
+    delivered('dlv_other'),
+    { type: 'project.delivered', payload: { projectId: PROJECT_ID, project: { id: PROJECT_ID, title: PROJECT_TITLE, status: 'active' } } },
+    { type: 'project.delivered', payload: { projectId: PROJECT_ID, project: { id: PROJECT_ID, title: PROJECT_TITLE } } },
+    { type: 'project.delivered', payload: { projectId: PROJECT_ID } },
+  ];
+  for (const event of rebroadcasts) {
+    assert.equal(h.speech.consider(event), null, `re-broadcast ${JSON.stringify(event.payload.project ?? {})} spoke again`);
+  }
+  assert.equal(h.spoken.length, 1, 'six broadcasts of one delivery, one utterance');
+  assert.equal(h.speech.lastSeq, 1, 'no sequence was burned on a duplicate');
+
+  // And the guarantee is on disk, not in memory: a new Store over the same
+  // directory, a new service, and the delivery is still already said.
+  const rebooted = h.reboot();
+  assert.equal(rebooted.consider(delivered('dlv_after_restart')), null, 'a restart forgot that it had spoken');
+  assert.equal(rebooted.consider({ type: 'project.delivered', payload: { projectId: PROJECT_ID, project: { id: PROJECT_ID, status: 'active' } } }), null);
+  assert.equal(h.spoken.length, 1, 'still exactly one delivery announcement');
+
+  // A genuinely different piece of news about the same project still speaks.
+  const evaluated = rebooted.consider({
+    type: 'project.evaluated',
+    payload: { projectId: PROJECT_ID, project: { id: PROJECT_ID, title: PROJECT_TITLE, status: 'evaluated' } },
+  });
+  assert.equal(evaluated.text, `I finished evaluating ${PROJECT_TITLE}.`);
+  assert.equal(evaluated.seq, 2, 'the restarted service continues the sequence, it does not reuse it');
+});
+
+test('a refresh resumes exactly at the acknowledged sequence — one item owed, no more, no fewer', (t) => {
+  const h = harness();
+  t.after(h.cleanup);
+
+  const a = h.speech.consider(delivered());
+  const b = h.speech.consider(blocked());
+  const c = h.speech.consider(asked());
+  assert.deepEqual([a.seq, b.seq, c.seq], [1, 2, 3]);
+
+  // The client spoke the first two and acknowledged the second.
+  h.speech.acknowledge(b.seq);
+  assert.deepEqual(h.speech.unspoken(0).map((i) => i.seq), [3], 'the acknowledged item itself is never re-offered');
+  assert.deepEqual(h.speech.unspoken(1).map((i) => i.seq), [3], 'a stale client cursor cannot resurrect it');
+  assert.deepEqual(h.speech.unspoken(3), [], 'the cursor is strictly greater-than, not greater-or-equal');
+
+  // Refresh: a new Store off disk, a new service. Exactly the one unspoken
+  // item is still owed — losing it would be as wrong as replaying the others.
+  const rebooted = h.reboot();
+  assert.equal(rebooted.acknowledgedSeq, 2);
+  assert.equal(rebooted.lastSeq, 3);
+  assert.deepEqual(rebooted.unspoken(0).map((i) => i.seq), [3]);
+  assert.deepEqual(rebooted.unspoken(0).map((i) => i.text), [c.text]);
+  assert.deepEqual(rebooted.pending(), rebooted.unspoken(0));
+
+  // The client says it and acknowledges; a second refresh is silent for good.
+  rebooted.acknowledge(3);
+  const again = h.reboot();
+  assert.deepEqual(again.unspoken(0), [], 'a second refresh replayed old speech');
+  assert.equal(again.acknowledgedSeq, 3);
+
+  // An acknowledgement can never run ahead of what was actually said.
+  again.acknowledge(99);
+  assert.equal(again.acknowledgedSeq, 3, 'ack is clamped to the last real utterance');
+  const next = again.consider({ type: 'question.asked', payload: { projectId: PROJECT_ID, questionId: 'q_2', text: 'Ship it now?' } });
+  assert.equal(next.seq, 4);
+  assert.deepEqual(again.unspoken(0).map((i) => i.seq), [4], 'new speech after a refresh is still offered');
+});
+
+test('the batch window is measured from its first event and closes exactly on the window', (t) => {
+  const h = harness({ batchWindowMs: 4000 });
+  t.after(h.cleanup);
+
+  h.speech.consider(completed('tsk_1', 'Build validation'));
+
+  h.clock.set(NOON + 3999);
+  h.speech.consider(completed('tsk_2', 'Build autosave'));
+  assert.equal(h.spoken.length, 0, 'one millisecond short of the window, the batch is still filling');
+  assert.equal(h.speech.batchSize(), 2);
+
+  h.clock.set(NOON + 4000);
+  h.speech.consider(completed('tsk_3', 'Build the print view'));
+  assert.equal(h.spoken.length, 1, 'at exactly the window the gathered batch is spoken');
+  assert.equal(h.spoken[0].text, 'I finished 2 tasks on the settings screen.', 'only the closed window is summarised');
+  assert.equal(h.spoken[0].at, NOON + 4000, 'the summary is stamped when it was said, not when it was gathered');
+  assert.equal(h.speech.batchSize(), 1, 'the event that closed the window opens the next one');
+
+  // The new window runs from tsk_3, not from tsk_1 — otherwise everything after
+  // the first stale window would be spoken one event at a time.
+  h.clock.set(NOON + 7999);
+  h.speech.consider(completed('tsk_4', 'Build the export'));
+  assert.equal(h.spoken.length, 1, 'the second window is measured from its own first event');
+  assert.equal(h.speech.batchSize(), 2);
+
+  assert.equal(h.speech.flushBatch().text, 'I finished 2 tasks on the settings screen.');
+  assert.equal(h.spoken.length, 2, 'four completions, two summaries, never four utterances');
 });

@@ -1,6 +1,6 @@
 import { dedupeKey } from '../core/ids.js';
 import { createLogger } from '../core/logger.js';
-import { batchable, inQuietHours, renderSentence, shouldSpeak } from './policy.js';
+import { batchable, renderSentence, shouldSpeak, suppressionReason } from './policy.js';
 
 const COLLECTION = 'speech';
 const META_ID = '__meta';
@@ -13,8 +13,10 @@ const KEYS_ID = '__keys';
  *
  *  1. **Never say the same thing twice.** Every considered event collapses to a
  *     dedupe key (`type | projectId | salient id`). A key that has been spoken
- *     — or is already sitting in the batch buffer — is dropped, and the key set
- *     is persisted, so this holds across a flush and across a restart.
+ *     — or is already sitting in the batch buffer — is dropped. Spoken keys are
+ *     persisted, so this holds across a flush and across a restart; a key only
+ *     parked in the batch is deliberately *not* persisted, so a crash before the
+ *     flush loses nothing that was ever actually said.
  *  2. **Never replay after a refresh.** Items carry a monotonic `seq`. A client
  *     acknowledges up to a seq; the high-water mark is written to the store, so
  *     a brand new `SpeechService` over the same store offers nothing old.
@@ -104,10 +106,10 @@ export class SpeechService {
     this._batch = [];
     this._batchStartedAt = null;
 
-    // Mute and quiet hours are re-checked at speaking time — a batch collected
-    // before bedtime is not allowed to go off after it.
-    if (this.settings.muted || this.settings.voiceEnabled === false) return null;
-    if (inQuietHours(this.clock, this.settings)) return null;
+    // Mute and quiet hours are re-checked at speaking time, through the same
+    // policy the individual events went through — a batch collected before
+    // bedtime is not allowed to go off after it.
+    if (suppressionReason(this.clock, this.settings)) return null;
 
     const summary = this._summarize(entries);
     if (!summary) return null;
@@ -148,9 +150,11 @@ export class SpeechService {
 
   // ------------------------------------------------------------ inspection
 
-  /** Everything ever spoken that is still retained, oldest first. */
+  /** The most recent `limit` utterances still retained, oldest first. */
   history(limit = 50) {
-    return this._items.slice(-Math.max(0, limit)).map((i) => ({ ...i }));
+    const n = Math.max(0, Math.floor(Number(limit) || 0));
+    if (n === 0) return [];   // slice(-0) is slice(0) — "none" must not mean "all"
+    return this._items.slice(-n).map((i) => ({ ...i }));
   }
 
   get lastSeq() { return this._seq; }
@@ -262,10 +266,15 @@ export function salientId(type, payload = {}) {
     case 'task.blocked':
     case 'feature.completed':
       return p.taskId ?? p.task?.id ?? p.title ?? '';
+    // A project is delivered once, however many times the event is
+    // re-broadcast and whatever the payload happens to carry with it — so the
+    // salient id is the outcome itself, never a field (a deliverable id, or a
+    // project record whose status has not been flipped yet) that can differ
+    // between two broadcasts of the same news.
     case 'project.delivered':
-      return p.project?.status ?? 'delivered';
+      return 'delivered';
     case 'project.evaluated':
-      return p.project?.status ?? 'evaluated';
+      return 'evaluated';
     case 'project.blocked':
       return p.reason ?? p.project?.blockedReason ?? 'blocked';
     case 'project.phase':

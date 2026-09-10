@@ -148,8 +148,80 @@ test('the result always has the same four keys', () => {
   }
 });
 
-test('missing or malformed ctx never throws', () => {
-  assert.equal(resolveReference('change that').kind, 'ambiguous');
-  assert.equal(resolveReference('change that', null).kind, 'ambiguous');
-  assert.equal(resolveReference('hello', { recentProjects: null, lastOptions: 'nope' }).kind, 'none');
+test('missing or malformed ctx resolves nothing rather than throwing', () => {
+  // With no ctx at all there is no project to point at, so a pronoun must be
+  // refused outright — not silently attached to something.
+  for (const ctxValue of [undefined, null, {}, { recentProjects: null, lastOptions: 'nope', openQuestion: undefined }]) {
+    const ref = resolveReference('change that', ctxValue);
+    assert.equal(ref.kind, 'ambiguous', `expected ambiguous for ctx ${JSON.stringify(ctxValue)}`);
+    assert.equal(ref.projectId, null);
+    assert.equal(ref.questionId, null);
+    assert.equal(ref.optionIndex, null);
+  }
+  const plain = resolveReference('hello', { recentProjects: null, lastOptions: 'nope' });
+  assert.deepEqual(plain, { projectId: null, questionId: null, optionIndex: null, kind: 'none' });
+
+  // A malformed recentProjects list must be skipped entry by entry, not trusted.
+  const messy = resolveReference('pause the recipe scraper', ctx({
+    activeProjectId: null,
+    recentProjects: [null, undefined, { title: 'no id here' }, { id: 'p_recipe', title: 'Recipe scraper' }],
+  }));
+  assert.equal(messy.projectId, 'p_recipe');
+  assert.equal(messy.kind, 'title');
+});
+
+/**
+ * ADDITIONAL — hardest requirement #2: 0-based option indexing that refuses to
+ * guess.
+ *
+ * "the second option" must mean index 1, every time, for every list length and
+ * every phrasing — and anything outside the list must come back null rather
+ * than clamped to an end. An off-by-one here answers a decision card with the
+ * wrong choice and the build proceeds on it, silently. So this walks every
+ * position of every list size 1..5 through every supported phrasing, then
+ * checks both edges just past the list.
+ */
+test('every option phrasing maps to the same 0-based index, and out-of-range never clamps', () => {
+  const ORDINALS = ['first', 'second', 'third', 'fourth', 'fifth'];
+  const WORDS = ['one', 'two', 'three', 'four', 'five'];
+
+  for (let size = 1; size <= 5; size++) {
+    const options = Array.from({ length: size }, (_, i) => `Choice ${i + 1}`);
+    const c = ctx({ lastOptions: options });
+
+    for (let n = 1; n <= size; n++) {
+      const expected = n - 1;
+      const phrasings = [
+        `option ${n}`,
+        `choice ${n}`,
+        `number ${n}`,
+        `option ${WORDS[n - 1]}`,
+        `the ${ORDINALS[n - 1]}`,
+        `the ${ORDINALS[n - 1]} one`,
+        `the ${ORDINALS[n - 1]} option`,
+        `${ORDINALS[n - 1]} option`,
+        `go with the ${ORDINALS[n - 1]}`,
+        `${n}`,
+        `#${n}`,
+      ];
+      for (const text of phrasings) {
+        const ref = resolveReference(text, c);
+        assert.equal(ref.kind, 'option', `not an option pick (size ${size}): ${text}`);
+        assert.equal(ref.optionIndex, expected, `off by ${ref.optionIndex - expected} (size ${size}): ${text}`);
+      }
+    }
+
+    // "the last one" is the final index, never one past it.
+    const last = resolveReference('go with the last one', c);
+    assert.equal(last.optionIndex, size - 1, `"last" wrong for size ${size}`);
+    assert.equal(last.optionIndex, options.length - 1);
+
+    // Both edges just outside the list: refused, not clamped to 0 or size-1.
+    for (const text of [`option ${size + 1}`, 'option 0']) {
+      const ref = resolveReference(text, c);
+      assert.equal(ref.kind, 'ambiguous', `should refuse (size ${size}): ${text}`);
+      assert.equal(ref.optionIndex, null, `clamped instead of refusing (size ${size}): ${text}`);
+      assert.equal(ref.projectId, null, `guessed a project (size ${size}): ${text}`);
+    }
+  }
 });

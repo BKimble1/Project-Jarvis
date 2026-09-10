@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { FakeClock } from '../../src/core/clock.js';
 import {
   SPEAK_ALWAYS, batchable, inQuietHours, oneSentence, parseHhMm, priorityFor,
-  renderSentence, shouldSpeak,
+  renderSentence, shouldSpeak, suppressionReason,
 } from '../../src/voice/policy.js';
 
 const NOON = Date.UTC(2026, 0, 15, 12, 0);
@@ -226,6 +226,11 @@ test('renderSentence returns null when an event has nothing to say', () => {
   assert.equal(renderSentence({ type: 'project.phase', payload: { phase: 'idle' } }), null);
   assert.equal(renderSentence({ type: 'question.asked', payload: { text: '   ' } }), null);
   assert.equal(renderSentence(null), null);
+  // A reason that sanitises away to nothing is null, never an empty utterance:
+  // a caller checking `=== null` must not be handed '' and speak silence.
+  assert.equal(renderSentence({ type: 'project.blocked', payload: { reason: '   ' } }), null);
+  assert.equal(renderSentence({ type: 'project.blocked', payload: { reason: '\u{1F680}\u{1F680}' } }), null);
+  assert.equal(renderSentence({ type: 'chat.message', payload: { turn: { role: 'assistant', text: '  ' } } }), null);
 });
 
 test('rendered sentences carry no markdown and no emoji', () => {
@@ -253,4 +258,52 @@ test('renderSentence accepts a bare payload as well as a bus envelope', () => {
   const bare = { type: 'project.delivered', project: { title: 'Colour picker' } };
   assert.equal(renderSentence(envelope), 'I delivered Colour picker.');
   assert.equal(renderSentence(bare), 'I delivered Colour picker.');
+});
+
+// ------------------------------------------------- hardest requirement #1:
+// quiet-hours precedence. Getting this subtly wrong is silent in production —
+// either Jarvis shouts at 3am or it goes mute all day.
+
+test('quiet hours are never inferred from an unknown time, and mute outranks the exemption', () => {
+  // A clock that cannot say what time it is must NOT be read as epoch zero:
+  // midnight UTC sits inside a 22:00-07:00 window, so that mistake would put an
+  // overnight window permanently in force and silence the whole system.
+  const blind = { timezone: () => 'UTC' };
+  assert.equal(inQuietHours(blind, CROSSES_MIDNIGHT), false, 'no time is "not quiet", not "midnight"');
+  assert.equal(inQuietHours({ now: () => NaN, timezone: () => 'UTC' }, CROSSES_MIDNIGHT), false);
+  assert.deepEqual(
+    shouldSpeak({ type: 'project.delivered', payload: { projectId: 'p1' } }, { settings: CROSSES_MIDNIGHT, clock: blind }),
+    { speak: true, reason: 'always', priority: 'high' },
+  );
+
+  // The window is read in its own zone, not in UTC: 02:00Z is 21:00 in New York,
+  // which is awake — even though 02:00 would be inside the window read as UTC.
+  const earlyUtc = new FakeClock(Date.UTC(2026, 0, 15, 2, 0), 'UTC');
+  assert.equal(inQuietHours(earlyUtc, CROSSES_MIDNIGHT), true, '02:00 UTC is inside the UTC window');
+  assert.equal(
+    inQuietHours(earlyUtc, { quietHours: { start: '22:00', end: '07:00', timezone: 'America/New_York' } }),
+    false,
+    'the same instant is 21:00 in New York, which is not quiet hours',
+  );
+
+  // Precedence at 23:30: quiet hours beat "always", the exemption beats quiet
+  // hours, and mute beats the exemption.
+  const night = at(23, 30);
+  assert.equal(shouldSpeak({ type: 'project.delivered', payload: {} }, { settings: CROSSES_MIDNIGHT, clock: night }).reason, 'quiet_hours');
+  assert.equal(shouldSpeak({ type: 'project.blocked', payload: {} }, { settings: CROSSES_MIDNIGHT, clock: night }).reason, 'always');
+  assert.equal(
+    shouldSpeak({ type: 'project.blocked', payload: {} }, { settings: { ...CROSSES_MIDNIGHT, muted: true }, clock: night }).reason,
+    'muted',
+    'mute is not exempted by anything',
+  );
+  assert.equal(
+    shouldSpeak({ type: 'project.blocked', payload: {} }, { settings: { ...CROSSES_MIDNIGHT, voiceEnabled: false }, clock: night }).reason,
+    'voice_disabled',
+  );
+
+  // The same rule the batch summary is judged by at speaking time.
+  assert.equal(suppressionReason(night, CROSSES_MIDNIGHT), 'quiet_hours');
+  assert.equal(suppressionReason(night, CROSSES_MIDNIGHT, { exempt: true }), null);
+  assert.equal(suppressionReason(night, { ...CROSSES_MIDNIGHT, muted: true }, { exempt: true }), 'muted');
+  assert.equal(suppressionReason(at(12, 0), CROSSES_MIDNIGHT), null);
 });

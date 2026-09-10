@@ -33,8 +33,81 @@ test('every evaluation phrasing lands on evaluate_only, never build', () => {
     'look at a Stripe migration without building it',
   ];
   for (const text of phrasings) {
-    assert.equal(kindOf(text), 'evaluate_only', `misclassified: ${text}`);
+    const intent = classify(text, NO_CTX);
+    assert.equal(intent.kind, 'evaluate_only', `misclassified: ${text}`);
+    // The flag the orchestrator actually branches on — a kind alone is not enough.
+    assert.equal(intent.payload.evaluationOnly, true, `evaluationOnly not set for: ${text}`);
+    assert.equal(intent.confidence, CONFIDENCE.evaluateOnly, `wrong confidence for: ${text}`);
+    assert.equal(intent.payload.raw, text, `raw utterance lost for: ${text}`);
+    assert.equal(intent.payload.goal, intent.payload.text, `goal and text disagree for: ${text}`);
+    assert.ok(intent.payload.title.length > 0, `no title derived for: ${text}`);
   }
+});
+
+test('the evaluation marker is cut out of the goal handed on', () => {
+  const cases = [
+    ['Build me a CLI but evaluate only first', 'Build me a CLI'],
+    ['just evaluate a slack bot for standups', 'a slack bot for standups'],
+    ['scope out a payments integration, no code yet', 'scope out a payments integration'],
+    ['look at a Stripe migration without building it', 'look at a Stripe migration'],
+    ["don't build yet, tell me what a Slack digest bot would take", 'tell me what a Slack digest bot would take'],
+  ];
+  for (const [text, goal] of cases) {
+    const intent = classify(text, NO_CTX);
+    assert.equal(intent.kind, 'evaluate_only', `misclassified: ${text}`);
+    assert.equal(intent.payload.goal, goal, `wrong goal for: ${text}`);
+  }
+  // When the marker IS the whole message there is no work to strip, so the
+  // utterance stands in rather than handing the orchestrator an empty goal.
+  const bare = classify('assessment only please', NO_CTX);
+  assert.equal(bare.kind, 'evaluate_only');
+  assert.equal(bare.payload.goal, 'assessment only please');
+});
+
+test('a go-ahead preamble does not swallow the brief that follows it', () => {
+  // "go ahead"/"carry on" in front of a real brief is a preamble, not the
+  // instruction: approving nothing, or resuming nothing, loses the request.
+  const briefs = [
+    'go ahead and build me a slack bot',
+    'go on and build me a CLI',
+    'ok go ahead and create an invoice parser',
+    'perfect, now build me a CLI',
+    'carry on and build the dashboard too',
+    'proceed to build the exporter',
+  ];
+  for (const text of briefs) {
+    const intent = classify(text, NO_CTX);
+    assert.equal(intent.kind, 'build', `preamble swallowed the brief: ${text}`);
+    assert.equal(intent.payload.evaluationOnly, false);
+    assert.ok(intent.payload.title.length > 0, `no title for: ${text}`);
+  }
+
+  // With work in flight, the same preamble in front of an addition is a change.
+  const addition = classify('carry on and also add dark mode', ACTIVE);
+  assert.equal(addition.kind, 'change');
+  assert.equal(addition.payload.projectId, 'p_active');
+
+  // A bare go-ahead is still exactly that.
+  assert.equal(kindOf('go ahead', withQuestion()), 'approve');
+  assert.equal(kindOf('carry on', ACTIVE), 'resume');
+  assert.equal(kindOf('looks good, ship it', NO_CTX), 'approve');
+});
+
+test('an offered option only matches on whole words', () => {
+  // "No" must not be answered by the word "know": silently answering a decision
+  // card with text that was never a choice is the failure the card prevents.
+  const yesNo = withQuestion(['Yes', 'No']);
+  for (const text of [
+    'I need to know how long this will take before deciding',
+    'there is nothing blocking us on the frontend side',
+  ]) {
+    assert.notEqual(classify(text, yesNo).kind, 'answer', `spurious option match: ${text}`);
+  }
+
+  // Genuine picks still land, and at full option confidence.
+  const db = withQuestion();
+  assert.equal(classify('SQLite', db).confidence, CONFIDENCE.optionAnswer);
+  assert.equal(classify('no', yesNo).kind, 'answer', 'the actual word "no" is still an answer');
 });
 
 test('a product description containing "review only" is still a build', () => {
@@ -115,8 +188,18 @@ test('picking an offered option while a question is open is an answer', () => {
   for (const text of ['the second option', 'option 2', 'SQLite']) {
     const intent = classify(text, ctx);
     assert.equal(intent.kind, 'answer', `misclassified: ${text}`);
-    assert.ok(intent.confidence >= CONFIDENCE.bareAnswer);
+    // An explicit pick is more certain than a bare reply, and says so.
+    assert.equal(intent.confidence, CONFIDENCE.optionAnswer, `wrong confidence for: ${text}`);
+    assert.ok(CONFIDENCE.optionAnswer > CONFIDENCE.bareAnswer, 'a pick must outrank a bare reply');
+    assert.equal(intent.payload.questionId, 'q_1', `question not carried for: ${text}`);
+    assert.equal(intent.payload.projectId, 'p_active', `project not carried for: ${text}`);
+    assert.equal(intent.payload.text, text);
   }
+  // A reply that is not one of the offered choices is still an answer, but a
+  // less certain one — the caller uses that gap to decide whether to confirm.
+  const offList = classify('mysql', ctx);
+  assert.equal(offList.kind, 'answer');
+  assert.equal(offList.confidence, CONFIDENCE.bareAnswer);
 });
 
 test('an open question does not turn a fresh build request into an answer', () => {
@@ -186,12 +269,86 @@ test('every classification is well formed for a broad corpus', () => {
   }
 });
 
-test('classify tolerates junk input without throwing', () => {
+test('classify tolerates junk input and still returns a usable intent', () => {
   for (const junk of [null, undefined, 42, {}, [], true]) {
     const intent = classify(junk, undefined);
-    assert.ok(INTENT_KINDS.includes(intent.kind));
+    assert.ok(INTENT_KINDS.includes(intent.kind), `bad kind for ${String(junk)}`);
+    assert.equal(typeof intent.payload.text, 'string', `payload.text not a string for ${String(junk)}`);
+    assert.ok(intent.confidence >= 0 && intent.confidence <= 1, `confidence out of range for ${String(junk)}`);
+  }
+  // Nothing said means nothing to act on, and the confidence must admit it.
+  for (const empty of [null, undefined, '', '   ', []]) {
+    const intent = classify(empty, {});
+    assert.equal(intent.kind, 'chitchat', `expected chitchat for ${JSON.stringify(empty)}`);
+    assert.equal(intent.payload.text, '');
+    assert.equal(intent.confidence, CONFIDENCE.empty);
   }
   assert.equal(classify('hi', null).kind, 'chitchat');
+  assert.equal(classify('build me a CLI', null).kind, 'build', 'a null ctx must not disable classification');
+});
+
+/**
+ * ADDITIONAL — hardest requirement #1: precedence.
+ *
+ * The module's whole job is deciding which marker wins when several are
+ * present, and the documented order is
+ *   stop > pause > evaluate_only > resume > reminder > approve > change >
+ *   status > answer > social > question > build.
+ * Each case below carries BOTH markers, so a rung swapped with its neighbour
+ * flips the answer. The richest possible ctx (active project + open question
+ * whose options could also match) is used throughout, because that is exactly
+ * where a lower rung would steal the classification.
+ */
+test('the precedence ladder holds when two markers collide', () => {
+  const rich = {
+    activeProjectId: 'p_active',
+    openQuestion: { id: 'q_1', projectId: 'p_active', text: 'Which database?', options: ['Postgres', 'stop'] },
+    lastOptions: ['Postgres', 'stop'],
+  };
+
+  const ladder = [
+    // stop beats pause: "cancel" and "hold on" together must abandon, not wait.
+    ['stop', 'cancel that, hold on'],
+    // stop beats resume.
+    ['stop', 'stop, do not continue'],
+    // pause beats evaluate_only: waiting outranks starting an evaluation.
+    ['pause', 'hold on, just evaluate it'],
+    // evaluate_only beats resume, reminder, change, status, answer and build.
+    ['evaluate_only', 'continue but evaluate only first'],
+    ['evaluate_only', 'remind me — evaluation only for the mobile port'],
+    ['evaluate_only', 'actually make it a Rust CLI, but do not build it yet'],
+    ['evaluate_only', "what's the status — and just assess the Redis move"],
+    ['evaluate_only', 'Postgres, but evaluate only first'],
+    ['evaluate_only', 'build me a CLI but evaluate only first'],
+    // resume beats reminder and status.
+    ['resume', 'keep going'],
+    // reminder beats approve, change and status.
+    ['reminder', 'remind me to approve the invoice tomorrow'],
+    ['reminder', "remind me to check the status at 5pm"],
+    // approve beats change, status and answer.
+    ['approve', 'looks good, ship it'],
+    // change beats status and answer.
+    ['change', "actually make it TypeScript — what's the status"],
+    // status beats answer: asking is not answering.
+    ['status', "what's the status"],
+    // answer beats build language only when the build language is absent.
+    ['answer', 'Postgres'],
+    // build is last: nothing else fit.
+    ['build', 'build me a habit tracker with streaks'],
+  ];
+
+  for (const [expected, text] of ladder) {
+    assert.equal(classify(text, rich).kind, expected, `precedence broke for: ${text}`);
+  }
+
+  // And the one rule the contract states outright: an explicit stop, pause or
+  // evaluation marker must never come back as `build`.
+  for (const text of [
+    'stop the build', 'pause the build', 'cancel the build', 'abort',
+    'build me a CLI but evaluate only first', "don't build yet",
+  ]) {
+    assert.notEqual(classify(text, rich).kind, 'build', `build leaked through: ${text}`);
+  }
 });
 
 test('titleFrom strips request scaffolding', () => {

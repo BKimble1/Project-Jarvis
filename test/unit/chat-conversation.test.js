@@ -37,9 +37,15 @@ function seedQuestion(store, over = {}) {
   return question;
 }
 
-test('the constructor demands its collaborators', () => {
-  assert.throws(() => new ConversationService({}), TypeError);
-  assert.throws(() => new ConversationService({ store: {}, bus: {} }), TypeError);
+test('the constructor demands its collaborators by name', () => {
+  const full = { store: {}, bus: {}, clock: {} };
+  assert.throws(() => new ConversationService(), TypeError);
+  assert.throws(() => new ConversationService({}), /store/);
+  assert.throws(() => new ConversationService({ ...full, store: undefined }), /store/);
+  assert.throws(() => new ConversationService({ ...full, bus: undefined }), /bus/);
+  // A missing clock must be refused, not quietly replaced by wall time.
+  assert.throws(() => new ConversationService({ ...full, clock: undefined }), /clock/);
+  assert.doesNotThrow(() => new ConversationService(full));
 });
 
 test('ensure creates once and is idempotent', (t) => {
@@ -77,11 +83,24 @@ test('append persists the turn, stamps it from the clock and emits chat.message'
 });
 
 test('append auto-creates an unknown conversation and rejects unknown roles', (t) => {
-  const { service, store } = harness(t);
+  const { service, store, events } = harness(t);
   service.append('fresh', { role: 'assistant', text: 'on it' });
-  assert.ok(store.get('conversations', 'fresh'));
+  assert.equal(store.get('conversations', 'fresh').turnCount, 1);
+  assert.equal(events.length, 1);
+
   assert.throws(() => service.append('fresh', { role: 'robot', text: 'hi' }), TypeError);
+  // A rejected turn must leave no trace: no stored turn, no bumped count, and
+  // above all no chat.message that the dashboard and speech would act on.
+  assert.equal(store.find('turns', (tn) => tn.text === 'hi').length, 0, 'a rejected turn was persisted');
+  assert.equal(store.get('conversations', 'fresh').turnCount, 1, 'a rejected turn advanced the index');
+  assert.equal(events.length, 1, 'a rejected turn was announced on the bus');
+
   assert.throws(() => service.append('', { text: 'hi' }), TypeError);
+  assert.throws(() => service.append(null, { text: 'hi' }), TypeError);
+  assert.equal(events.length, 1);
+
+  // The next good turn takes the index the rejected one did not consume.
+  assert.equal(service.append('fresh', { role: 'user', text: 'ok' }).index, 2);
 });
 
 test('chat.message carries the bound projectId', (t) => {
@@ -140,6 +159,40 @@ test('bindProject / activeProject track the project the chat is about', (t) => {
   assert.equal(service.activeProject('c1'), 'p_2');
   assert.deepEqual(service.ensure('c1').projectIds, ['p_1', 'p_2']);
   assert.throws(() => service.bindProject('c1', null), TypeError);
+});
+
+test('rebinding a project moves it to the end of the history without duplicating it', (t) => {
+  const { service } = harness(t);
+  for (const id of ['p_1', 'p_2', 'p_1', 'p_3', 'p_2']) service.bindProject('c1', id);
+  // Each project appears once, most recently bound last — a duplicate here
+  // would make "the one before this" mean the wrong project.
+  assert.deepEqual(service.ensure('c1').projectIds, ['p_1', 'p_3', 'p_2']);
+  assert.equal(service.activeProject('c1'), 'p_2');
+
+  // The history is bounded, keeping the newest entries.
+  for (let i = 0; i < 14; i++) service.bindProject('c1', `q_${i}`);
+  const ids = service.ensure('c1').projectIds;
+  assert.equal(ids.length, 10);
+  assert.equal(new Set(ids).size, 10, 'bounded history still holds no duplicates');
+  assert.equal(ids.at(-1), 'q_13');
+});
+
+test('context ranks recent projects newest-first and caps the list', (t) => {
+  const { service, store } = harness(t);
+  for (let i = 0; i < 12; i++) seedProject(store, { id: `p_${i}`, title: `Project ${i}`, updatedAt: i * 10 });
+
+  const { recentProjects } = service.context('c1');
+  assert.equal(recentProjects.length, 8, 'the list is capped');
+  assert.deepEqual(
+    recentProjects.map((p) => p.id),
+    ['p_11', 'p_10', 'p_9', 'p_8', 'p_7', 'p_6', 'p_5', 'p_4'],
+    'newest first, oldest dropped',
+  );
+  assert.deepEqual(recentProjects[0], { id: 'p_11', title: 'Project 11', updatedAt: 110 });
+
+  // The ctx is a projection, not a handle on the store.
+  recentProjects[0].title = 'tampered';
+  assert.equal(store.get('projects', 'p_11').title, 'Project 11');
 });
 
 test('setLastOptions / lastOptions remember what we offered', (t) => {
@@ -236,5 +289,21 @@ test('returned records are copies, so callers cannot corrupt the store', (t) => 
 
   const conversation = service.ensure('c1');
   conversation.projectId = 'p_hack';
+  conversation.projectIds.push('p_hack');
   assert.equal(service.activeProject('c1'), null);
+  assert.deepEqual(service.ensure('c1').projectIds, []);
+
+  // The open question reaches classify() through ctx; answering it must go
+  // through QuestionGate, so the copy in ctx must not be a live handle.
+  seedQuestion(store, { id: 'q_1', projectId: 'p_1', askedAt: 10 });
+  const question = service.context('c1').openQuestion;
+  question.status = 'answered';
+  question.options.push('Mongo');
+  const stored = store.get('questions', 'q_1');
+  assert.equal(stored.status, 'open');
+  assert.deepEqual(stored.options, ['Postgres', 'SQLite']);
+
+  const options = service.setLastOptions('c1', ['Postgres', 'SQLite']);
+  options.push('Mongo');
+  assert.deepEqual(service.lastOptions('c1'), ['Postgres', 'SQLite']);
 });
