@@ -1,0 +1,423 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { FakeClock } from '../../src/core/clock.js';
+import { EventBus } from '../../src/core/bus.js';
+import { Worker, createEchoExecutor } from '../../src/workers/worker.js';
+import { WorkerPool } from '../../src/workers/pool.js';
+
+// The shared harness imports src/app.js, which wires modules other agents are
+// still writing; these tests stay standalone on purpose.
+function silentLogger() {
+  const noop = () => {};
+  const l = { debug: noop, info: noop, warn: noop, error: noop };
+  l.child = () => l;
+  return l;
+}
+
+function recordEvents(bus, types = null) {
+  const seen = [];
+  bus.on('*', (evt) => { if (!types || types.includes(evt.type)) seen.push(evt); });
+  return {
+    all: () => seen,
+    ofType: (t) => seen.filter((e) => e.type === t),
+    count: (t) => seen.filter((e) => e.type === t).length,
+    types: () => seen.map((e) => e.type),
+  };
+}
+
+function task(i, over = {}) {
+  return { id: `t${i}`, projectId: 'proj_1', planId: 'plan_1', title: `task ${i}`, kind: 'implement', ...over };
+}
+
+function transient(message = 'socket hang up', code = 'ECONNRESET') {
+  return Object.assign(new Error(message), { code });
+}
+
+/**
+ * Stubbed scheduler with a mutable concurrency, so a test can drop capacity
+ * mid-run exactly the way UsageService would.
+ */
+function stubScheduler({ concurrency = 4, paceDelayMs = 0, clock = null } = {}) {
+  return {
+    value: concurrency,
+    pace: paceDelayMs,
+    reads: 0,
+    concurrency() { this.reads += 1; return this.value; },
+    paceDelayMs() { return this.pace; },
+    describe() { return { concurrency: this.value, paceDelayMs: this.pace, basis: 'live', worstRemainingPercent: null }; },
+    async gate() { if (this.pace > 0 && clock) await clock.sleep(this.pace); },
+  };
+}
+
+/** Advance virtual time until `promise` settles; never waits on real time. */
+async function drive(clock, promise, { stepMs = 1_000, maxSteps = 500 } = {}) {
+  const state = { done: false, ok: false, value: undefined, error: undefined };
+  const tracked = promise.then(
+    (v) => { state.done = true; state.ok = true; state.value = v; },
+    (e) => { state.done = true; state.ok = false; state.error = e; },
+  );
+  for (let i = 0; i < maxSteps && !state.done; i += 1) await clock.advance(stepMs);
+  if (!state.done) throw new Error('promise did not settle within the virtual time budget');
+  await tracked;
+  return state;
+}
+
+async function settle(times = 8) {
+  for (let i = 0; i < times; i += 1) await new Promise((r) => setImmediate(r));
+}
+
+// ---------------------------------------------------------------- Worker
+
+test('Worker.run emits worker.started with the project id and returns the result', async () => {
+  const clock = new FakeClock(1_000);
+  const bus = new EventBus();
+  const events = recordEvents(bus);
+  const worker = new Worker({
+    id: 'worker-a', clock, bus, logger: silentLogger(),
+    executor: async (t) => ({ taskId: t.id, ok: true }),
+  });
+
+  assert.equal(worker.id, 'worker-a');
+  assert.equal(worker.state, 'idle');
+
+  const result = await worker.run(task(1), { attempt: 1 });
+  assert.deepEqual(result, { taskId: 't1', ok: true });
+
+  const started = events.ofType('worker.started');
+  assert.equal(started.length, 1);
+  assert.equal(started[0].payload.projectId, 'proj_1');
+  assert.equal(started[0].payload.taskId, 't1');
+  assert.equal(started[0].payload.workerId, 'worker-a');
+  assert.equal(started[0].payload.at, 1_000);
+  assert.equal(worker.stats().completed, 1);
+});
+
+test('Worker.run rethrows executor failures and records them', async () => {
+  const worker = new Worker({
+    id: 'worker-b', clock: new FakeClock(0), logger: silentLogger(),
+    executor: async () => { throw transient(); },
+  });
+
+  await assert.rejects(() => worker.run(task(1)), /socket hang up/);
+  assert.equal(worker.stats().failed, 1);
+  assert.equal(worker.lastError, 'socket hang up');
+  assert.equal(worker.state, 'idle', 'only the pool may declare a crash');
+});
+
+test('a crashed Worker refuses work until it is restarted', async () => {
+  const worker = new Worker({ id: 'worker-c', clock: new FakeClock(0), logger: silentLogger(), executor: async () => 'ok' });
+  worker.markCrashed(transient());
+  assert.equal(worker.state, 'crashed');
+  assert.equal(worker.healthy, false);
+
+  await assert.rejects(() => worker.run(task(1)), /crashed/);
+
+  worker.restart();
+  assert.equal(worker.state, 'idle');
+  assert.equal(worker.stats().restarts, 1);
+  assert.equal(await worker.run(task(1)), 'ok');
+});
+
+test('Worker injects its clock and id into the executor context', async () => {
+  const clock = new FakeClock(0);
+  let seen = null;
+  const worker = new Worker({ id: 'worker-d', clock, logger: silentLogger(), executor: async (_t, ctx) => { seen = ctx; return 'ok'; } });
+  await worker.run(task(1), { attempt: 3 });
+  assert.equal(seen.workerId, 'worker-d');
+  assert.equal(seen.clock, clock);
+  assert.equal(seen.attempt, 3);
+});
+
+test('Worker validates its collaborators', () => {
+  assert.throws(() => new Worker({ executor: async () => 'x' }), /clock/);
+  assert.throws(() => new Worker({ clock: new FakeClock(0) }), /executor/);
+});
+
+// ------------------------------------------------------ createEchoExecutor
+
+test('createEchoExecutor is deterministic', async () => {
+  const executor = createEchoExecutor({ clock: new FakeClock(0) });
+  const t = task(7, { title: 'Add login', kind: 'verify' });
+
+  const first = await executor(t, {});
+  const second = await executor(t, {});
+  assert.deepEqual(first, { taskId: 't7', title: 'Add login', kind: 'verify', output: 'verify complete: Add login' });
+  assert.deepEqual(second, first, 'the same task always yields the same result');
+  assert.deepEqual(Object.keys(first), ['taskId', 'title', 'kind', 'output']);
+  assert.ok(first.output.length <= 80);
+});
+
+test('createEchoExecutor honours an injected failure plan', async () => {
+  const executor = createEchoExecutor({
+    failurePlan: {
+      t1: [{ message: 'socket hang up', code: 'ECONNRESET' }, null],
+      verify: { message: 'assertion failed' },
+      t9: { message: 'flaky once', code: 'ETIMEDOUT', times: 1 },
+    },
+  });
+
+  await assert.rejects(() => executor(task(1), {}), (err) => err.code === 'ECONNRESET');
+  const recovered = await executor(task(1), {});
+  assert.equal(recovered.output, 'implement complete: task 1');
+  assert.equal(executor.attemptsFor('t1'), 2);
+
+  await assert.rejects(() => executor(task(2, { kind: 'verify' }), {}), /assertion failed/);
+  await assert.rejects(() => executor(task(2, { kind: 'verify' }), {}), /assertion failed/, 'plain specs repeat');
+
+  await assert.rejects(() => executor(task(9), {}), /flaky once/);
+  assert.equal((await executor(task(9), {})).taskId, 't9', 'times:1 fails exactly once');
+});
+
+test('createEchoExecutor sleeps through the injected clock only', async () => {
+  const clock = new FakeClock(0);
+  const executor = createEchoExecutor({ clock, delayMs: 50 });
+  const state = await drive(clock, executor(task(1), { clock }), { stepMs: 10 });
+  assert.equal(state.ok, true);
+  assert.equal(clock.now(), 50);
+});
+
+// ------------------------------------------------------------ WorkerPool
+
+test('the pool never exceeds scheduler.concurrency() concurrent executions', async () => {
+  const clock = new FakeClock(0);
+  const bus = new EventBus();
+  const scheduler = stubScheduler({ concurrency: 2, paceDelayMs: 0, clock });
+
+  let active = 0;
+  let observedPeak = 0;
+  const executor = async (t, ctx) => {
+    active += 1;
+    observedPeak = Math.max(observedPeak, active);
+    await ctx.clock.sleep(10);
+    active -= 1;
+    return { taskId: t.id };
+  };
+
+  const pool = new WorkerPool({ clock, bus, scheduler, size: 8, executor, logger: silentLogger() });
+  const all = Promise.all(Array.from({ length: 12 }, (_, i) => pool.submit(task(i), {})));
+  const state = await drive(clock, all);
+
+  assert.equal(state.ok, true, state.error?.message);
+  assert.equal(state.value.length, 12);
+  assert.equal(observedPeak, 2, 'the executor was never invoked more than twice at once');
+  assert.equal(pool.peakConcurrency, 2);
+  assert.equal(pool.stats().peakConcurrency, 2);
+  assert.equal(pool.inFlight, 0);
+  assert.ok(scheduler.reads >= 12, 'the scheduler is consulted before every dispatch');
+});
+
+test('a mid-run capacity drop is honoured by subsequent dispatches', async () => {
+  const clock = new FakeClock(0);
+  const scheduler = stubScheduler({ concurrency: 4, paceDelayMs: 0, clock });
+
+  let active = 0;
+  let started = 0;
+  const observed = [];
+  const executor = async (t, ctx) => {
+    active += 1;
+    started += 1;
+    observed.push({ id: t.id, active });
+    if (started === 4) scheduler.value = 1;   // capacity collapses mid-run
+    await ctx.clock.sleep(10);
+    active -= 1;
+    return { taskId: t.id };
+  };
+
+  const pool = new WorkerPool({ clock, bus: new EventBus(), scheduler, size: 4, executor, logger: silentLogger() });
+  const all = Promise.all(Array.from({ length: 8 }, (_, i) => pool.submit(task(i), {})));
+  const state = await drive(clock, all);
+
+  assert.equal(state.ok, true, state.error?.message);
+  assert.equal(state.value.length, 8);
+  assert.equal(pool.peakConcurrency, 4, 'the first four ran under the old capacity');
+
+  const afterDrop = observed.slice(4);
+  assert.equal(afterDrop.length, 4);
+  for (const entry of afterDrop) {
+    assert.equal(entry.active, 1, `${entry.id} ran alone after the drop`);
+  }
+});
+
+test('pacing separates dispatches by scheduler.paceDelayMs instead of firing at once', async () => {
+  const clock = new FakeClock(0);
+  const scheduler = stubScheduler({ concurrency: 4, paceDelayMs: 2_000, clock });
+
+  const startedAt = [];
+  const executor = async (t) => { startedAt.push(clock.now()); return { taskId: t.id }; };
+  const pool = new WorkerPool({ clock, bus: new EventBus(), scheduler, size: 4, executor, logger: silentLogger() });
+
+  const all = Promise.all([0, 1, 2].map((i) => pool.submit(task(i), {})));
+
+  await clock.advance(1_999);
+  assert.deepEqual(startedAt, [], 'nothing runs before the first gate elapses');
+
+  await clock.advance(1);
+  assert.deepEqual(startedAt, [2_000]);
+
+  await clock.advance(2_000);
+  assert.deepEqual(startedAt, [2_000, 4_000]);
+
+  await clock.advance(2_000);
+  assert.deepEqual(startedAt, [2_000, 4_000, 6_000]);
+
+  const state = await drive(clock, all);
+  assert.equal(state.ok, true, state.error?.message);
+});
+
+// ------------------------------------------------------ crash + recovery
+
+test('a transient crash emits worker.crashed then worker.recovered and the task succeeds on retry', async () => {
+  const clock = new FakeClock(0);
+  const bus = new EventBus();
+  const events = recordEvents(bus);
+  const scheduler = stubScheduler({ concurrency: 2, paceDelayMs: 0, clock });
+
+  const executor = createEchoExecutor({
+    clock,
+    failurePlan: { t1: [{ message: 'socket hang up', code: 'ECONNRESET' }, null] },
+  });
+  const pool = new WorkerPool({ clock, bus, scheduler, size: 2, executor, maxCrashRestarts: 3, logger: silentLogger() });
+
+  const state = await drive(clock, pool.submit(task(1), {}));
+
+  assert.equal(state.ok, true, state.error?.message);
+  assert.deepEqual(state.value, { taskId: 't1', title: 'task 1', kind: 'implement', output: 'implement complete: task 1' });
+  assert.equal(executor.attemptsFor('t1'), 2, 'the pool retried the task');
+
+  const order = events.types().filter((t) => t.startsWith('worker.'));
+  assert.deepEqual(order, ['worker.started', 'worker.crashed', 'worker.recovered', 'worker.started']);
+
+  const crashed = events.ofType('worker.crashed')[0].payload;
+  assert.equal(crashed.projectId, 'proj_1');
+  assert.equal(crashed.taskId, 't1');
+  assert.equal(crashed.classification, 'transient');
+  assert.equal(crashed.willRestart, true);
+  assert.equal(events.ofType('worker.recovered')[0].payload.projectId, 'proj_1');
+
+  assert.equal(pool.stats().restarts, 1);
+  assert.equal(pool.stats().crashed, 1);
+  assert.equal(pool.inFlight, 0);
+});
+
+test('a fatal error is not restarted and surfaces to the caller', async () => {
+  const clock = new FakeClock(0);
+  const bus = new EventBus();
+  const events = recordEvents(bus);
+  const scheduler = stubScheduler({ concurrency: 2, paceDelayMs: 0, clock });
+
+  const boom = new Error('the plan is nonsense');
+  let calls = 0;
+  const executor = async () => { calls += 1; throw boom; };
+  const pool = new WorkerPool({ clock, bus, scheduler, size: 2, executor, maxCrashRestarts: 3, logger: silentLogger() });
+
+  const state = await drive(clock, pool.submit(task(1), {}));
+
+  assert.equal(state.ok, false);
+  assert.equal(state.error, boom, 'the caller sees the original error');
+  assert.equal(calls, 1, 'a fatal error is never retried');
+  assert.equal(events.count('worker.crashed'), 0);
+  assert.equal(events.count('worker.recovered'), 0);
+  assert.equal(pool.stats().restarts, 0);
+  assert.equal(pool.stats().crashed, 0);
+});
+
+test('permission and credential failures are surfaced, never restarted', async () => {
+  const clock = new FakeClock(0);
+  const bus = new EventBus();
+  const events = recordEvents(bus);
+  const executor = async () => { throw Object.assign(new Error('Unauthorized'), { status: 401 }); };
+  const pool = new WorkerPool({
+    clock, bus, scheduler: stubScheduler({ concurrency: 1, clock }), size: 1, executor, logger: silentLogger(),
+  });
+
+  const state = await drive(clock, pool.submit(task(1), {}));
+  assert.equal(state.ok, false);
+  assert.match(state.error.message, /Unauthorized/);
+  assert.equal(events.count('worker.crashed'), 0);
+  assert.equal(pool.stats().restarts, 0);
+});
+
+test('crash restarts are bounded by maxCrashRestarts', async () => {
+  const clock = new FakeClock(0);
+  const bus = new EventBus();
+  const events = recordEvents(bus);
+  let calls = 0;
+  const executor = async () => { calls += 1; throw transient('ECONNRESET reading stream'); };
+  const pool = new WorkerPool({
+    clock, bus, scheduler: stubScheduler({ concurrency: 2, clock }), size: 2, executor,
+    maxCrashRestarts: 2, logger: silentLogger(),
+  });
+
+  const state = await drive(clock, pool.submit(task(1), {}));
+
+  assert.equal(state.ok, false);
+  assert.equal(state.error.code, 'ECONNRESET');
+  assert.equal(calls, 3, 'the original attempt plus two restarts');
+  assert.equal(events.count('worker.crashed'), 3);
+  assert.equal(events.count('worker.recovered'), 2);
+  assert.equal(events.ofType('worker.crashed').at(-1).payload.willRestart, false);
+  assert.equal(pool.stats().restarts, 2);
+  assert.equal(pool.stats().crashed, 3);
+  assert.equal(pool.inFlight, 0);
+  assert.equal(pool.peakConcurrency, 1);
+});
+
+test('a restarted worker stays usable for later tasks', async () => {
+  const clock = new FakeClock(0);
+  const bus = new EventBus();
+  const executor = createEchoExecutor({
+    clock,
+    failurePlan: { t0: [{ message: 'socket hang up', code: 'ECONNRESET' }, null] },
+  });
+  const pool = new WorkerPool({
+    clock, bus, scheduler: stubScheduler({ concurrency: 1, clock }), size: 1, executor, logger: silentLogger(),
+  });
+
+  const all = Promise.all([0, 1, 2].map((i) => pool.submit(task(i), {})));
+  const state = await drive(clock, all);
+
+  assert.equal(state.ok, true, state.error?.message);
+  assert.deepEqual(state.value.map((r) => r.taskId), ['t0', 't1', 't2']);
+  assert.equal(pool.stats().restarts, 1);
+  assert.equal(pool.workers[0].state, 'idle');
+});
+
+// -------------------------------------------------------------- lifecycle
+
+test('stats() reports the contracted shape', async () => {
+  const clock = new FakeClock(0);
+  const pool = new WorkerPool({
+    clock, bus: new EventBus(), scheduler: stubScheduler({ concurrency: 2, clock }), size: 3,
+    executor: createEchoExecutor({ clock }), logger: silentLogger(),
+  });
+  assert.deepEqual(pool.stats(), { size: 3, inFlight: 0, peakConcurrency: 0, restarts: 0, crashed: 0 });
+
+  await drive(clock, pool.submit(task(1), {}));
+  assert.deepEqual(pool.stats(), { size: 3, inFlight: 0, peakConcurrency: 1, restarts: 0, crashed: 0 });
+});
+
+test('shutdown fails queued work and refuses new submissions', async () => {
+  const clock = new FakeClock(0);
+  const scheduler = stubScheduler({ concurrency: 1, paceDelayMs: 0, clock });
+  const executor = async (t, ctx) => { await ctx.clock.sleep(100); return { taskId: t.id }; };
+  const pool = new WorkerPool({ clock, bus: new EventBus(), scheduler, size: 1, executor, logger: silentLogger() });
+
+  const first = pool.submit(task(1), {});
+  const queued = pool.submit(task(2), {});
+  const queuedResult = queued.then(() => 'resolved', (err) => err.message);
+  await settle();
+
+  const closing = pool.shutdown();
+  assert.equal(await queuedResult, 'worker pool is shut down');
+
+  await drive(clock, first);
+  await closing;
+
+  await assert.rejects(() => pool.submit(task(3), {}), /shut down/);
+});
+
+test('the pool validates its collaborators', () => {
+  assert.throws(() => new WorkerPool({ executor: async () => 'x' }), /clock/);
+  assert.throws(() => new WorkerPool({ clock: new FakeClock(0) }), /executor/);
+});
