@@ -244,7 +244,18 @@ export interface Mission {
 /** Bounded everywhere: a mission is owner-typed text and must never be an unbounded body. */
 export const missionTitleSchema = z.string().trim().min(3).max(160);
 export const missionTextSchema = z.string().trim().min(1).max(4000);
-const shortListSchema = z.array(z.string().trim().min(1).max(400)).max(20);
+/**
+ * The longest a single acceptance criterion, constraint or do-not-touch entry may be.
+ *
+ * Named because it is now enforced in two places rather than one. `PATCH /api/missions/:id` has
+ * always rejected a longer entry through the schema below; `applyStructuralAnswer` writes a
+ * clarification answer straight into `acceptanceCriteria` and did not, so a long reply typed into
+ * the conversation stored a value the mission screen could not have saved and could no longer
+ * round-trip.
+ */
+export const MISSION_LIST_ENTRY_MAX_CHARS = 400;
+
+const shortListSchema = z.array(z.string().trim().min(1).max(MISSION_LIST_ENTRY_MAX_CHARS)).max(20);
 
 export const missionDraftSchema = z.object({
   rawRequest: missionTextSchema,

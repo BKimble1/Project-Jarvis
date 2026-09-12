@@ -234,6 +234,22 @@ export interface Interpretation {
   readonly pace: PacePreference | null;
   /** Set for `follow_up`: what it resolved to, against the snapshot it was given. */
   readonly followUp: FollowUp | null;
+  /**
+   * Whether this was recognised as a question, rather than merely left as one.
+   *
+   * `kind: 'question'` is the fall-through: everything the eight readings above it declined lands
+   * there, so a statement and an actual question are indistinguishable by kind alone. That is fine
+   * for answering — the status router copes either way — and not fine for deciding whether a
+   * sentence is somebody *answering* a question Jarvis asked. "How is the CampusCountdown project
+   * going?" and "The definition of done is a page that lists each event" are both `question`, and
+   * filing the first one into a mission brief would hand the planner a requirement the owner never
+   * wrote.
+   *
+   * True only when one of `QUESTION_PATTERNS` actually matched. Callers that need "is this a reply
+   * rather than an enquiry" pair it with a trailing question mark, which between them admit an
+   * answer and exclude every status phrasing measured against them.
+   */
+  readonly recognisedQuestion: boolean;
 }
 
 export type FollowUp =
@@ -799,6 +815,8 @@ function build(
     command: null,
     pace: null,
     followUp: null,
+    /* False unless a branch says otherwise: only the pattern list below can claim recognition. */
+    recognisedQuestion: false,
     ...overrides,
   };
 }
@@ -960,7 +978,7 @@ export function interpretMessage(
     return finish({
       kind: 'command',
       command: entry.command,
-      subject: subjectOf(text),
+      subject: subjectOf(text, raw),
       understanding: `${entry.command[0]?.toUpperCase()}${entry.command.slice(1)} the work.`,
     });
   }
@@ -985,7 +1003,7 @@ export function interpretMessage(
     return finish({
       kind: 'refine',
       action: 'refine',
-      subject: subjectOf(text),
+      subject: subjectOf(text, raw),
       understanding: noBuildYet
         ? 'Noted against what we are working on. Nothing will be built.'
         : 'Noted against what we are working on.',
@@ -1000,7 +1018,7 @@ export function interpretMessage(
   if (commissionsThinking) {
     return finish({
       kind: 'idea',
-      subject: subjectOf(text),
+      subject: subjectOf(text, raw),
       noBuildYet,
       understanding: noBuildYet
         ? 'An idea to think through. Nothing will be built.'
@@ -1018,7 +1036,7 @@ export function interpretMessage(
     if (noBuildYet) {
       return finish({
         kind: 'idea',
-        subject: subjectOf(text),
+        subject: subjectOf(text, raw),
         noBuildYet: true,
         understanding: 'Understood, and not to be built yet.',
       });
@@ -1036,7 +1054,7 @@ export function interpretMessage(
     const typed = classifyMissionRisk({ text: raw, type: missionType });
     return finish({
       kind: 'work',
-      subject: subjectOf(text),
+      subject: subjectOf(text, raw),
       missionType,
       riskLevel: typed.level,
       riskRuleIds: typed.ruleIds,
@@ -1051,15 +1069,22 @@ export function interpretMessage(
     if (pattern.test(text)) {
       return finish({
         kind: 'question',
-        subject: subjectOf(text),
+        subject: subjectOf(text, raw),
         understanding: 'A question about your projects.',
+        /* A phrasing this module recognises as an enquiry. See `recognisedQuestion`. */
+        recognisedQuestion: true,
       });
     }
   }
 
+  /*
+   * The fall-through. Everything nine readings declined is called a question because the status
+   * router is the right place to send something nobody can place — but nothing here recognised it
+   * as one, and `recognisedQuestion` stays false so a caller can tell the two apart.
+   */
   return finish({
     kind: 'question',
-    subject: subjectOf(text),
+    subject: subjectOf(text, raw),
     understanding: 'A question about your projects.',
   });
 }
@@ -1165,8 +1190,53 @@ function describeFollowUp(followUp: FollowUp, context: ConversationContext): str
  * Deliberately loose and deliberately not authoritative: the caller matches this against the real
  * project list and asks only when it is genuinely ambiguous. Returning a wrong-but-plausible name
  * here is harmless; the resolver will fail to match it and fall back.
+ *
+ * ## Why it reads one sentence at a time
+ *
+ * Both patterns below are anchored to the *end* of what they are given, and the capture is capped
+ * at 61 characters. Given a whole message that is the end of the last sentence — so a two-sentence
+ * reply put the name out of reach:
+ *
+ *     "Continue work on the existing CampusCountdown project. The definition of done is a page
+ *      that lists each event with a live countdown and updates without a reload."
+ *
+ * The tail after "on " is 142 characters, far past the cap, so that branch could never reach `$`;
+ * the only preposition whose tail did fit was the "with" near the end, and the subject came back as
+ * "a live countdown and updates without a reload". The owner had named the project in the first
+ * four words.
+ *
+ * So each sentence is offered to the cascade in turn and the first name found wins. The cap stays
+ * exactly where it is — it is what stops a branch swallowing a whole clause, and raising it would
+ * turn the message above into one 100-character "subject" rather than no subject, which is worse.
+ *
+ * First sentence wins rather than best-match wins, because a reference to the thing being discussed
+ * comes before what is being said about it in every phrasing of this that a person actually types.
+ * The whole-text pass is kept as the final fallback so a single-sentence message behaves exactly as
+ * it always did.
  */
-function subjectOf(text: string): string | null {
+function subjectOf(text: string, raw?: string): string | null {
+  /*
+   * Sentences from the raw message, because `text` has already been normalised and `normalise`
+   * deletes the punctuation the sentence split needs. Each piece is normalised on its own so the
+   * branches below see exactly the shape they were written for.
+   */
+  if (raw !== undefined) {
+    const sentences = raw
+      .split(/(?<=[.!?])\s+/)
+      .map((sentence) => normalise(sentence))
+      .filter((sentence) => sentence.length > 0);
+    if (sentences.length > 1) {
+      for (const sentence of sentences) {
+        const found = subjectOf(sentence);
+        if (found) return found;
+      }
+    }
+  }
+  return subjectIn(text);
+}
+
+/** One pass of the cascade, over a single stretch of already-normalised text. */
+function subjectIn(text: string): string | null {
   /*
    * "…on CoreCredit today" / "…for Holograph" / "…to QuickPick" — the trailing prepositional phrase.
    *
@@ -1216,6 +1286,14 @@ function trailingNoise(value: string): string {
        * means the name never matches a row.
        */
       .replace(/^(?:the|my|our)\s+/, '')
+      /*
+       * "the existing CampusCountdown project" is how a person says "the one we were just working
+       * on". Left in place it became the name — `resolveProjectName` has no row called *existing
+       * CampusCountdown*, so a reply that plainly named the project resolved to nothing. Two words
+       * only, and both of them reference words rather than names; `deriveProjectName` already
+       * treats `current` the same way.
+       */
+      .replace(/^(?:existing|current)\s+/, '')
       .replace(/\s+(?:project|repo|repository|app)$/, '')
       .trim()
   );

@@ -5,9 +5,16 @@ import {
   type Interpretation,
 } from '@/domain/interpretation';
 import { buildBrief } from '@/domain/build-brief';
+import { boundText } from '@/domain/redaction';
+import { MISSION_LIST_ENTRY_MAX_CHARS } from '@/domain/mission';
 import { finalisedV1, readRefinement } from '@/domain/refinement';
 import type { OperatingEventKind, OperatingState } from '@/domain/operating-state';
-import { deriveProjectName, describesNewProject, UNNAMED } from '@/domain/new-project';
+import {
+  deriveProjectName,
+  describesNewProject,
+  statedProductName,
+  UNNAMED,
+} from '@/domain/new-project';
 import type { Project } from '@/domain/project';
 import type { QueryAnswer } from '@/domain/query';
 import { resolveProjectName } from '@/server/query/parser';
@@ -151,6 +158,103 @@ export interface ConversationInput {
   readonly ownerLogin?: string | null;
 }
 
+/**
+ * Is this sentence somebody answering, rather than somebody asking?
+ *
+ * Asked only of a message that already reads as `question`, and only to decide whether the name
+ * inside it may bind a reply to a waiting mission. The browser's own "I had just asked something"
+ * flag does not need this — there, Jarvis genuinely had just asked — but a name in a sentence is
+ * not consent to file it, and the sentences that name a project most often are the ones asking
+ * about it.
+ *
+ * Two tests, both about the shape of the sentence rather than its topic. `recognisedQuestion` is
+ * true when `interpretMessage` matched one of its status phrasings — "how is X going", "what is the
+ * status of X", "has X started". A trailing question mark catches the rest. Measured against those
+ * phrasings the pair excludes every one of them, and admits "Continue work on the existing
+ * CampusCountdown project. The definition of done is…".
+ */
+function readsAsAnAnswer(raw: string, interpretation: Interpretation): boolean {
+  return !interpretation.recognisedQuestion && !raw.trim().endsWith('?');
+}
+
+/**
+ * Enough of an answer to record, a deferral, or nothing at all.
+ *
+ * "Ask again only if the answer is genuinely insufficient" cannot be done by recording the answer
+ * and re-asking: the clarification row is unique on (mission, question) and
+ * `buildClarificationQuestions` filters out every id already asked, so an answered question can
+ * never come back. The only honest way to ask twice is not to record it, which leaves the question
+ * open and shows it again.
+ *
+ * So the bar is deliberately at the floor. `insufficient` is for a reply that says *nothing* — an
+ * acknowledgement, a filler, an empty string. Everything with any content at all is recorded as
+ * written, because Jarvis is not the judge of whether the owner's definition of done is a good one.
+ *
+ * `defer` is separate and is not insufficient. "Whatever you think" is a real answer: it says *use
+ * your judgement*, which `answerClarification` already records by taking its own recommendation and
+ * marking it `inferred` rather than `manual` — an assumption Jarvis made, never a decision the
+ * owner took. Without this, the one reply that most obviously means "carry on" would be the one
+ * that asked the same question for ever.
+ */
+export function judgeAnswer(
+  raw: string,
+  recommendation: string | null,
+): { readonly kind: 'record' | 'defer' | 'insufficient' } {
+  const text = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?]+$/, '');
+  if (text.length === 0) return { kind: 'insufficient' };
+
+  if (DEFERS.test(text) && recommendation) return { kind: 'defer' };
+  /* A deferral with nothing to defer to is not an answer; asking again is the only honest reply. */
+  if (DEFERS.test(text)) return { kind: 'insufficient' };
+
+  if (EMPTY_REPLY.has(text)) return { kind: 'insufficient' };
+  return { kind: 'record' };
+}
+
+/**
+ * "Use your judgement", in the handful of ways people write it.
+ *
+ * Kept to phrasings that hand the decision over explicitly. A vague answer is not a deferral — "it
+ * should look nice" is a poor definition of done and still the owner's, and Jarvis substituting its
+ * own recommendation for it would be overruling them rather than helping.
+ */
+const DEFERS =
+  /^(?:whatever|anything)\b.*\b(?:you (?:think|like|want|prefer)|is sensible|works|suits)\b|\b(?:you|your) (?:decide|call|choice|judgement|judgment)\b|\bup to you\b|\buse your (?:judgement|judgment|discretion)\b|\bi (?:don'?t|do not) mind\b/;
+
+/**
+ * Replies that acknowledge without answering.
+ *
+ * A closed set, matched whole rather than by substring, because a reply *containing* "ok" — "ok, it
+ * is done when the board shows every event" — is an answer with an "ok" on the front.
+ */
+const EMPTY_REPLY = new Set([
+  'ok',
+  'okay',
+  'k',
+  'sure',
+  'yes',
+  'yep',
+  'yeah',
+  'fine',
+  'good',
+  'great',
+  'got it',
+  'sounds good',
+  'thanks',
+  'thank you',
+  'no',
+  'nope',
+  'idk',
+  'dunno',
+  'not sure',
+  'n/a',
+  'na',
+  '-',
+]);
+
 export class ConversationService {
   constructor(private readonly deps: ConversationDeps) {}
 
@@ -172,13 +276,14 @@ export class ConversationService {
      * had just asked was the one sentence it could not hear, and the only way to answer it was to
      * leave the conversation for the mission screen.
      *
-     * Two conditions, and both are needed. The flag says Jarvis had just asked something, which is
-     * the only way to tell an answer from a fresh question — "what needs me?" typed while a
-     * mission waits is still a question about what needs the owner. The open clarification in the
-     * database says there is something to answer, so a stale or tampered flag cannot invent one.
+     * `question` alone, and deliberately. Every other kind has its own case below with its own
+     * meaning — a reply that arrived as `work` would be filed here *and* never reach `startWork`.
+     *
+     * Which replies are admitted, and on what evidence, is decided inside the method, where the
+     * database is in reach. See `answerTheQuestionIAsked`.
      */
-    if (interpretation.kind === 'question' && context.awaitingAnswer) {
-      const answered = await this.answerTheQuestionIAsked(input.message, interpretation);
+    if (interpretation.kind === 'question') {
+      const answered = await this.answerTheQuestionIAsked(input.message, interpretation, context);
       if (answered) return answered;
     }
 
@@ -203,33 +308,86 @@ export class ConversationService {
   /**
    * Put a reply against the question a mission is waiting on.
    *
-   * Returns null rather than an apology whenever this is not that: nothing to answer, more than
-   * one thing it could be, or a reply that is plainly not an answer. The caller then carries on
-   * exactly as it did, so the worst this can do is nothing.
+   * Returns null rather than an apology whenever this is not that: nothing to answer, nothing that
+   * admits the reply, or a reply that is plainly not an answer. The caller then carries on exactly
+   * as it did, so the worst this can do is nothing.
    *
-   * ## Why one waiting mission and no more
+   * ## The two ways in, and why one of them is not enough
    *
-   * Because the conversation carries no mission id, and guessing which of two questions was meant
-   * would put the owner's words against the wrong mission — where they would be read as a
-   * requirement by whatever plans it. One is unambiguous. Two is a question, and the honest reply
-   * says which two and lets the owner name one.
+   * **The browser said I had just asked something.** `context.awaitingAnswer` is computed on the
+   * Jarvis screen from the last turn Jarvis took. It is the only thing that can bind a reply which
+   * names nothing — "it is done when a quotation shows on load" is an answer and could be about
+   * anything — so it stays.
+   *
+   * It is also gone the moment the page reloads. `turns` is React state that starts empty and is
+   * restored from nowhere, so after F5 the flag is false, and the owner's answer fell through to
+   * the status router: *"I could not find a project matching that name."* The definition of done
+   * they had just typed was discarded, and the mission went on waiting for it.
+   *
+   * **The message names the project.** That survives a reload by definition — it is in the sentence
+   * — and it is what the owner actually writes when they come back to something: *"Continue work
+   * on the existing CampusCountdown project. The definition of done is…"*. The name is resolved
+   * against the real project list, and only a mission on **that** project is admitted.
+   *
+   * The second route needs a guard, because a name in a sentence is not consent to file it. Every
+   * one of *"How is the CampusCountdown project going?"*, *"What is the status of the
+   * CampusCountdown project?"*, *"Has the CampusCountdown project started?"* names the project and
+   * none of them is an answer — filed as one, each becomes a requirement the planner reads back as
+   * a specification. So route two admits only a sentence that this module did **not** recognise as
+   * an enquiry and that does not end in a question mark. Measured over those phrasings, the pair
+   * excludes all of them and admits the owner's reply.
+   *
+   * ## Which mission, and why the name decides it
+   *
+   * It used to be "the only one waiting", which is wrong in a way that is worse than refusing: with
+   * two missions waiting, a reply that named the second was written into the first, where whatever
+   * plans it reads the owner's words as its requirements. The name in the sentence is the binding.
+   * Only when the reply names nothing does "the only one waiting" apply, and more than one waiting
+   * is still a question rather than a guess.
    *
    * ## What it does not do
    *
-   * Approve anything. The mission goes back to `draft` when the last question is answered, exactly
-   * as it does from the mission screen, and `requestPlan` then produces a plan that still waits
-   * for the owner unless the charter says otherwise. This is the same act as typing the answer
-   * into the mission screen, in the place the question was asked.
+   * Approve anything. `requestPlan` produces a plan that still waits for the owner unless the
+   * charter says otherwise. This is the same act as typing the answer into the mission screen, in
+   * the place the question was asked.
    */
   private async answerTheQuestionIAsked(
     raw: string,
     interpretation: Interpretation,
+    context: ConversationContext,
   ): Promise<ConversationTurn | null> {
+    /*
+     * The named-project route, computed before any query.
+     *
+     * `statedProductName` reads the name out of the sentence — "the existing CampusCountdown
+     * project" — and `resolveProject` matches it against the real rows, case-insensitively and
+     * refusing anything ambiguous. Doing it first means a message that names nothing and arrives
+     * with no flag costs no database round trip at all, which is the common case: every ordinary
+     * question typed while a mission happens to be waiting.
+     */
+    const named = readsAsAnAnswer(raw, interpretation) ? statedProductName(raw) : null;
+    const namedProject = named ? await this.resolveProject(named) : null;
+    if (!context.awaitingAnswer && !namedProject) return null;
+
     const waiting = await this.deps.missions.list({
       states: ['needs_clarification'],
       limit: 10,
     });
-    const open = waiting.items.filter((summary) => summary.openClarifications > 0);
+    /*
+     * `openClarifications`, never the state alone. `refreshClarifications` can leave a mission in
+     * `needs_clarification` with nothing open, and selecting one of those would bind an answer to a
+     * question that does not exist.
+     */
+    const anyWaiting = waiting.items.filter((summary) => summary.openClarifications > 0);
+    if (anyWaiting.length === 0) return null;
+
+    const open = namedProject
+      ? anyWaiting.filter((summary) => summary.mission.projectId === namedProject.id)
+      : anyWaiting;
+    /*
+     * The sentence named a project, and nothing on it is waiting. Not an answer to anything here,
+     * so it goes back to being an ordinary message rather than being filed against something else.
+     */
     if (open.length === 0) return null;
 
     if (open.length > 1) {
@@ -249,10 +407,43 @@ export class ConversationService {
     const question = detail.clarifications.find((record) => record.answeredAt === null);
     if (!question) return null;
 
+    /*
+     * Ask again only when the reply genuinely says nothing.
+     *
+     * There is no way to re-ask a question once it is answered — the row is unique on
+     * (mission, question) and `buildClarificationQuestions` filters out anything already asked — so
+     * "ask again" has to mean *do not record it*. Leaving the question open is the only honest way
+     * to ask twice, and it costs nothing: the owner sees the question again and answers it.
+     *
+     * Deliberately narrow. A deferral is not an absence of an answer — "whatever you think" means
+     * *use your judgement*, which is what `acceptRecommendation` already exists to record, and
+     * treating it as insufficient would ask the same question for ever.
+     */
+    const verdict = judgeAnswer(raw, question.recommendation);
+    if (verdict.kind === 'insufficient') {
+      return this.plainly(
+        interpretation,
+        `I still need this one before I can plan ${only.mission.title}: ${question.question}`,
+        `/missions/${only.mission.id}`,
+      );
+    }
+
     try {
       const settled = await this.deps.missions.answerClarification(only.mission.id, question.id, {
-        answer: raw,
-        acceptRecommendation: false,
+        /*
+         * Bounded to what the mission schema accepts. `applyStructuralAnswer` writes this straight
+         * into `acceptanceCriteria`, whose own validator caps an entry at
+         * `MISSION_LIST_ENTRY_MAX_CHARS` — so an unbounded write here stores a value that
+         * `PATCH /api/missions/:id` would refuse, and the two paths disagree about the same field.
+         */
+        /*
+         * The owner's words as written, including any sentence that only said which project this
+         * is about. Trimming the message before recording it would make `manual` provenance a
+         * lie — that flag means "the owner decided this", and it has to be what they decided.
+         */
+        ...(verdict.kind === 'defer'
+          ? { acceptRecommendation: true }
+          : { answer: boundText(raw, MISSION_LIST_ENTRY_MAX_CHARS), acceptRecommendation: false }),
       });
       const remaining = settled.questions.filter((record) => record.answeredAt === null);
       if (remaining.length > 0) {
@@ -265,12 +456,33 @@ export class ConversationService {
 
       await this.deps.missions.requestPlan(only.mission.id);
       const authority = await this.deps.authority();
+      /*
+       * A mission title is the owner's own sentence, punctuation and all, so dropping it into the
+       * middle of another one gives "I am planning Build a project called CampusCountdown. now".
+       */
+      const title = only.mission.title.replace(/[.!?,;:]+$/, '');
       return this.plainly(
         interpretation,
         authority.standingAuthority
-          ? `Noted. I am planning ${only.mission.title} now, and I will tell you when there is something to see.`
-          : `Noted. I am planning ${only.mission.title} now, and I will bring you the plan before anything is built.`,
+          ? `Noted. I am planning ${title} now, and I will tell you when there is something to see.`
+          : `Noted. I am planning ${title} now, and I will bring you the plan before anything is built.`,
         `/missions/${only.mission.id}`,
+        /*
+         * Named as started, because it is. The screen refreshes the dashboard on a turn that
+         * carries this, which is how the mission appears as planning without the owner going to
+         * find it — the whole point of answering in the conversation rather than on a form.
+         *
+         * Only on this branch. A turn that still owes an answer, or one that failed, has not
+         * started anything and must not read as though it had.
+         */
+        {
+          missionId: only.mission.id,
+          title: only.mission.title,
+          projectId: only.mission.projectId,
+          projectName: only.projectName,
+          repositoryUrl: null,
+          planning: true,
+        },
       );
     } catch (error) {
       /*
@@ -291,6 +503,7 @@ export class ConversationService {
     interpretation: Interpretation,
     said: string,
     href: string | null,
+    started: StartedWorkSummary | null = null,
   ): ConversationTurn {
     return {
       kind: interpretation.kind,
@@ -298,7 +511,7 @@ export class ConversationService {
       said,
       href,
       answer: null,
-      started: null,
+      started,
       proposal: null,
       evaluation: null,
       thinking: null,
