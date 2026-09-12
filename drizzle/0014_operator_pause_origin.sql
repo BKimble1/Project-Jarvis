@@ -1,0 +1,1 @@
+ALTER TABLE "operator_state" ADD COLUMN "paused_from" text;

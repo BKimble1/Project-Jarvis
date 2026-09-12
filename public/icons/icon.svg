@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Jarvis">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3f51b5"/>
+      <stop offset="1" stop-color="#303f9f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="113" fill="url(#g)"/>
+  <path d="M323 102v198a90 90 0 0 1-180 0" fill="none" stroke="#f5f6fa" stroke-width="66" stroke-linecap="round"/>
+</svg>

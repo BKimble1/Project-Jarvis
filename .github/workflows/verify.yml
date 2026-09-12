@@ -1,0 +1,50 @@
+name: Verify
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Format, lint, type check, unit tests, integration tests and the production build.
+      # Integration tests run against an embedded PostgreSQL (PGlite) using the same migrations
+      # as production, so no database service is required.
+      - name: Verify
+        run: npm run verify:ci
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7

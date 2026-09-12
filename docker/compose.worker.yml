@@ -1,0 +1,38 @@
+# Development compose file for the Jarvis Worker.
+#
+# Run with:  docker compose -f docker/compose.worker.yml up --build
+#
+# Every secret comes from a `.env` file you create yourself (start from
+# `.env.example`). None is baked into the image, and none is passed on the
+# command line where it would land in your shell history.
+
+services:
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker.Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      # The control plane URL must be reachable from inside the container.
+      # `host.docker.internal` works on Docker Desktop; on Linux use your
+      # machine's LAN address, or add the extra_hosts entry below.
+      JARVIS_WORKER_WORKSPACE_ROOT: /workspaces
+    volumes:
+      # Preserved workspaces survive a container restart, which is what makes
+      # "stopping a mission preserves its work" true across a redeploy too.
+      - jarvis-workspaces:/workspaces
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    restart: unless-stopped
+    # The agent runs inside this container. Give it no more than it needs.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Bounded, so a runaway build cannot take the host down with it.
+    mem_limit: 4g
+    pids_limit: 512
+
+volumes:
+  jarvis-workspaces:

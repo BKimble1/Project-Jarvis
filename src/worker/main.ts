@@ -1,0 +1,701 @@
+import { hostname, platform, release } from 'node:os';
+import type { WorkerHeartbeatInput } from '@/domain/worker-protocol';
+import { ControlPlaneClient, ControlPlaneError } from './client';
+import { buildWorkerConfig, describeWorkerConfig, type WorkerConfig } from './config';
+import { GitHubRestDelivery, type GitHubDelivery } from './delivery';
+import { MissionRunner } from './mission-runner';
+import { ReasoningRunner } from './reasoning-runner';
+import { TaskRunner } from './task-runner';
+import { DETERMINISTIC_ROLES, AGENT_ROLES } from '@/domain/agent-role';
+import { ClaudeAgentRuntime } from './runtime/claude-agent-sdk';
+import { ScriptedRuntime } from './runtime/scripted';
+import type { AgentRuntime } from './runtime/types';
+import { checkWorkspaceRoot, listWorkspaces } from './workspace';
+
+/**
+ * The Jarvis Worker.
+ *
+ * A long-lived process. It polls the control plane, claims at most one mission at a time, runs
+ * it, and reports what happened. It does not listen on a port and it holds no inbound state, so
+ * it runs equally well on a laptop, in Docker, or on a small VM behind a home router.
+ *
+ * Closing the Jarvis browser tab has no effect on it. That is the whole point.
+ */
+
+/**
+ * How long a health fact is believed before the worker checks it again.
+ *
+ * Two minutes, from two directions that meet at about the same number. It cannot be much shorter,
+ * because `availability()` spawns `claude auth status` — the runtime caches its own verdict for
+ * exactly that reason — and the poll it rides on runs every second or three. It should not be much
+ * longer, because the control plane already forms its own opinion of a worker on a two-minute
+ * scale (`WORKER_DISCONNECT_SECONDS`), so a health fact that can be two minutes stale never
+ * becomes the reason a status light is wrong for longer than the status light already allows.
+ *
+ * The failure it is bounded against is the one where both facts were read once at boot and never
+ * again: a Claude login that expired at lunchtime left the worker heartbeating
+ * `runtimeAvailable: true` until somebody restarted it, while every claim was silently skipped.
+ */
+export const HEALTH_REPROBE_INTERVAL_MS = 120_000;
+
+export interface WorkerRuntimeDeps {
+  readonly config: WorkerConfig;
+  readonly client: ControlPlaneClient;
+  readonly runtime: AgentRuntime;
+  readonly delivery: GitHubDelivery | null;
+  readonly log?: (message: string) => void;
+  readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * The clock, injected for the same reason `sleep` is: the re-probe is on a timer, and a test
+   * that had to wait two real minutes to see one is a test nobody runs.
+   */
+  readonly now?: () => Date;
+}
+
+export class JarvisWorkerProcess {
+  private draining = false;
+  private stopped = false;
+  private current: MissionRunner | null = null;
+  private currentTask: TaskRunner | null = null;
+  private currentMissionId: string | null = null;
+  private currentRunId: string | null = null;
+  private lastActivityAt: Date | null = null;
+  private runtimeAvailable = false;
+  private runtimeDetail = 'Not yet checked.';
+  private workspaceHealthy = false;
+  private workspaceDetail = 'Not yet checked.';
+  /** When the last probe ran, so the next one is due rather than constant. Null means never. */
+  private lastHealthProbeAtMs: number | null = null;
+  /*
+   * The most recent change of each verdict, in words, for the heartbeat to carry.
+   *
+   * One line each rather than a log, which is what keeps this bounded without a limit to justify:
+   * what an owner staring at a worker that is taking no work needs is when it stopped being able
+   * to, and the newest answer is the only one that says that.
+   */
+  private runtimeTransition: string | null = null;
+  private workspaceTransition: string | null = null;
+  /**
+   * A promise rather than a "probing" flag, which is the whole of the difference.
+   *
+   * A flag would let the second caller see that somebody else is asking and carry on with the
+   * verdict it already holds — which, on the path that matters, is the stale answer it came here
+   * to replace: the catch blocks ask precisely because what they believe about this machine has
+   * just been contradicted. Handing it the first caller's promise makes it wait for the fresh
+   * answer instead, and costs it nothing but the `claude auth status` it did not spawn.
+   */
+  private probing: Promise<void> | null = null;
+
+  constructor(private readonly deps: WorkerRuntimeDeps) {}
+
+  private log(message: string): void {
+    this.deps.log?.(message);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return this.deps.sleep
+      ? this.deps.sleep(ms)
+      : new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private now(): Date {
+    return this.deps.now ? this.deps.now() : new Date();
+  }
+
+  /** Begin draining: finish the current mission, then stop. Triggered by SIGTERM/SIGINT. */
+  drain(): void {
+    if (this.draining) return;
+    this.draining = true;
+    this.log('Draining. The current mission will finish; no new work will be claimed.');
+  }
+
+  stop(): void {
+    this.stopped = true;
+  }
+
+  /**
+   * Ask again whether this worker can actually do anything, and notice if the answer moved.
+   *
+   * Both facts used to be established once, during boot, and never revisited. A Claude login that
+   * expired mid-afternoon, or a workspace root that stopped being writable when a disk filled,
+   * left the worker heartbeating `runtimeAvailable: true` for the rest of its life while
+   * `wantsWork` refused every claim in silence — a worker that reads as connected and idle, takes
+   * nothing for hours, and explains itself nowhere.
+   *
+   * The transition is remembered separately from the verdict because the verdict alone cannot say
+   * it changed. `runtimeAvailable: false` on a worker that has been that way since it started is a
+   * setup problem the owner already knows about; the same field on a worker that was working an
+   * hour ago is a login that expired, and it is the second one somebody needs to be told about.
+   *
+   * ## Why only one probe runs at a time
+   *
+   * Four places ask for one. Boot asks once, before any loop is running, and cannot race anything;
+   * the other three can be in flight together — the poll loop's timer, and the two catch blocks
+   * that re-check this machine after a failure, which one unreachable control plane sets off at
+   * the same moment. Two probes in flight can finish out of order, and the older answer would then
+   * not merely overwrite the newer one but announce a transition that never happened: "the Claude
+   * runtime became available again" while it is in fact still gone. Sharing the in-flight probe
+   * makes the second caller wait for the first rather than spawn a second `claude auth status`
+   * beside it.
+   */
+  private async refreshHealth(): Promise<void> {
+    this.probing ??= this.probeHealth().finally(() => {
+      this.probing = null;
+    });
+    await this.probing;
+  }
+
+  private async probeHealth(): Promise<void> {
+    const at = this.now();
+    /*
+     * Stamped before the probes, not after: `availability()` may sit for its full timeout waiting
+     * on a hung CLI, and dating the probe from when it finished would let a slow probe shorten the
+     * interval to the next one.
+     */
+    const firstProbe = this.lastHealthProbeAtMs === null;
+    this.lastHealthProbeAtMs = at.getTime();
+
+    const availability = await this.deps.runtime.availability();
+    /*
+     * Boot is never a transition. Both fields start `false` because nothing has been asked yet,
+     * so treating the first answer as a change would announce a recovery that never happened.
+     */
+    if (!firstProbe && availability.available !== this.runtimeAvailable) {
+      this.runtimeTransition = availability.available
+        ? `Claude runtime became available again at ${at.toISOString()}.`
+        : `Claude runtime stopped being available at ${at.toISOString()}.`;
+      this.log(this.runtimeTransition);
+    }
+    this.runtimeAvailable = availability.available;
+    this.runtimeDetail = availability.detail;
+
+    const workspace = await checkWorkspaceRoot(this.deps.config.workspaceRoot);
+    if (!firstProbe && workspace.ok !== this.workspaceHealthy) {
+      this.workspaceTransition = workspace.ok
+        ? `Workspace root became writable again at ${at.toISOString()}.`
+        : `Workspace root stopped being writable at ${at.toISOString()}.`;
+      this.log(this.workspaceTransition);
+    }
+    this.workspaceHealthy = workspace.ok;
+    this.workspaceDetail = workspace.detail;
+  }
+
+  /**
+   * Re-probe when the last answer has aged past `HEALTH_REPROBE_INTERVAL_MS`.
+   *
+   * Driven from the poll loop, because that is the loop that keeps running for the whole length of
+   * a mission and because the heartbeat it sends immediately afterwards is the only channel these
+   * facts have. Hanging it off the work loop would stop the re-probing for exactly as long as a
+   * session lasts, which is exactly the stretch in which a login expires.
+   */
+  private async refreshHealthIfDue(): Promise<void> {
+    const last = this.lastHealthProbeAtMs;
+    if (last !== null && this.now().getTime() - last < HEALTH_REPROBE_INTERVAL_MS) return;
+    await this.refreshHealth();
+  }
+
+  private async heartbeat(): Promise<WorkerHeartbeatInput> {
+    const workspaces = await listWorkspaces(this.deps.config.workspaceRoot);
+    const described = describeWorkerConfig(this.deps.config);
+
+    /*
+     * Ordered by what an owner needs first, because the control plane keeps the first twelve. The
+     * current complaint, then when it started — a worker that is refusing work says why, and a
+     * worker that recovered says when, which is the difference between "it has always been broken"
+     * and "something changed at 14:03".
+     */
+    const diagnostics = [
+      ...this.deps.config.diagnostics,
+      this.runtimeAvailable ? null : this.runtimeDetail,
+      this.workspaceHealthy ? null : this.workspaceDetail,
+      this.runtimeTransition,
+      this.workspaceTransition,
+      workspaces.length > 0 ? `${workspaces.length} preserved workspace(s) on disk.` : null,
+    ].filter((entry): entry is string => entry !== null);
+
+    return {
+      status: this.draining
+        ? 'draining'
+        : this.currentMissionId
+          ? 'busy'
+          : this.runtimeAvailable && this.workspaceHealthy
+            ? 'idle'
+            : 'unhealthy',
+      version: this.deps.config.version,
+      /*
+       * Enough to tell two workers apart and to explain a platform-unavailable verification.
+       * Deliberately not an environment dump: no paths, no user, no variables.
+       */
+      platform: `${platform()} ${release()} · ${hostname()}`,
+      runtimeAvailable: this.runtimeAvailable,
+      runtimeName: this.deps.runtime.name,
+      runtimeDetail: this.runtimeDetail,
+      workspaceHealthy: this.workspaceHealthy,
+      workspaceRootLabel: described.workspaceRootLabel,
+      githubDeliveryConfigured: described.githubDeliveryConfigured,
+      diagnostics: diagnostics.slice(0, 12),
+      currentMissionId: this.currentMissionId,
+      currentRunId: this.currentRunId,
+      lastActivityAt: this.lastActivityAt?.toISOString() ?? null,
+      /*
+       * Absent when this runtime has never read capacity, which is most heartbeats: the figures
+       * come from a live Claude session and between missions there is not one. Absent means
+       * "nothing new", and the control plane keeps the last reading and lets it age. The reading
+       * carries its own observation time, so re-sending it does not make it look fresh.
+       */
+      capacity: this.deps.runtime.capacity?.() ?? null,
+    };
+  }
+
+  /**
+   * Two loops, running at the same time.
+   *
+   * ## Why this is not one loop
+   *
+   * It used to be: poll, then claim, then run the mission to completion, then poll again. That
+   * reads perfectly well and is wrong the moment a mission takes longer than two minutes, which
+   * every real Claude mission does. The heartbeat is only written by the poll, so a worker
+   * happily running a mission stopped saying anything at all for the entire mission, and after
+   * `WORKER_DISCONNECT_SECONDS` the control plane concluded — correctly, from what it could see —
+   * that the worker had died.
+   *
+   * That single silence produced four separate dishonesties, all of them at exactly the moment an
+   * owner is most likely to be watching. The workers page showed a healthy worker as disconnected.
+   * An owner's Stop was confirmed as "stopped, nothing touched" while the agent was in fact still
+   * running and would still open a pull request. The qualification ladder demoted itself
+   * mid-mission, because a rung that needs a live worker could not see one. And no owner command
+   * — stop, pause, or a message into the conversation — could reach the running agent, because
+   * commands are delivered by the poll and the poll was not happening.
+   *
+   * So the poll runs on its own now: it keeps the heartbeat current and keeps delivering commands
+   * for the whole length of a mission, while the work loop is busy running it.
+   *
+   * ## What each loop owns
+   *
+   * The poll loop owns talking: the heartbeat, the revoke directive, handing owner commands to
+   * whatever is running, and — on `HEALTH_REPROBE_INTERVAL_MS` — re-establishing the two facts the
+   * heartbeat reports about this machine, since a heartbeat is only worth as much as the facts in
+   * it. The work loop owns doing: claiming, running, and deciding when a drain is complete.
+   * Neither touches the other's business, and only the work loop ever blocks for long.
+   *
+   * `stopped` is the one thing they share, and it is set by whichever notices first. A revoke seen
+   * by the poll loop ends the poll loop immediately but lets the work loop finish the mission it
+   * is holding rather than abandoning a half-written branch — which is also what the single-loop
+   * version did, since it could only ever check between missions.
+   *
+   * Neither loop is allowed to throw. A control plane that is briefly unreachable is an ordinary
+   * condition for a worker on someone's home network, and it must not take the worker down; a
+   * throw escaping one loop would leave the other running forever with nothing to end it.
+   */
+  async run(): Promise<void> {
+    await this.refreshHealth();
+    this.log(
+      `Jarvis worker ${this.deps.config.name} v${this.deps.config.version} → ${this.deps.config.controlPlaneUrl}`,
+    );
+    this.log(`Runtime: ${this.deps.runtime.name} — ${this.runtimeDetail}`);
+    this.log(`Workspaces: ${this.workspaceDetail}`);
+
+    await Promise.all([
+      this.pollLoop(),
+      this.workLoop(),
+      this.operatorLoop(),
+      this.reasoningLoop(),
+    ]);
+  }
+
+  /**
+   * Answer questions the dashboard asked, on the owner's own Claude subscription.
+   *
+   * ## Why this is a fourth loop and not part of the work loop
+   *
+   * Because the work loop blocks for the length of a mission, and a mission is measured in
+   * minutes. A question Blake just typed into the dashboard cannot wait behind one — the whole
+   * point of asking is that somebody is sitting there. This loop claims at most one question at a
+   * time, so it costs one short model turn and never competes with itself, but it does run while a
+   * mission runs.
+   *
+   * ## Why it is safe to run alongside a mission
+   *
+   * The control plane decides, not the worker. `claimReasoning` returns null when the governor
+   * says the subscription window has no room, so "am I already spending capacity?" is answered
+   * where the capacity is actually known, by the same governor that gates mission starts. A worker
+   * that is draining stops asking, and a worker whose runtime is unavailable is never handed a
+   * question in the first place.
+   *
+   * ## Why failures are logged and swallowed
+   *
+   * Same reason the operator loop swallows its own: a control plane that cannot answer a claim
+   * right now must not stop a worker from finishing the mission in its hands. The question stays
+   * queued, and the conversation waiting on it says so.
+   */
+  private async reasoningLoop(): Promise<void> {
+    while (!this.stopped) {
+      try {
+        if (!this.draining && this.runtimeAvailable) {
+          await this.claimAndAnswer();
+        }
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.fatal) {
+          this.log(`The control plane rejected this worker: ${error.message}`);
+          this.stopped = true;
+          break;
+        }
+        this.log(`Reasoning failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      await this.sleep(this.deps.config.pollIntervalMs);
+    }
+  }
+
+  /** One question, start to finish. Returns whether there was anything to think about. */
+  private async claimAndAnswer(): Promise<boolean> {
+    const assignment = await this.deps.client.claimReasoning({
+      heartbeat: await this.heartbeat(),
+    });
+    if (!assignment) return false;
+
+    this.log(
+      `Thinking about ${assignment.kind} ${assignment.requestId} (attempt ${assignment.attempt}).`,
+    );
+    /*
+     * One line per stage, and nothing else.
+     *
+     * The live failure this replaced said "the model did not answer in time" and left no way to
+     * tell whether the subprocess had ever spoken. Stage names are safe to print — they name a
+     * point in the code, never the question, the answer, or anything from the environment.
+     */
+    const runner = new ReasoningRunner({
+      runtime: this.deps.runtime,
+      workspaceRoot: this.deps.config.workspaceRoot,
+      onStage: (stage) => this.log(`  ${assignment.requestId}: ${stage}`),
+    });
+
+    const outcome = await runner.run(assignment);
+    this.lastActivityAt = new Date();
+
+    /*
+     * Reported even when it failed, and especially when it failed. A question whose answer never
+     * comes back leaves somebody watching a spinner; a question that comes back as "the runtime is
+     * not available" tells them what to do about it.
+     */
+    const { applied } = await this.deps.client.reportReasoning(outcome);
+    this.log(
+      outcome.status === 'succeeded'
+        ? `Answered ${assignment.requestId}${applied ? '' : ' (no longer wanted)'}.`
+        : `Could not answer ${assignment.requestId}: ${outcome.failure} at ${outcome.stage ?? 'claimed'}.`,
+    );
+    return true;
+  }
+
+  /**
+   * Ask the control plane to take a pass of the operating loop, on a timer.
+   *
+   * ## Why the worker drives this
+   *
+   * The operating loop had no production caller at all. `netlify.toml` schedules the project sync
+   * and nothing else, and the two route handlers were reached only by an owner pressing a button
+   * or by a test. Jarvis could observe, prioritise and raise its own work, and never did, because
+   * nothing ever asked it to — the difference between an autonomous operator and a very
+   * well-designed one that waits to be told.
+   *
+   * A control plane on Netlify cannot be the caller: a request arrives, is answered, and the
+   * process goes away. The worker is the only part of this system that keeps existing, so it is
+   * the only thing that can turn a loop that *can* run into a loop that *does*.
+   *
+   * ## Why it is a third loop
+   *
+   * For the same reason the poll is a second one. A pass reads every project and can start a
+   * mission, so putting it in the work loop would mean it stopped happening for the whole length
+   * of every mission — exactly the silence the poll loop exists to end. And it must not delay the
+   * heartbeat, which rules out the poll loop.
+   *
+   * A minute by default, against a poll measured in seconds: a pass rewrites the backlog, and
+   * doing that continuously would spend more on watching than on working.
+   *
+   * Failures are logged and nothing else. The operating loop is a convenience the worker provides
+   * on the control plane's behalf, not part of its own job — a control plane that cannot take a
+   * pass right now must not stop a worker from finishing the mission in its hands.
+   */
+  private async operatorLoop(): Promise<void> {
+    const interval = this.deps.config.operatorTickIntervalMs;
+    if (interval === null) return;
+
+    while (!this.stopped) {
+      await this.sleep(interval);
+      if (this.stopped) break;
+      try {
+        const result = await this.deps.client.operatorTick();
+        /*
+         * Only worth a line when something happened. A pass that found nothing to do is the normal
+         * case, once a minute, for ever — logging it would bury everything else.
+         */
+        if (result.missionsStarted > 0) {
+          this.log(`Jarvis started ${result.missionsStarted} mission(s): ${result.summary}`);
+        }
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.fatal) {
+          /*
+           * Not a reason to exit. A 403 here means this worker may not drive the loop, which is a
+           * perfectly reasonable thing for an owner to decide — the same 403 from the poll means
+           * the worker has been revoked, and only that one ends the process.
+           */
+          this.log(`This worker may not drive the operating loop: ${error.message}`);
+          return;
+        }
+        this.log(
+          `Operating loop pass failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Whether this worker would take something new right now.
+   *
+   * Now that the poll runs during a mission, this has to account for being busy — before, a poll
+   * only ever happened while idle, so "I am free" was true by construction and the field was
+   * decorative. A worker that reported `wantsWork: true` from inside a mission would be stating
+   * something plainly false about itself several times a minute.
+   */
+  private wantsWork(): boolean {
+    return (
+      !this.draining &&
+      !this.current &&
+      !this.currentTask &&
+      this.runtimeAvailable &&
+      this.workspaceHealthy
+    );
+  }
+
+  /** Keep the control plane informed, and keep owner commands flowing to a running mission. */
+  private async pollLoop(): Promise<void> {
+    let interval = this.deps.config.pollIntervalMs;
+
+    while (!this.stopped) {
+      try {
+        await this.refreshHealthIfDue();
+        const response = await this.deps.client.poll({
+          heartbeat: await this.heartbeat(),
+          wantsWork: this.wantsWork(),
+          acknowledgedCommandIds: [],
+        });
+
+        if (response.directive === 'revoked') {
+          this.log('This worker has been revoked. Shutting down.');
+          this.stopped = true;
+          break;
+        }
+        interval = response.pollIntervalMs;
+
+        /* Owner commands are applied to the mission this worker is actually running. */
+        for (const command of response.commands) {
+          if (this.current && command.missionId === this.currentMissionId) {
+            await this.current.applyCommand(command);
+            this.lastActivityAt = new Date();
+          }
+        }
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.fatal) {
+          this.log(`The control plane rejected this worker: ${error.message}`);
+          this.stopped = true;
+          break;
+        }
+        this.log(`Poll failed: ${error instanceof Error ? error.message : String(error)}`);
+        await this.refreshHealth().catch(() => undefined);
+      }
+
+      await this.sleep(interval);
+    }
+  }
+
+  /** Claim and run. The only loop that blocks for a long time, and the one that ends a drain. */
+  private async workLoop(): Promise<void> {
+    while (!this.stopped) {
+      try {
+        if (!this.current && !this.currentTask && !this.draining && this.workspaceHealthy) {
+          /*
+           * Missions first, then tasks, and genuinely first: `claimAndRun` reports whether it took
+           * anything, so a worker that just finished a mission goes back round rather than
+           * immediately claiming a task in the same breath. A worker with no model runtime still
+           * reaches the task claim, because verification and integration need no model at all.
+           */
+          const tookMission = this.runtimeAvailable ? await this.claimAndRun() : false;
+          if (!tookMission) await this.claimAndRunTask();
+        }
+        if (this.draining && !this.current && !this.currentTask) {
+          this.log('Drained. Exiting.');
+          this.stopped = true;
+          break;
+        }
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.fatal) {
+          this.log(`The control plane rejected this worker: ${error.message}`);
+          this.stopped = true;
+          break;
+        }
+        this.log(`Work failed: ${error instanceof Error ? error.message : String(error)}`);
+        await this.refreshHealth().catch(() => undefined);
+      }
+
+      await this.sleep(this.deps.config.pollIntervalMs);
+    }
+  }
+
+  /**
+   * Which roles this worker will accept.
+   *
+   * A worker whose model runtime is unavailable still takes `verifier` and `integrator`: those
+   * run no model at all, and a mission that can be integrated and verified while its Anthropic
+   * key is missing is better than one that stalls entirely.
+   */
+  private acceptedRoles(): readonly string[] {
+    return this.runtimeAvailable ? [...AGENT_ROLES] : [...DETERMINISTIC_ROLES];
+  }
+
+  /** Returns whether a task was claimed. Symmetrical with `claimAndRun`, for the same reason. */
+  private async claimAndRunTask(): Promise<boolean> {
+    const assignment = await this.deps.client.claimTask({
+      heartbeat: await this.heartbeat(),
+      roles: this.acceptedRoles(),
+    });
+    if (!assignment) return false;
+
+    this.currentMissionId = assignment.missionId;
+    this.currentRunId = assignment.runId;
+    this.lastActivityAt = new Date();
+    this.log(
+      `Claimed task ${assignment.taskKey} (${assignment.role}) for "${assignment.missionTitle}".`,
+    );
+
+    const runner = new TaskRunner(
+      {
+        config: this.deps.config,
+        client: this.deps.client,
+        runtime: this.deps.runtime,
+        delivery: this.deps.delivery,
+      },
+      assignment,
+    );
+    this.currentTask = runner;
+    try {
+      await runner.run();
+    } finally {
+      this.currentTask = null;
+      this.currentMissionId = null;
+      this.currentRunId = null;
+      this.lastActivityAt = new Date();
+      this.log(`Finished task ${assignment.taskKey}.`);
+    }
+    return true;
+  }
+
+  /** Returns whether a mission was claimed, so the work loop can genuinely prefer one to a task. */
+  private async claimAndRun(): Promise<boolean> {
+    const assignment = await this.deps.client.claim({
+      heartbeat: await this.heartbeat(),
+      accepts: [...this.deps.config.accepts],
+    });
+    if (!assignment) return false;
+
+    this.currentMissionId = assignment.missionId;
+    this.currentRunId = assignment.runId;
+    this.lastActivityAt = new Date();
+    this.log(`Claimed ${assignment.kind} run for "${assignment.missionTitle}".`);
+
+    const runner = new MissionRunner(
+      {
+        config: this.deps.config,
+        client: this.deps.client,
+        runtime: this.deps.runtime,
+        delivery: this.deps.delivery,
+      },
+      assignment,
+    );
+    this.current = runner;
+
+    try {
+      await runner.run();
+    } finally {
+      this.current = null;
+      this.currentMissionId = null;
+      this.currentRunId = null;
+      this.lastActivityAt = new Date();
+      this.log(`Finished the run for "${assignment.missionTitle}".`);
+    }
+    return true;
+  }
+}
+
+/** Build the worker from the environment. Exported so tests can build one with fakes instead. */
+export function createWorker(
+  config: WorkerConfig,
+  log?: (message: string) => void,
+): JarvisWorkerProcess {
+  const client = new ControlPlaneClient({
+    baseUrl: config.controlPlaneUrl,
+    token: config.token,
+  });
+
+  /*
+   * The scripted runtime exists so the whole mission path — claim, workspace, branch, verify,
+   * commit, push, draft PR — can be exercised without a model. It is opt-in through
+   * `JARVIS_WORKER_RUNTIME=scripted` and makes one harmless, visible change: a line appended to
+   * the repository's README. It is never the default.
+   */
+  const runtime: AgentRuntime =
+    config.runtime === 'scripted'
+      ? new ScriptedRuntime({
+          steps: [
+            { kind: 'message', text: 'Adding a note to the readme.' },
+            {
+              kind: 'tool',
+              toolName: 'Edit',
+              input: { file_path: 'README.md' },
+              effect: async (workspaceRoot: string) => {
+                const { appendFile } = await import('node:fs/promises');
+                const { join } = await import('node:path');
+                await appendFile(
+                  join(workspaceRoot, 'README.md'),
+                  '\nAdded by a Jarvis sandbox mission.\n',
+                  'utf8',
+                );
+              },
+            },
+            { kind: 'done', result: 'Appended a note to the readme.' },
+          ],
+        })
+      : new ClaudeAgentRuntime({
+          apiKey: config.anthropicApiKey,
+          oauthToken: config.claudeOauthToken,
+          authMode: config.authMode,
+          apiKeyPresent: config.anthropicApiKeyPresent,
+          model: config.model,
+        });
+
+  const delivery = config.githubToken
+    ? new GitHubRestDelivery({ token: config.githubToken, apiBaseUrl: config.githubApiUrl })
+    : null;
+
+  return new JarvisWorkerProcess({
+    config,
+    client,
+    runtime,
+    delivery,
+    ...(log ? { log } : {}),
+  });
+}
+
+/** Entry point for `npm run worker`. */
+export async function main(): Promise<void> {
+  const config = buildWorkerConfig();
+  const worker = createWorker(config, (message) => {
+    console.error(`[jarvis-worker] ${message}`);
+  });
+
+  /* A signal drains rather than kills: an in-flight mission finishes and reports honestly. */
+  const drain = () => worker.drain();
+  process.on('SIGTERM', drain);
+  process.on('SIGINT', drain);
+
+  await worker.run();
+}
